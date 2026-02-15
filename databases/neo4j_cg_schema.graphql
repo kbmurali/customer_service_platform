@@ -1,0 +1,308 @@
+# Neo4j Context Graph (CG) Schema
+# Dynamic session and transaction data for observability and auditability
+
+directive @cypher(statement: String!) on FIELD_DEFINITION
+directive @relation(name: String!, direction: String!) on FIELD_DEFINITION
+
+# ============================================
+# Session and Conversation Tracking
+# ============================================
+
+type ConversationSession {
+  sessionId: ID!
+  userId: String!  # CSR user ID
+  userRole: String!  # CSR role for RBAC
+  memberId: String  # Member being assisted
+  startTime: String!
+  endTime: String
+  status: String!  # ACTIVE, COMPLETED, ABANDONED, ERROR
+  channel: String!  # WEB, PHONE, CHAT
+  
+  # Relationships
+  interactions: [Interaction!]! @relation(name: "HAS_INTERACTION", direction: "OUT")
+  agentExecutions: [AgentExecution!]! @relation(name: "TRIGGERED_AGENT", direction: "OUT")
+  dataSnapshots: [DataSnapshot!]! @relation(name: "CAPTURED_DATA", direction: "OUT")
+  
+  # Computed fields
+  duration: Int @cypher(statement: """
+    RETURN duration.between(datetime(this.startTime), datetime(COALESCE(this.endTime, datetime()))).seconds
+  """)
+  interactionCount: Int @cypher(statement: "RETURN SIZE((this)-[:HAS_INTERACTION]->())")
+}
+
+type Interaction {
+  interactionId: ID!
+  timestamp: String!
+  type: String!  # USER_QUERY, AGENT_RESPONSE, TOOL_CALL, ERROR
+  content: String!
+  intent: String  # Detected user intent
+  sentiment: String  # POSITIVE, NEUTRAL, NEGATIVE
+  
+  # Relationships
+  session: ConversationSession! @relation(name: "HAS_INTERACTION", direction: "IN")
+  triggeredAgents: [AgentExecution!]! @relation(name: "TRIGGERED", direction: "OUT")
+}
+
+# ============================================
+# Agent Execution Tracking
+# ============================================
+
+type AgentExecution {
+  executionId: ID!
+  agentName: String!  # e.g., "MemberServicesAgent", "ClaimServicesAgent"
+  agentType: String!  # SUPERVISOR, WORKER, TOOL
+  startTime: String!
+  endTime: String
+  status: String!  # RUNNING, COMPLETED, FAILED, TIMEOUT
+  errorMessage: String
+  
+  # Relationships
+  session: ConversationSession! @relation(name: "TRIGGERED_AGENT", direction: "IN")
+  interaction: Interaction @relation(name: "TRIGGERED", direction: "IN")
+  parentExecution: AgentExecution @relation(name: "SPAWNED_BY", direction: "IN")
+  childExecutions: [AgentExecution!]! @relation(name: "SPAWNED_BY", direction: "OUT")
+  toolCalls: [ToolCall!]! @relation(name: "EXECUTED_TOOL", direction: "OUT")
+  decisions: [AgentDecision!]! @relation(name: "MADE_DECISION", direction: "OUT")
+  
+  # Computed fields
+  executionTime: Int @cypher(statement: """
+    RETURN duration.between(datetime(this.startTime), datetime(COALESCE(this.endTime, datetime()))).milliseconds
+  """)
+  toolCallCount: Int @cypher(statement: "RETURN SIZE((this)-[:EXECUTED_TOOL]->())")
+}
+
+type ToolCall {
+  toolCallId: ID!
+  toolName: String!
+  toolCategory: String!  # DATABASE, API, COMPUTATION, SEARCH
+  parameters: String!  # JSON string of parameters
+  result: String  # JSON string of result
+  startTime: String!
+  endTime: String
+  status: String!  # SUCCESS, FAILED, TIMEOUT
+  errorMessage: String
+  
+  # Relationships
+  agentExecution: AgentExecution! @relation(name: "EXECUTED_TOOL", direction: "IN")
+  dataAccessed: [DataSnapshot!]! @relation(name: "ACCESSED_DATA", direction: "OUT")
+  
+  # Computed fields
+  executionTime: Int @cypher(statement: """
+    RETURN duration.between(datetime(this.startTime), datetime(COALESCE(this.endTime, datetime()))).milliseconds
+  """)
+}
+
+type AgentDecision {
+  decisionId: ID!
+  timestamp: String!
+  decisionType: String!  # ROUTE, DELEGATE, FINISH, RETRY, ESCALATE
+  reasoning: String!  # LLM reasoning for the decision
+  selectedOption: String!
+  availableOptions: [String!]!
+  confidence: Float  # 0.0 to 1.0
+  
+  # Relationships
+  agentExecution: AgentExecution! @relation(name: "MADE_DECISION", direction: "IN")
+  
+  # Computed fields
+  optionCount: Int @cypher(statement: "RETURN SIZE(this.availableOptions)")
+}
+
+# ============================================
+# Data Snapshots for Auditability
+# ============================================
+
+type DataSnapshot {
+  snapshotId: ID!
+  timestamp: String!
+  dataType: String!  # MEMBER, CLAIM, PA, POLICY, PROVIDER
+  entityId: String!  # ID of the entity in KG
+  snapshotData: String!  # JSON string of data at time of access
+  accessType: String!  # READ, WRITE, UPDATE, DELETE
+  
+  # Relationships
+  session: ConversationSession! @relation(name: "CAPTURED_DATA", direction: "IN")
+  toolCall: ToolCall @relation(name: "ACCESSED_DATA", direction: "IN")
+  accessedBy: User! @relation(name: "ACCESSED_BY_USER", direction: "OUT")
+  
+  # Computed fields
+  age: Int @cypher(statement: """
+    RETURN duration.between(datetime(this.timestamp), datetime()).seconds
+  """)
+}
+
+type User {
+  userId: ID!
+  username: String!
+  role: String!  # csr_tier1, csr_tier2, csr_supervisor, csr_readonly
+  email: String!
+  
+  # Relationships
+  sessions: [ConversationSession!]! @relation(name: "STARTED_SESSION", direction: "OUT")
+  dataAccessed: [DataSnapshot!]! @relation(name: "ACCESSED_BY_USER", direction: "IN")
+  
+  # Computed fields
+  sessionCount: Int @cypher(statement: "RETURN SIZE((this)-[:STARTED_SESSION]->())")
+  totalDataAccess: Int @cypher(statement: "RETURN SIZE((this)<-[:ACCESSED_BY_USER]-())")
+}
+
+# ============================================
+# Prior Authorization Action-Policy Graph
+# ============================================
+
+type PAPolicy {
+  policyId: ID!
+  policyName: String!
+  procedureCategory: String!
+  conditions: String!  # JSON string of conditions
+  requiredDocumentation: [String!]!
+  approvalCriteria: String!
+  priority: Int!
+  
+  # Relationships
+  actions: [PAAction!]! @relation(name: "TRIGGERS_ACTION", direction: "OUT")
+  
+  # Computed fields
+  actionCount: Int @cypher(statement: "RETURN SIZE((this)-[:TRIGGERS_ACTION]->())")
+}
+
+type PAAction {
+  actionId: ID!
+  actionType: String!  # AUTO_APPROVE, AUTO_DENY, REQUIRE_REVIEW, REQUEST_INFO
+  actionDescription: String!
+  executionOrder: Int!
+  
+  # Relationships
+  policy: PAPolicy! @relation(name: "TRIGGERS_ACTION", direction: "IN")
+  nextActions: [PAAction!]! @relation(name: "LEADS_TO", direction: "OUT")
+  
+  # Computed fields
+  executionCount: Int @cypher(statement: """
+    MATCH (this)<-[:EXECUTED_ACTION]-(exec:PAExecution)
+    RETURN COUNT(exec)
+  """)
+}
+
+type PAExecution {
+  executionId: ID!
+  paNumber: String!  # Reference to PA in KG
+  timestamp: String!
+  policyId: String!
+  actionId: String!
+  result: String!  # JSON string of execution result
+  
+  # Relationships
+  action: PAAction! @relation(name: "EXECUTED_ACTION", direction: "OUT")
+  session: ConversationSession! @relation(name: "PART_OF_SESSION", direction: "OUT")
+}
+
+# ============================================
+# Security and Audit Events
+# ============================================
+
+type SecurityEvent {
+  eventId: ID!
+  timestamp: String!
+  eventType: String!  # ACCESS_DENIED, PERMISSION_VIOLATION, SUSPICIOUS_ACTIVITY, RATE_LIMIT_EXCEEDED
+  severity: String!  # LOW, MEDIUM, HIGH, CRITICAL
+  userId: String!
+  resourceType: String!
+  resourceId: String
+  details: String!
+  
+  # Relationships
+  session: ConversationSession @relation(name: "OCCURRED_IN_SESSION", direction: "OUT")
+  
+  # Computed fields
+  age: Int @cypher(statement: """
+    RETURN duration.between(datetime(this.timestamp), datetime()).seconds
+  """)
+}
+
+type AuditLog {
+  auditId: ID!
+  timestamp: String!
+  action: String!
+  userId: String!
+  resourceType: String!
+  resourceId: String!
+  changes: String  # JSON string of before/after
+  ipAddress: String
+  
+  # Computed fields
+  age: Int @cypher(statement: """
+    RETURN duration.between(datetime(this.timestamp), datetime()).seconds
+  """)
+}
+
+# ============================================
+# Query Entry Points
+# ============================================
+
+type Query {
+  # Session queries
+  session(sessionId: ID!): ConversationSession
+  sessions(userId: String, status: String, first: Int = 10, offset: Int = 0): [ConversationSession!]!
+  activeSessions: [ConversationSession!]! @cypher(statement: "MATCH (s:ConversationSession) WHERE s.status = 'ACTIVE' RETURN s")
+  
+  # Agent execution queries
+  agentExecution(executionId: ID!): AgentExecution
+  agentExecutions(agentName: String, status: String, first: Int = 10, offset: Int = 0): [AgentExecution!]!
+  
+  # Tool call queries
+  toolCall(toolCallId: ID!): ToolCall
+  toolCalls(toolName: String, status: String, first: Int = 10, offset: Int = 0): [ToolCall!]!
+  
+  # Data snapshot queries
+  dataSnapshot(snapshotId: ID!): DataSnapshot
+  dataSnapshots(dataType: String, entityId: String, first: Int = 10, offset: Int = 0): [DataSnapshot!]!
+  
+  # User queries
+  user(userId: ID!, username: String): User
+  users(role: String, first: Int = 10, offset: Int = 0): [User!]!
+  
+  # PA policy queries
+  paPolicy(policyId: ID!): PAPolicy
+  paPolicies(procedureCategory: String, first: Int = 10, offset: Int = 0): [PAPolicy!]!
+  
+  # Security queries
+  securityEvents(severity: String, userId: String, first: Int = 10, offset: Int = 0): [SecurityEvent!]!
+  recentSecurityEvents(minutes: Int = 60): [SecurityEvent!]! @cypher(statement: """
+    MATCH (e:SecurityEvent)
+    WHERE datetime(e.timestamp) >= datetime() - duration({minutes: $minutes})
+    RETURN e ORDER BY e.timestamp DESC
+  """)
+  
+  # Audit queries
+  auditLogs(userId: String, resourceType: String, first: Int = 10, offset: Int = 0): [AuditLog!]!
+}
+
+# ============================================
+# Mutations
+# ============================================
+
+type Mutation {
+  # Session mutations
+  createSession(userId: String!, userRole: String!, memberId: String, channel: String!): ConversationSession
+  endSession(sessionId: ID!, status: String!): ConversationSession
+  
+  # Interaction mutations
+  createInteraction(sessionId: ID!, type: String!, content: String!, intent: String): Interaction
+  
+  # Agent execution mutations
+  createAgentExecution(sessionId: ID!, agentName: String!, agentType: String!): AgentExecution
+  updateAgentExecution(executionId: ID!, status: String!, errorMessage: String): AgentExecution
+  
+  # Tool call mutations
+  createToolCall(executionId: ID!, toolName: String!, toolCategory: String!, parameters: String!): ToolCall
+  updateToolCall(toolCallId: ID!, status: String!, result: String, errorMessage: String): ToolCall
+  
+  # Data snapshot mutations
+  createDataSnapshot(sessionId: ID!, dataType: String!, entityId: String!, snapshotData: String!, accessType: String!, userId: String!): DataSnapshot
+  
+  # Security event mutations
+  createSecurityEvent(eventType: String!, severity: String!, userId: String!, resourceType: String!, details: String!): SecurityEvent
+  
+  # Audit log mutations
+  createAuditLog(action: String!, userId: String!, resourceType: String!, resourceId: String!, changes: String): AuditLog
+}

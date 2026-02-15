@@ -1,0 +1,15 @@
+models:
+  - type: main
+    engine: openai
+    model: gpt-4o
+
+colang_version: "1.0"
+
+rails:
+  input:
+    flows:
+      - self check input
+      - refuse unrelated topics
+  output:
+    flows:
+      - self check output

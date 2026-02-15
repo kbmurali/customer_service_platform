@@ -1,0 +1,69 @@
+# Core LangChain stack — pinned to a coherent 0.3.x set
+langchain==0.3.25
+langchain-core==0.3.59
+langchain-community==0.3.19
+langsmith==0.1.147
+
+# LangGraph stack — 0.4.x series (compatible with langchain-core 0.3.x)
+langgraph==0.4.3
+langgraph-checkpoint==2.0.25
+langgraph-prebuilt==0.1.8
+langgraph-sdk==0.1.66
+
+# LangChain experimental and adapters
+langchain-experimental==0.3.4
+langchain-mcp-adapters==0.1.14
+
+# LLM Providers
+langchain-openai==0.2.3
+langchain-anthropic==0.3.7
+langchain-aws==0.2.10
+
+# Vector Databases
+chromadb==1.3.6
+pinecone-client==6.0.0
+
+# MySQL
+mysql-connector-python==9.6.0
+
+# Graph Databases
+graphql-core==3.2.5
+neo4j==6.1.0
+
+# Core Dependencies
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+httpx>=0.26.0
+aiohttp>=3.9.0
+mcp>=1.22.0
+
+# Data Processing
+pandas>=2.1.0
+numpy==1.26.4
+numexpr>=2.11.0
+
+# Development and Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.7.0
+pysqlite3-binary>=0.5.4
+
+
+nest_asyncio>=1.5.0
+
+# Security Controls - Authentication
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+
+# Control 1: Prompt Injection Defense
+nemoguardrails==0.11.0
+
+# Control 8: Output Validation & Sanitization
+guardrails-ai==0.5.13
+
+# Database Drivers
+clickhouse-driver==0.2.7
+psycopg2-binary==2.9.9
+redis==5.2.1

@@ -1,0 +1,101 @@
+# jmx-config.yml
+# Prometheus JMX Exporter configuration for Neo4j Community Edition
+# Reference: https://github.com/prometheus/jmx_exporter
+
+jmxUrl: service:jmx:rmi:///jndi/rmi://neo4j-kg:9999/jmxrmi
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# JMX credentials - read from environment variables
+# These are set in the container from Docker Swarm secrets via entrypoint
+username: ${JMX_USERNAME}
+password: ${JMX_PASSWORD}
+
+# Rules to extract useful Neo4j metrics from JMX MBeans
+rules:
+  # ── Neo4j Primitive counts (nodes, relationships, properties) ──────────
+  - pattern: 'org.neo4j<instance=kernel#0, name=Primitive count><>(NumberOf\w+)'
+    name: neo4j_primitive_count
+    labels:
+      primitive: "$1"
+    help: "Neo4j primitive counts"
+    type: GAUGE
+
+  # ── Neo4j Store file sizes ─────────────────────────────────────────────
+  - pattern: 'org.neo4j<instance=kernel#0, name=Store file sizes><>(Total\w+|.*Size)'
+    name: neo4j_store_size_bytes
+    labels:
+      store: "$1"
+    help: "Neo4j store file sizes in bytes"
+    type: GAUGE
+
+  # ── Neo4j Memory mapping ───────────────────────────────────────────────
+  - pattern: 'org.neo4j<instance=kernel#0, name=Memory Mapping><>(.*)'
+    name: neo4j_memory_mapping
+    labels:
+      metric: "$1"
+    help: "Neo4j memory mapping metrics"
+    type: GAUGE
+
+  # ── Neo4j Transactions ─────────────────────────────────────────────────
+  - pattern: 'org.neo4j<instance=kernel#0, name=Transactions><>(.*)'
+    name: neo4j_transactions
+    labels:
+      metric: "$1"
+    help: "Neo4j transaction metrics"
+    type: GAUGE
+
+  # ── Neo4j Kernel info ──────────────────────────────────────────────────
+  - pattern: 'org.neo4j<instance=kernel#0, name=Kernel><>(.*)'
+    name: neo4j_kernel
+    labels:
+      metric: "$1"
+    help: "Neo4j kernel metrics"
+    type: GAUGE
+
+  # ── Neo4j Cache ────────────────────────────────────────────────────────
+  - pattern: 'org.neo4j<instance=kernel#0, name=Cache><>(.*)'
+    name: neo4j_cache
+    labels:
+      metric: "$1"
+    help: "Neo4j cache metrics"
+    type: GAUGE
+
+  # ── Neo4j Locking ─────────────────────────────────────────────────────
+  - pattern: 'org.neo4j<instance=kernel#0, name=Locking><>(.*)'
+    name: neo4j_locking
+    labels:
+      metric: "$1"
+    help: "Neo4j locking metrics"
+    type: GAUGE
+
+  # ── JVM Memory ────────────────────────────────────────────────────────
+  - pattern: 'java.lang<type=Memory><HeapMemoryUsage>(used|committed|max)'
+    name: jvm_heap_memory_$1_bytes
+    help: "JVM heap memory in bytes"
+    type: GAUGE
+
+  - pattern: 'java.lang<type=Memory><NonHeapMemoryUsage>(used|committed)'
+    name: jvm_nonheap_memory_$1_bytes
+    help: "JVM non-heap memory in bytes"
+    type: GAUGE
+
+  # ── JVM GC ────────────────────────────────────────────────────────────
+  - pattern: 'java.lang<type=GarbageCollector, name=(\w+)><>(CollectionCount|CollectionTime)'
+    name: jvm_gc_$2_total
+    labels:
+      gc: "$1"
+    help: "JVM garbage collection metrics"
+    type: COUNTER
+
+  # ── JVM Threads ───────────────────────────────────────────────────────
+  - pattern: 'java.lang<type=Threading><>(ThreadCount|DaemonThreadCount)'
+    name: jvm_threads_$1
+    help: "JVM thread counts"
+    type: GAUGE
+
+  # ── JVM CPU ───────────────────────────────────────────────────────────
+  - pattern: 'java.lang<type=OperatingSystem><>(ProcessCpuLoad|SystemCpuLoad)'
+    name: jvm_cpu_$1
+    help: "JVM CPU usage"
+    type: GAUGE

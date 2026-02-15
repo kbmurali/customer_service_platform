@@ -1,0 +1,295 @@
+# Neo4j Knowledge Graph (KG) Schema
+# Static domain knowledge for Health Insurance
+
+directive @cypher(statement: String!) on FIELD_DEFINITION
+directive @relation(name: String!, direction: String!) on FIELD_DEFINITION
+
+# ============================================
+# Core Domain Entities
+# ============================================
+
+type Member {
+  memberId: ID!
+  firstName: String!
+  lastName: String!
+  dateOfBirth: String!
+  email: String
+  phone: String
+  address: Address
+  enrollmentDate: String!
+  status: String!  # ACTIVE, INACTIVE, SUSPENDED
+  
+  # Relationships
+  policies: [Policy!]! @relation(name: "HAS_POLICY", direction: "OUT")
+  claims: [Claim!]! @relation(name: "FILED_CLAIM", direction: "OUT")
+  priorAuthorizations: [PriorAuthorization!]! @relation(name: "REQUESTED_PA", direction: "OUT")
+  
+  # Computed fields
+  totalClaims: Int @cypher(statement: "RETURN SIZE((this)-[:FILED_CLAIM]->())")
+  activePolicies: [Policy!]! @cypher(statement: "MATCH (this)-[:HAS_POLICY]->(p:Policy) WHERE p.status = 'ACTIVE' RETURN p")
+}
+
+type Address {
+  street: String!
+  city: String!
+  state: String!
+  zipCode: String!
+  country: String!
+}
+
+type Policy {
+  policyId: ID!
+  policyNumber: String!
+  policyType: String!  # INDIVIDUAL, FAMILY, GROUP
+  planName: String!
+  planType: String!  # HMO, PPO, EPO, POS
+  effectiveDate: String!
+  expirationDate: String!
+  status: String!  # ACTIVE, EXPIRED, CANCELLED
+  premium: Float!
+  deductible: Float!
+  outOfPocketMax: Float!
+  
+  # Relationships
+  member: Member! @relation(name: "HAS_POLICY", direction: "IN")
+  coverageRules: [CoverageRule!]! @relation(name: "INCLUDES_COVERAGE", direction: "OUT")
+  network: Network! @relation(name: "USES_NETWORK", direction: "OUT")
+  
+  # Computed fields
+  remainingDeductible: Float @cypher(statement: """
+    MATCH (this)<-[:COVERED_BY]-(c:Claim)
+    WHERE c.status = 'APPROVED' AND c.serviceDate >= this.effectiveDate
+    WITH this, COALESCE(SUM(c.paidAmount), 0) as paidTotal
+    RETURN this.deductible - paidTotal
+  """)
+}
+
+type CoverageRule {
+  ruleId: ID!
+  serviceCategory: String!  # PREVENTIVE, DIAGNOSTIC, SURGICAL, etc.
+  coveragePercentage: Float!
+  requiresPriorAuth: Boolean!
+  copayAmount: Float
+  coinsurancePercentage: Float
+  annualLimit: Float
+  lifetimeLimit: Float
+  
+  # Relationships
+  policy: Policy! @relation(name: "INCLUDES_COVERAGE", direction: "IN")
+  procedures: [Procedure!]! @relation(name: "COVERS_PROCEDURE", direction: "OUT")
+}
+
+type Claim {
+  claimId: ID!
+  claimNumber: String!
+  serviceDate: String!
+  submissionDate: String!
+  status: String!  # SUBMITTED, UNDER_REVIEW, APPROVED, DENIED, APPEALED
+  totalAmount: Float!
+  paidAmount: Float
+  denialReason: String
+  processingDate: String
+  
+  # Relationships
+  member: Member! @relation(name: "FILED_CLAIM", direction: "IN")
+  policy: Policy! @relation(name: "COVERED_BY", direction: "OUT")
+  provider: Provider! @relation(name: "SERVICED_BY", direction: "OUT")
+  diagnoses: [Diagnosis!]! @relation(name: "HAS_DIAGNOSIS", direction: "OUT")
+  procedures: [Procedure!]! @relation(name: "INCLUDES_PROCEDURE", direction: "OUT")
+  
+  # Computed fields
+  similarClaims: [Claim!]! @cypher(statement: """
+    MATCH (this)-[:HAS_DIAGNOSIS]->(d:Diagnosis)<-[:HAS_DIAGNOSIS]-(other:Claim)
+    WHERE other.claimId <> this.claimId
+    RETURN other ORDER BY other.serviceDate DESC LIMIT 5
+  """)
+}
+
+type Diagnosis {
+  diagnosisId: ID!
+  icdCode: String!
+  description: String!
+  category: String!
+  severity: String  # MILD, MODERATE, SEVERE, CRITICAL
+  
+  # Relationships
+  claims: [Claim!]! @relation(name: "HAS_DIAGNOSIS", direction: "IN")
+  relatedProcedures: [Procedure!]! @relation(name: "TYPICALLY_REQUIRES", direction: "OUT")
+  
+  # Computed fields
+  claimCount: Int @cypher(statement: "RETURN SIZE((this)<-[:HAS_DIAGNOSIS]-())")
+}
+
+type Procedure {
+  procedureId: ID!
+  cptCode: String!
+  description: String!
+  category: String!
+  averageCost: Float!
+  requiresPriorAuth: Boolean!
+  
+  # Relationships
+  claims: [Claim!]! @relation(name: "INCLUDES_PROCEDURE", direction: "IN")
+  coverageRules: [CoverageRule!]! @relation(name: "COVERS_PROCEDURE", direction: "IN")
+  diagnoses: [Diagnosis!]! @relation(name: "TYPICALLY_REQUIRES", direction: "IN")
+  
+  # Computed fields
+  utilizationRate: Float @cypher(statement: """
+    MATCH (this)<-[:INCLUDES_PROCEDURE]-(c:Claim)
+    WHERE c.serviceDate >= date() - duration('P1Y')
+    RETURN COUNT(c) * 1.0
+  """)
+}
+
+type PriorAuthorization {
+  paId: ID!
+  paNumber: String!
+  requestDate: String!
+  status: String!  # PENDING, APPROVED, DENIED, EXPIRED
+  approvalDate: String
+  expirationDate: String
+  denialReason: String
+  urgency: String!  # ROUTINE, URGENT, EMERGENCY
+  
+  # Relationships
+  member: Member! @relation(name: "REQUESTED_PA", direction: "IN")
+  policy: Policy! @relation(name: "REQUIRES_POLICY", direction: "OUT")
+  procedure: Procedure! @relation(name: "FOR_PROCEDURE", direction: "OUT")
+  provider: Provider! @relation(name: "REQUESTED_BY_PROVIDER", direction: "OUT")
+  
+  # Computed fields
+  approvalProbability: Float @cypher(statement: """
+    MATCH (this)-[:FOR_PROCEDURE]->(proc:Procedure)
+    MATCH (similar:PriorAuthorization)-[:FOR_PROCEDURE]->(proc)
+    WHERE similar.status IN ['APPROVED', 'DENIED']
+    WITH COUNT(CASE WHEN similar.status = 'APPROVED' THEN 1 END) * 1.0 / COUNT(similar) as prob
+    RETURN prob
+  """)
+}
+
+type Provider {
+  providerId: ID!
+  npi: String!
+  firstName: String
+  lastName: String
+  organizationName: String
+  specialty: String!
+  providerType: String!  # INDIVIDUAL, ORGANIZATION, FACILITY
+  phone: String
+  address: Address
+  
+  # Relationships
+  networks: [Network!]! @relation(name: "IN_NETWORK", direction: "OUT")
+  claims: [Claim!]! @relation(name: "SERVICED_BY", direction: "IN")
+  priorAuthorizations: [PriorAuthorization!]! @relation(name: "REQUESTED_BY_PROVIDER", direction: "IN")
+  
+  # Computed fields
+  claimVolume: Int @cypher(statement: "RETURN SIZE((this)<-[:SERVICED_BY]-())")
+  averageClaimAmount: Float @cypher(statement: """
+    MATCH (this)<-[:SERVICED_BY]-(c:Claim)
+    RETURN AVG(c.totalAmount)
+  """)
+}
+
+type Network {
+  networkId: ID!
+  networkName: String!
+  networkType: String!  # HMO, PPO, EPO
+  state: String!
+  
+  # Relationships
+  providers: [Provider!]! @relation(name: "IN_NETWORK", direction: "IN")
+  policies: [Policy!]! @relation(name: "USES_NETWORK", direction: "IN")
+  
+  # Computed fields
+  providerCount: Int @cypher(statement: "RETURN SIZE((this)<-[:IN_NETWORK]-())")
+}
+
+# ============================================
+# Query Entry Points
+# ============================================
+
+type Query {
+  # Member queries
+  member(memberId: ID, email: String): Member
+  members(status: String, first: Int = 10, offset: Int = 0): [Member!]!
+  
+  # Policy queries
+  policy(policyId: ID, policyNumber: String): Policy
+  policies(status: String, planType: String, first: Int = 10, offset: Int = 0): [Policy!]!
+  
+  # Claim queries
+  claim(claimId: ID, claimNumber: String): Claim
+  claims(memberId: ID, status: String, first: Int = 10, offset: Int = 0): [Claim!]!
+  
+  # Prior Authorization queries
+  priorAuthorization(paId: ID, paNumber: String): PriorAuthorization
+  priorAuthorizations(memberId: ID, status: String, first: Int = 10, offset: Int = 0): [PriorAuthorization!]!
+  
+  # Provider queries
+  provider(providerId: ID, npi: String): Provider
+  providers(specialty: String, networkId: ID, first: Int = 10, offset: Int = 0): [Provider!]!
+  
+  # Diagnosis queries
+  diagnosis(diagnosisId: ID, icdCode: String): Diagnosis
+  diagnoses(category: String, first: Int = 10, offset: Int = 0): [Diagnosis!]!
+  
+  # Procedure queries
+  procedure(procedureId: ID, cptCode: String): Procedure
+  procedures(category: String, requiresPriorAuth: Boolean, first: Int = 10, offset: Int = 0): [Procedure!]!
+  
+  # Network queries
+  network(networkId: ID, networkName: String): Network
+  networks(networkType: String, state: String, first: Int = 10, offset: Int = 0): [Network!]!
+}
+
+# ============================================
+# Mutations
+# ============================================
+
+type Mutation {
+  # Member mutations
+  createMember(input: CreateMemberInput!): Member
+  updateMember(memberId: ID!, input: UpdateMemberInput!): Member
+  
+  # Claim mutations
+  createClaim(input: CreateClaimInput!): Claim
+  updateClaimStatus(claimId: ID!, status: String!, denialReason: String): Claim
+  
+  # Prior Authorization mutations
+  createPriorAuthorization(input: CreatePAInput!): PriorAuthorization
+  updatePAStatus(paId: ID!, status: String!, denialReason: String): PriorAuthorization
+}
+
+# Input types for mutations
+input CreateMemberInput {
+  firstName: String!
+  lastName: String!
+  dateOfBirth: String!
+  email: String
+  phone: String
+}
+
+input UpdateMemberInput {
+  email: String
+  phone: String
+  status: String
+}
+
+input CreateClaimInput {
+  memberId: ID!
+  policyId: ID!
+  providerId: ID!
+  serviceDate: String!
+  totalAmount: Float!
+  diagnosisCodes: [String!]!
+  procedureCodes: [String!]!
+}
+
+input CreatePAInput {
+  memberId: ID!
+  policyId: ID!
+  providerId: ID!
+  procedureCode: String!
+  urgency: String!
+}

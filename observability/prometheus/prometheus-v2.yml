@@ -1,0 +1,123 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'health-insurance-ai-platform'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "alerts/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Agent API service
+  - job_name: 'agent-api'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['agent-api:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'agent-api'
+
+  # MCP Server
+  - job_name: 'mcp-server'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['mcp-server:8001']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'mcp-server'
+
+  # Neo4j Knowledge Graph
+  - job_name: 'neo4j-kg'
+    static_configs:
+      - targets: ['neo4j-kg-jmx-exporter:9150']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+  # Neo4j Context Graph
+  - job_name: 'neo4j-cg'
+    static_configs:
+      - targets: ['neo4j-cg-jmx-exporter:9150']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+  # MySQL
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['mysqld-exporter:9104']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'mysql'
+  
+  # LangFuse ClickHouse
+  - job_name: 'langfuse-clickhouse'
+    static_configs:
+      - targets: ['clickhouse:9363']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    basic_auth:
+      username: 'langfuse'
+      password_file: '/run/secrets/CLICKHOUSE_PASSWORD'
+
+  # LangFuse Postgres DB
+  - job_name: 'langfuse-postgres'
+    static_configs:
+      - targets: ['langfuse-postgres-exporter:9187']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # LangFuse Redis
+  - job_name: 'langfuse-redis'
+    static_configs:
+      - targets: ['langfuse-redis-exporter:9121']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # LangFuse MinIO cluster metrics
+  - job_name: 'langfuse-minio-cluster'
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ['langfuse-minio:9000']
+    scrape_interval: 30s
+
+  # LangFuse MinIO bucket-level metrics (optional, more granular)
+  - job_name: 'langfuse-minio-bucket'
+    metrics_path: /minio/v2/metrics/bucket
+    static_configs:
+      - targets: ['langfuse-minio:9000']
+    scrape_interval: 60s 
+    
+  # ── Langfuse health check via Blackbox Exporter ────────────────────────
+  # Blackbox exporter probes the URL and returns proper Prometheus metrics:
+  # - probe_success (1=up, 0=down)
+  # - probe_duration_seconds (response time)
+  # - probe_http_status_code (200, 503, etc)
+  - job_name: 'langfuse-health'
+    metrics_path: /probe
+    params:
+      module: [http_200]
+      target: ['http://langfuse:3000/api/public/health']
+    static_configs:
+      - targets: ['blackbox-exporter:9115']
+    relabel_configs:
+      # Make the target label show the actual URL being probed
+      - source_labels: [__param_target]
+        target_label: instance

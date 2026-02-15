@@ -1,0 +1,595 @@
+configs:
+  mysql_schema:
+    file: ../databases/mysql_schema.sql
+  prometheus_config:
+    file: ../observability/prometheus/prometheus-v1.yml
+  clickhouse_config:
+    file: ../observability/clickhouse/clickhouse_config.xml
+  clickhouse_prometheus_config:
+    file: ../observability/clickhouse/prometheus.xml  
+  jmx_exporter_config:
+    file: ../observability/jmx_exporter/jmx-config.yml
+  blackbox_config:
+    file: ../observability/blackbox/blackbox-config.yml
+
+services:
+  # Neo4j Knowledge Graph
+  neo4j-kg:
+    image: neo4j:5.15-community
+    ports:
+      - target: 7474
+        published: 7474
+        protocol: tcp
+        mode: host  # Use host mode instead of ingress
+      - target: 7687
+        published: 7687
+        protocol: tcp
+        mode: host
+    secrets:
+      - NEO4J_KG_PASSWORD
+    # Neo4j doesn't support *_FILE for NEO4J_AUTH, so we build it at runtime from the Swarm secret.
+    entrypoint:
+      - /bin/bash
+      - -lc
+      - |
+        export PATH="/var/lib/neo4j/bin:$$PATH"
+        export NEO4J_AUTH="neo4j/$$(cat /run/secrets/NEO4J_KG_PASSWORD)"
+
+        # Write JMX password file from secret (required format: "username password")
+        # JMX password file must be owned by neo4j and chmod 600
+        JMX_PASS=$$(cat /run/secrets/NEO4J_KG_PASSWORD)
+        mkdir -p /var/lib/neo4j/conf
+        printf "neo4j %s\n" "$$JMX_PASS" > /var/lib/neo4j/conf/jmx.password
+        printf "neo4j readwrite\n" > /var/lib/neo4j/conf/jmx.access
+        chmod 600 /var/lib/neo4j/conf/jmx.password
+        chmod 600 /var/lib/neo4j/conf/jmx.access
+
+        exec /startup/docker-entrypoint.sh neo4j
+    environment:
+      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_dbms_memory_pagecache_size=512M
+      # Enable JMX with authentication on port 9999
+      - NEO4J_server_jvm_additional=-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9999 -Dcom.sun.management.jmxremote.authenticate=true -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.password.file=/var/lib/neo4j/conf/jmx.password -Dcom.sun.management.jmxremote.access.file=/var/lib/neo4j/conf/jmx.access -Djava.rmi.server.hostname=neo4j-kg
+    volumes:
+      - neo4j-kg-data:/data
+      - neo4j-kg-logs:/logs
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD-SHELL", 'cypher-shell -u neo4j -p "$$(cat /run/secrets/NEO4J_KG_PASSWORD)" "RETURN 1"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── JMX Exporter Sidecar ──────────────────────────────────────────────
+  # Connects to Neo4j JMX port and exposes metrics for Prometheus
+  neo4j-kg-jmx-exporter:
+    image: bitnami/jmx-exporter:latest
+    secrets:
+      - NEO4J_KG_PASSWORD
+    environment:
+      # JMX credentials read via entrypoint from secret file
+      # bitnami image uses JMX_HOST, JMX_PORT env vars
+      - JMX_USERNAME=neo4j
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        # Read password from Docker Swarm secret and export for JMX exporter
+        export JMX_PASSWORD=$$(cat /run/secrets/NEO4J_KG_PASSWORD)
+
+        # Substitute env vars into the config template
+        # Replace ${JMX_USERNAME} and ${JMX_PASSWORD} in config
+        sed -e "s|\$${JMX_USERNAME}|$$JMX_USERNAME|g" \
+            -e "s|\$${JMX_PASSWORD}|$$JMX_PASSWORD|g" \
+            /jmx-config-template.yml > /opt/bitnami/jmx-exporter/config.yml
+
+        exec java -jar /opt/bitnami/jmx-exporter/jmx_prometheus_standalone.jar \
+          9150 /opt/bitnami/jmx-exporter/config.yml
+    configs:
+      - source: jmx_exporter_config
+        target: /jmx-config-template.yml
+    networks:
+      - health-insurance-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 15s   # Wait for Neo4j JMX to be ready
+
+  # Neo4j Context Graph
+  neo4j-cg:
+    image: neo4j:5.15-community
+    ports:
+      - target: 7474
+        published: 7475
+        protocol: tcp
+        mode: host  # Use host mode instead of ingress
+      - target: 7687
+        published: 7688
+        protocol: tcp
+        mode: host  # Use host mode instead of ingress
+    secrets:
+      - NEO4J_CG_PASSWORD
+    entrypoint:
+      - /bin/bash
+      - -lc
+      - |
+        export PATH="/var/lib/neo4j/bin:$$PATH"
+        export NEO4J_AUTH="neo4j/$$(cat /run/secrets/NEO4J_CG_PASSWORD)"
+
+        # Write JMX password file from secret (required format: "username password")
+        # JMX password file must be owned by neo4j and chmod 600
+        JMX_PASS=$$(cat /run/secrets/NEO4J_CG_PASSWORD)
+        mkdir -p /var/lib/neo4j/conf
+        printf "neo4j %s\n" "$$JMX_PASS" > /var/lib/neo4j/conf/jmx.password
+        printf "neo4j readwrite\n" > /var/lib/neo4j/conf/jmx.access
+        chmod 600 /var/lib/neo4j/conf/jmx.password
+        chmod 600 /var/lib/neo4j/conf/jmx.access
+
+        exec /startup/docker-entrypoint.sh neo4j
+    environment:
+      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_dbms_memory_pagecache_size=512M
+      # Enable JMX with authentication on port 9999
+      - NEO4J_server_jvm_additional=-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9999 -Dcom.sun.management.jmxremote.authenticate=true -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.password.file=/var/lib/neo4j/conf/jmx.password -Dcom.sun.management.jmxremote.access.file=/var/lib/neo4j/conf/jmx.access -Djava.rmi.server.hostname=neo4j-cg
+    volumes:
+      - neo4j-cg-data:/data
+      - neo4j-cg-logs:/logs
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD-SHELL", 'cypher-shell -u neo4j -p "$$(cat /run/secrets/NEO4J_CG_PASSWORD)" "RETURN 1"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── JMX Exporter Sidecar ──────────────────────────────────────────────
+  # Connects to Neo4j JMX port and exposes metrics for Prometheus
+  neo4j-cg-jmx-exporter:
+    image: bitnami/jmx-exporter:latest
+    secrets:
+      - NEO4J_CG_PASSWORD
+    environment:
+      # JMX credentials read via entrypoint from secret file
+      # bitnami image uses JMX_HOST, JMX_PORT env vars
+      - JMX_USERNAME=neo4j
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        # Read password from Docker Swarm secret and export for JMX exporter
+        export JMX_PASSWORD=$$(cat /run/secrets/NEO4J_CG_PASSWORD)
+
+        # Substitute env vars into the config template
+        # Replace ${JMX_USERNAME} and ${JMX_PASSWORD} in config
+        sed -e "s|\$${JMX_USERNAME}|$$JMX_USERNAME|g" \
+            -e "s|\$${JMX_PASSWORD}|$$JMX_PASSWORD|g" \
+            /jmx-config-template.yml > /opt/bitnami/jmx-exporter/config.yml
+
+        exec java -jar /opt/bitnami/jmx-exporter/jmx_prometheus_standalone.jar \
+          9150 /opt/bitnami/jmx-exporter/config.yml
+    configs:
+      - source: jmx_exporter_config
+        target: /jmx-config-template.yml
+    networks:
+      - health-insurance-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 15s   # Wait for Neo4j JMX to be ready
+
+  # MySQL
+  mysql:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - target: 3306
+        published: 3306
+        protocol: tcp
+        mode: host  # Use host mode instead of ingress
+    secrets:
+      - MYSQL_ROOT_PASSWORD
+      - MYSQL_PASSWORD
+    environment:
+      - MYSQL_ROOT_PASSWORD_FILE=/run/secrets/MYSQL_ROOT_PASSWORD
+      - MYSQL_DATABASE=health_insurance
+      - MYSQL_USER=app_user
+      - MYSQL_PASSWORD_FILE=/run/secrets/MYSQL_PASSWORD
+    entrypoint:
+      - sh
+      - -c
+      - |
+        # The following is to create Prometheus exporter grant permissions
+        # 1. Read the password from the secret file
+        export EXPORTER_PASS=$(cat /run/secrets/MYSQL_PASSWORD)
+
+        # 2. Create the SQL file dynamically in the init directory
+        echo "CREATE USER IF NOT EXISTS 'exporter'@'%' IDENTIFIED BY '$EXPORTER_PASS'; GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'exporter'@'%'; FLUSH PRIVILEGES;" > /docker-entrypoint-initdb.d/init_exporter.sql
+
+        # 3. Hand over control to the official MySQL startup script
+        exec /usr/local/bin/docker-entrypoint.sh mysqld
+    configs:
+      - source: mysql_schema
+        target: /docker-entrypoint-initdb.d/schema.sql
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD-SHELL", 'mysqladmin ping -h localhost -u root -p"$$(cat /run/secrets/MYSQL_ROOT_PASSWORD)"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  #Prometheus MySQL Metrics Bridge
+  mysqld-exporter:
+    image: bitnami/mysqld-exporter:latest
+    secrets:
+      - MYSQL_PASSWORD
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        # Read the secret
+        DB_PW="$(cat /run/secrets/MYSQL_PASSWORD)"
+        
+        # Write the file using 'cat <<EOF' to guarantee correct newlines
+        cat <<EOF > /tmp/my.cnf
+        [client]
+        user=exporter
+        password=$DB_PW
+        host=mysql
+        port=3306
+        EOF
+        
+        # Verify the file content (safely masking password) in logs
+        echo "Created config file at /tmp/my.cnf:"
+        cat /tmp/my.cnf | sed 's/password=.*/password=REDACTED/'
+
+        # Start exporter pointing EXPLICITLY to our new file
+        exec /opt/bitnami/mysqld-exporter/bin/mysqld_exporter --config.my-cnf=/tmp/my.cnf
+    ports:
+      - target: 9104
+        published: 9104
+        protocol: tcp
+        mode: host
+    networks:
+      - health-insurance-network
+    depends_on:
+      - mysql
+
+  # Chroma Vector Database
+  chroma:
+    image: chroma-with-curl:latest
+    command: ["run", "--host", "0.0.0.0", "--port", "8000", "--path", "/chroma/chroma"]
+    ports:
+      - target: 8000
+        published: 8000
+        protocol: tcp
+        mode: host
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - chroma-data:/chroma/chroma
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/v2/heartbeat >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 5s
+  
+  # LangFuse (Observability Components)
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    secrets:
+      - CLICKHOUSE_PASSWORD
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/CLICKHOUSE_PASSWORD
+    configs:
+      - source: clickhouse_config
+        target: /etc/clickhouse-server/config.d/keeper.xml
+      - source: clickhouse_prometheus_config
+        target: /etc/clickhouse-server/config.d/prometheus.xml
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q 'Ok'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  langfuse-redis:
+    image: redis:7.2-alpine
+    networks:
+      - health-insurance-network
+
+   # ── Langfuse Redis Exporter ────────────────────────────────────────────
+  langfuse-redis-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      - REDIS_ADDR=redis://langfuse-redis:6379
+    networks:
+      - health-insurance-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  langfuse-minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    secrets:
+      - MINIO_ROOT_PASSWORD
+    environment:
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD_FILE=/run/secrets/MINIO_ROOT_PASSWORD
+      - MINIO_PROMETHEUS_AUTH_TYPE=public
+      - MINIO_PROMETHEUS_JOB_ID=langfuse-minio  
+    volumes:
+      - minio-data:/data
+    networks:
+      - health-insurance-network
+
+  langfuse-db:
+    image: postgres:15
+    secrets:
+      - LANGFUSE_DB_PASSWORD
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD_FILE=/run/secrets/LANGFUSE_DB_PASSWORD
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Langfuse Postgres Exporter ─────────────────────────────────────────
+  langfuse-postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    secrets:
+      - LANGFUSE_DB_PASSWORD
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Build the DATA_SOURCE_NAME from secret - never touches env var
+        DB_PASS=$$(cat /run/secrets/LANGFUSE_DB_PASSWORD)
+        export DATA_SOURCE_NAME="postgresql://langfuse:$$DB_PASS@langfuse-db:5432/langfuse?sslmode=disable"
+        exec /bin/postgres_exporter
+    environment:
+      - PG_EXPORTER_AUTO_DISCOVER_DATABASES=true
+    networks:
+      - health-insurance-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s   # Wait for postgres to be ready
+  
+  langfuse:
+    image: langfuse/langfuse:latest
+    ports:
+      - target: 3000
+        published: 3001
+        protocol: tcp
+        mode: host  # Use host mode instead of ingress
+    environment:
+      - HOSTNAME=0.0.0.0   # <--- ADD THIS (Forces listening on all interfaces)
+      - PORT=3000          # <--- Explicitly set the internal port
+    secrets:
+      - LANGFUSE_DB_PASSWORD
+      - LANGFUSE_NEXTAUTH_SECRET
+      - LANGFUSE_SALT
+      - LANGFUSE_ENCRYPT_KEY
+      - CLICKHOUSE_PASSWORD
+      - MINIO_ROOT_PASSWORD
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        DB_PW="$$(cat /run/secrets/LANGFUSE_DB_PASSWORD)";
+        CH_PW="$$(cat /run/secrets/CLICKHOUSE_PASSWORD)";
+        MIO_PW="$$(cat /run/secrets/MINIO_ROOT_PASSWORD)";
+
+        # --- Authentication & Database ---
+        export CLICKHOUSE_USER="langfuse";
+        export CLICKHOUSE_PASSWORD="$${CH_PW}";
+        export DATABASE_URL="postgresql://langfuse:$${DB_PW}@langfuse-db:5432/langfuse";
+        export CLICKHOUSE_URL="http://langfuse:$${CH_PW}@clickhouse:8123/langfuse";
+        export CLICKHOUSE_MIGRATION_URL="clickhouse://langfuse:$${CH_PW}@clickhouse:9000/langfuse";
+        export NEXTAUTH_URL="http://localhost:3001";
+        export NEXTAUTH_SECRET="$$(cat /run/secrets/LANGFUSE_NEXTAUTH_SECRET)";
+        export SALT="$$(cat /run/secrets/LANGFUSE_SALT)";
+        export ENCRYPTION_KEY="$$(cat /run/secrets/LANGFUSE_ENCRYPT_KEY)";
+        
+        # --- REDIS CONFIG (Required) ---
+        export REDIS_HOST="langfuse-redis";
+        export REDIS_PORT="6379";
+        export REDIS_AUTH="";
+
+        # --- NEW: BLOB STORAGE CONFIG (Required) ---
+        # We use the MinIO service defined below
+        export LANGFUSE_S3_EVENT_UPLOAD_BUCKET="langfuse";
+        export LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT="http://langfuse-minio:9000";
+        export LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID="minio";
+        export LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY="$${MIO_PW}";
+        export LANGFUSE_S3_EVENT_UPLOAD_REGION="us-east-1";
+        export LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE="true";
+
+        #
+        test -n "$${DATABASE_URL}" || (echo "DATABASE_URL not set" && exit 1);
+        test -n "$${CLICKHOUSE_URL}" || (echo "CLICKHOUSE_URL not set" && exit 1);
+        test -n "$${CLICKHOUSE_MIGRATION_URL}" || (echo "CLICKHOUSE_MIGRATION_URL not set" && exit 1);
+        # --- ADDED: WAIT FOR POSTGRES ---
+        echo "Waiting for Postgres (langfuse-db:5432)..."
+        # Loop until netcat (nc) successfully connects to the DB host and port
+        until nc -z langfuse-db 5432; do
+          echo "Postgres is unavailable - sleeping"
+          sleep 2
+        done
+        echo "Postgres is up!"
+        # --------------------------------
+        exec ./web/entrypoint.sh node web/server.js
+    depends_on:
+      - langfuse-db
+      - clickhouse
+      - langfuse-redis
+      - langfuse-minio
+    networks:
+      - health-insurance-network
+    deploy:
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      #test: ["CMD-SHELL", "/usr/bin/wget -q -O /dev/null http://127.0.0.1:3000/api/public/health || exit 1"]
+      test: ["CMD-SHELL", "/usr/bin/wget --spider -S http://127.0.0.1:3000/api/public/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ── Blackbox Exporter for Prometheus HTTP Health Probing ─────────────────────
+  # Probes HTTP endpoints and returns metrics about the response
+  # Perfect for health checks that return JSON instead of Prometheus format
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    configs:
+      - source: blackbox_config
+        target: /etc/blackbox_exporter/config.yml
+    networks:
+      - health-insurance-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  # Prometheus (Metrics)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - target: 9090
+        published: 9090
+        protocol: tcp
+        mode: host
+    secrets:
+      - CLICKHOUSE_PASSWORD
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    volumes:
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Grafana (Dashboards)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - target: 3000
+        published: 3002
+        protocol: tcp
+        mode: host
+    secrets:
+      - GRAFANA_ADMIN_PASSWORD
+    environment:
+      # Grafana supports reading secrets from files via *__FILE (double underscore).
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/GRAFANA_ADMIN_PASSWORD
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ../observability/grafana/datasources:/etc/grafana/provisioning/datasources
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  neo4j-kg-data:
+  neo4j-kg-logs:
+  neo4j-cg-data:
+  neo4j-cg-logs:
+  mysql-data:
+  chroma-data:
+  clickhouse-data:
+  minio-data:
+  langfuse-db-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  health-insurance-network:
+    driver: overlay
+
+# ============================================
+# Secrets (Docker Swarm external secrets)
+# ============================================
+secrets:
+  NEO4J_KG_PASSWORD:
+    external: true
+  NEO4J_CG_PASSWORD:
+    external: true
+  MYSQL_ROOT_PASSWORD:
+    external: true
+  MYSQL_PASSWORD:
+    external: true
+  CLICKHOUSE_PASSWORD:
+    external: true
+  MINIO_ROOT_PASSWORD:
+    external: true
+  LANGFUSE_DB_PASSWORD:
+    external: true
+  LANGFUSE_NEXTAUTH_SECRET:
+    external: true
+  LANGFUSE_SALT:
+    external: true
+  LANGFUSE_ENCRYPT_KEY:
+    external: true
+  GRAFANA_ADMIN_PASSWORD:
+    external: true
+  SECRET_KEY:
+    external: true
+  OPENAI_API_KEY:
+    external: true
+  ANTHROPIC_API_KEY:
+    external: true
