@@ -10,6 +10,3 @@ rails:
     flows:
       - self check input
       - refuse unrelated topics
-  output:
-    flows:
-      - self check output
