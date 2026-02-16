@@ -10,7 +10,7 @@ import uuid
 import time
 from typing import Dict, Any, Optional
 
-import bleach
+import nh3
 
 from security.nemo_guardrails_integration import get_nemo_filter
 from security.presidio_memory_security import get_presidio_security
@@ -183,12 +183,10 @@ def process_user_request(
         # ============================================
         logger.info(f"[{session_id}] Applying Control 3: Input Sanitization")
         
-        # Basic sanitization (XSS prevention)
-        sanitized_input = bleach.clean(
+        sanitized_input = nh3.clean(
             sanitized_input,
-            tags=[],
-            attributes={},
-            strip=True
+            tags=set(),
+            attributes={}
         )
         
         # Track sanitization operation
