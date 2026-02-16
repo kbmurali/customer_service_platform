@@ -41,9 +41,7 @@ def process_user_request(
     session_id: str,
     user_id: str,
     user_role: Optional[str] = None,
-    member_id: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    user_agent: Optional[str] = None
+    member_id: Optional[str] = None
 ) -> str:
     """
     Process user request with complete security validation.
@@ -361,9 +359,7 @@ def process_user_request_async(
     session_id: str,
     user_id: str,
     user_role: Optional[str] = None,
-    member_id: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    user_agent: Optional[str] = None
+    member_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Async version of process_user_request that returns detailed results.
@@ -396,9 +392,7 @@ def process_user_request_async(
             session_id=session_id,
             user_id=user_id,
             user_role=user_role,
-            member_id=member_id,
-            ip_address=ip_address,
-            user_agent=user_agent
+            member_id=member_id
         )
         
         # Mark all checks as passed if we got here

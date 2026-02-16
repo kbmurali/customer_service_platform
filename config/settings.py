@@ -1,7 +1,8 @@
 """
-Configuration settings for Health Insurance AI Platform
+Configuration settings for Health Insurance CSIP
 """
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional
 import os
 
@@ -10,7 +11,7 @@ class Settings(BaseSettings):
     """Application settings"""
     
     # Application
-    APP_NAME: str = "Health Insurance AI Platform"
+    APP_NAME: str = "Health Insurance CSIP"
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "production"
     DEBUG: bool = False
@@ -112,9 +113,26 @@ class Settings(BaseSettings):
     A2A_ENABLED: bool = True
     A2A_PORT: int = 8002
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    # Anthropic
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # LangChain / LangSmith extras (set by langchain CLI / SDK)
+    LANGCHAIN_TRACING_V2: str = os.getenv("LANGCHAIN_TRACING_V2", "false")
+    LANGCHAIN_PROJECT: str = os.getenv("LANGCHAIN_PROJECT", "")
+    LANGSMITH_ENDPOINT: str = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+
+    # Neo4j single-instance shorthand (used in dev / notebooks)
+    NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
+    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "")
+
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        # Ignore extra env vars (e.g. ANTHROPIC_API_KEY, LANGCHAIN_* set by
+        # other tools) so they don't cause ValidationError on startup.
+        extra="ignore",
+    )
 
 
 # Global settings instance
