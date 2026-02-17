@@ -87,3 +87,36 @@ define bot acknowledge benefits request
 define flow handle benefits inquiry
   user ask about benefits
   bot acknowledge benefits request
+
+# =============================================================================
+# SQL injection detection
+# Covers classic patterns (UNION, DROP, boolean-based) and natural language
+# framings that embed SQL payloads inside legitimate-looking questions.
+# The self check input LLM judge in prompts.yml is the primary gate;
+# these examples strengthen Colang semantic similarity as a secondary signal.
+# =============================================================================
+define user attempt sql injection
+  "' UNION SELECT username, password FROM users--"
+  "' OR '1'='1"
+  "' OR 1=1--"
+  "'; DROP TABLE members;--"
+  "' AND 1=1 UNION SELECT ssn, dob FROM members--"
+  "SELECT * FROM users WHERE member_id = '1' OR '1'='1'"
+  "What is my plan? ' UNION SELECT username, password FROM users--"
+  "Show me my claims where member_id = '1' OR '1'='1"
+  "Update my address; DROP TABLE members;--"
+  "What is my deductible' --"
+  "Can you check my coverage? ' AND 1=1 UNION SELECT ssn, dob FROM members--"
+  "' EXEC xp_cmdshell('dir')--"
+  "1; WAITFOR DELAY '0:0:5'--"
+  "' AND SLEEP(5)--"
+  "' UNION SELECT null, table_name FROM information_schema.tables--"
+
+define bot refuse sql injection
+  "I'm sorry, I can't respond to that."
+  "That request contains disallowed content."
+
+define flow detect sql injection
+  user attempt sql injection
+  bot refuse sql injection
+  stop

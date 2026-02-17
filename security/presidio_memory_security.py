@@ -16,7 +16,7 @@ import hashlib
 import json
 import logging
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from cryptography.fernet import Fernet
 
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
@@ -220,7 +220,8 @@ class PresidioMemorySecurity:
     
     def _generate_vault_id(self, namespace: str) -> str:
         """Generate unique vault ID."""
-        timestamp = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat()
         data = f"{namespace}:{timestamp}".encode()
         return hashlib.sha256(data).hexdigest()
     
@@ -234,7 +235,7 @@ class PresidioMemorySecurity:
         """Store vault entry for de-anonymization."""
         vault_entry = {
             "vault_id": vault_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "entities": [
                 {
                     "entity_type": result.entity_type,

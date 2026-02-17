@@ -10,3 +10,4 @@ rails:
     flows:
       - self check input
       - refuse unrelated topics
+      - detect sql injection

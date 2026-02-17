@@ -25,3 +25,25 @@ prompts:
       Does the message violate any policy? Answer only "yes" or "no".
 
       Answer:
+
+  - task: detect_sql_injection
+    content: |
+      Your task is to check if the user message below contains SQL injection
+      patterns or attempts to manipulate a database or AI agent through
+      SQL-style commands. Answer "yes" if it violates, "no" if safe.
+
+      Patterns to detect:
+      1. SQL keywords used adversarially: UNION, SELECT, DROP, INSERT,
+         DELETE, UPDATE, EXEC, CAST, CONVERT, SLEEP, WAITFOR
+      2. SQL comment sequences: --, /*, */
+      3. Attempts to terminate or chain queries: ; or stacked statements
+      4. Boolean-based patterns: OR 1=1, AND 1=1, OR 'a'='a'
+      5. SQL functions used as injection vectors: CHAR(), ASCII(), SUBSTRING()
+      6. Attempts to reference database internals: information_schema,
+         sys.tables, pg_tables, sqlite_master
+
+      User message: "{{ user_input }}"
+
+      Does the message contain SQL injection patterns? Answer only "yes" or "no".
+
+      Answer:

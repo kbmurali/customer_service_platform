@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 _MAX_INPUT_LENGTH = 1000
 _MAX_SPECIAL_CHAR_RATIO = 0.3
 _BASE64_PATTERN = re.compile(r'[A-Za-z0-9+/]{50,}={0,2}')
+# Catches SQL comment sequences: '--' at end of line, '/*', '*/', or quote followed by '--'
+_SQL_COMMENT_PATTERN = re.compile(r"('?\s*--)|(/\*)|(\*/)")
 
 
 def _sanity_check(message: str) -> Tuple[bool, str]:
@@ -46,6 +48,8 @@ def _sanity_check(message: str) -> Tuple[bool, str]:
         return True, "input exceeds maximum allowed length"
     if _BASE64_PATTERN.search(message):
         return True, "potentially encoded content detected"
+    if _SQL_COMMENT_PATTERN.search(message):
+        return True, "sql injection attempt detected"
     special_char_ratio = sum(
         1 for c in message if not c.isalnum() and not c.isspace()
     ) / max(len(message), 1)
@@ -72,7 +76,7 @@ _HEALTH_INSURANCE_TERMS = [
     r"\b(claim|claims|reimbursement|prior\s+authorization|referral)\b",
     r"\b(dental|vision|mental\s+health|telehealth|therapy)\b",
     # Member identity
-    r"\b(member\s+id|member\s+number|insurance\s+card|group\s+number)\b",
+    r"\b(member|member\s+id|member\s+number|insurance\s+card|group\s+number)\b",
     r"\b(enroll|enrollment|open\s+enrollment|dependent|subscriber)\b",
     r"\b(hmo|ppo|epo|hdhp|hsa|fsa)\b",
     # Sensitive data terms — jailbreak attempts targeting this platform
@@ -111,16 +115,38 @@ _JAILBREAK_SIGNALS = [
     "forget your", "hypothetically", "roleplay", "fictional", "grandmother",
 ]
 
+_SQL_INJECTION_SIGNALS = [
+    "union", "select", "drop", "insert", "delete", "update",
+    "exec", "cast", "waitfor", "sleep", "--", "/*", "*/",
+    "or 1=1", "and 1=1", "information_schema",
+    "sys.tables", "pg_tables", "sqlite_master", "xp_cmdshell",
+]
+
 
 def _classify_reason(message: str) -> str:
     """
     Infer block reason for messages blocked by NeMo.
     By the time NeMo runs, off-topic messages are already caught by the
-    domain whitelist, so anything NeMo blocks is a jailbreak or policy violation.
+    domain whitelist, so anything NeMo blocks is a jailbreak, SQL injection,
+    or other policy violation.
     """
     lowered = message.lower()
+    
+    # Normalize quotes for SQL pattern matching
+    normalized = lowered.replace("'", "").replace('"', '').replace('`', '')
+    
+    # Check for SQL injection patterns first (more specific)
+    if any(signal in lowered for signal in _SQL_INJECTION_SIGNALS):
+        return "sql injection attempt detected"
+    
+    # Also check normalized version for patterns like OR '1'='1'
+    if "or 1=1" in normalized or "and 1=1" in normalized:
+        return "sql injection attempt detected"
+    
+    # Then check for jailbreak patterns
     if any(signal in lowered for signal in _JAILBREAK_SIGNALS):
         return "jailbreak attempt detected"
+    
     return "policy violation"
 
 
