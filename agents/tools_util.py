@@ -4,9 +4,13 @@ import json
 import functools
 import inspect
 
+from langchain_core.tools import tool
+
 from databases.context_graph_data_access import get_cg_data_access
+from databases.chroma_vector_data_access import get_chroma_data_access
 from agents.security import RBACService
 from security.presidio_memory_security import get_presidio_security
+from security.nh3_sanitization import sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +19,9 @@ rbac_service = RBACService()
 
 # Initialize Presidio security
 presidio_security = get_presidio_security()
+
+# Initialize Chroma vector data access for semantic search
+chroma_data_access = get_chroma_data_access()
 
 # ============================================
 # Permission Decorator
@@ -161,3 +168,185 @@ def scrub_output(text: str, session_id: str) -> str:
     except Exception as e:
         logger.error(f"Presidio scrubbing failed: {e}")
         return text
+    
+# ============================================
+# Semantic Search Tools (Chroma Vector DB)
+# ============================================
+
+@tool
+@require_permissions("POLICY", "READ")
+def search_policy_info(query: str, user_role: str, plan_type: str = "", session_id: str = "default") -> str:
+    """
+    Semantic search over policy documents in Chroma vector database.
+
+    Searches the 'policies' collection which contains policy text with plan
+    details, premiums, deductibles, and out-of-pocket maximums.
+
+    Args:
+        query:     Natural-language question (e.g. "What is my deductible?")
+        user_role: The role of the user making the request
+        plan_type: Optional filter – HMO, PPO, EPO, POS
+        session_id: Session ID for audit and scrubbing
+
+    Returns:
+        JSON string with semantically matched policy documents
+    """
+    from datetime import datetime
+    start_time = datetime.now()
+
+    # Sanitize inputs
+    query = sanitize_text(query)
+    plan_type = sanitize_text(plan_type) if plan_type else ""
+
+    try:
+        results = chroma_data_access.search_policies(
+            query=query,
+            n_results=5,
+            plan_type=plan_type,
+        )
+
+        output = json.dumps({
+            "query": query,
+            "count": len(results),
+            "results": results,
+        }, indent=2)
+
+        scrubbed_output = scrub_output(output, session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        inputs = { "user_role": user_role, "query": query }
+        track_tool_execution_in_cg(session_id, "search_policy_info", inputs, status="success", execution_time_ms=execution_time)
+
+        return scrubbed_output
+
+    except Exception as e:
+        logger.error(f"search_policy_info failed: {e}")
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        inputs = { "user_role": user_role, "query": query }
+        error = str(e)
+        track_tool_execution_in_cg(session_id, "search_policy_info", inputs, status="failed", execution_time_ms=execution_time, error=error)
+        return json.dumps({"error": error})
+
+
+@tool
+@require_permissions("PA", "READ")
+def search_medical_codes(
+    query: str,
+    user_role: str,
+    code_type: str = "both",
+    session_id: str = "default",
+) -> str:
+    """
+    Semantic search over CPT procedure codes and ICD-10 diagnosis codes.
+
+    Searches the 'procedures' and/or 'diagnoses' Chroma collections.
+
+    Args:
+        query:     Natural-language description (e.g. "knee replacement surgery")
+        user_role: The role of the user making the request
+        code_type: "procedure", "diagnosis", or "both" (default)
+        session_id: Session ID for audit and scrubbing
+
+    Returns:
+        JSON string with matched CPT/ICD-10 codes and descriptions
+    """
+    from datetime import datetime
+    start_time = datetime.now()
+
+    query = sanitize_text(query)
+    code_type = sanitize_text(code_type) if code_type else "both"
+
+    try:
+        result_data: dict = {"query": query}
+
+        if code_type in ("procedure", "both"):
+            result_data["procedures"] = chroma_data_access.search_procedures(
+                query=query, n_results=5
+            )
+
+        if code_type in ("diagnosis", "both"):
+            result_data["diagnoses"] = chroma_data_access.search_diagnoses(
+                query=query, n_results=5
+            )
+
+        output = json.dumps(result_data, indent=2)
+        scrubbed_output = scrub_output(output, session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        inputs = { "user_role": user_role, "query": query }
+        track_tool_execution_in_cg(session_id, "search_medical_codes", inputs, status="success", execution_time_ms=execution_time)
+
+        return scrubbed_output
+
+    except Exception as e:
+        logger.error(f"search_medical_codes failed: {e}")
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        inputs = { "user_role": user_role, "query": query }
+        error = str(e)
+        track_tool_execution_in_cg(session_id, "search_medical_codes", inputs, status="failed", execution_time_ms=execution_time, error=error)
+        return json.dumps({"error": error})
+
+
+@tool
+@require_permissions("KB", "READ")
+def search_knowledge_base(
+    query: str,
+    user_role: str,
+    source: str = "all",
+    session_id: str = "default",
+) -> str:
+    """
+    Semantic search over FAQs, clinical guidelines, and regulations.
+
+    Searches the 'faqs', 'clinical_guidelines', and 'regulations' Chroma
+    collections to find relevant knowledge-base content.
+
+    Args:
+        query:      Natural-language question
+        user_role:  The role of the user making the request
+        source:     "faqs", "guidelines", "regulations", or "all" (default)
+        session_id: Session ID for audit and scrubbing
+
+    Returns:
+        JSON string with matched knowledge-base documents
+    """
+    from datetime import datetime
+    start_time = datetime.now()
+
+    query = sanitize_text(query)
+    source = sanitize_text(source) if source else "all"
+
+    try:
+        result_data: dict = {"query": query}
+
+        if source in ("faqs", "all"):
+            result_data["faqs"] = chroma_data_access.search_faqs(
+                query=query, n_results=5
+            )
+
+        if source in ("guidelines", "all"):
+            result_data["clinical_guidelines"] = chroma_data_access.search_clinical_guidelines(
+                query=query, n_results=5
+            )
+
+        if source in ("regulations", "all"):
+            result_data["regulations"] = chroma_data_access.search_regulations(
+                query=query, n_results=3
+            )
+
+        output = json.dumps(result_data, indent=2)
+        scrubbed_output = scrub_output(output, session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        inputs = { "user_role": user_role, "query": query }
+        track_tool_execution_in_cg(session_id, "search_knowledge_base", inputs, status="success", execution_time_ms=execution_time)
+
+        return scrubbed_output
+
+    except Exception as e:
+        logger.error(f"search_knowledge_base failed: {e}")
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        inputs = { "user_role": user_role, "query": query }
+        error = str(e)
+        track_tool_execution_in_cg(session_id, "search_medisearch_knowledge_basecal_codes", inputs, status="failed", execution_time_ms=execution_time, error=error)
+        return json.dumps({"error": error})

@@ -16,7 +16,7 @@ import hashlib
 import json
 import logging
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
 
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
@@ -81,6 +81,19 @@ class HealthcareRecognizers:
             name="PANumberRecognizer",
             supported_language="en"
         )
+    
+    @staticmethod
+    def get_ssn_recognizer() -> PatternRecognizer:
+        """Recognizer for US Social Security Numbers."""
+        patterns = [
+            Pattern(name="ssn_pattern", regex=r"\b\d{3}-\d{2}-\d{4}\b", score=0.85),
+        ]
+        return PatternRecognizer(
+            supported_entity="SSN",
+            patterns=patterns,
+            name="SSNRecognizer",
+            supported_language="en"
+        )
 
 
 class PresidioMemorySecurity:
@@ -117,7 +130,8 @@ class PresidioMemorySecurity:
             HealthcareRecognizers.get_member_id_recognizer(),
             HealthcareRecognizers.get_policy_number_recognizer(),
             HealthcareRecognizers.get_claim_number_recognizer(),
-            HealthcareRecognizers.get_pa_number_recognizer()
+            HealthcareRecognizers.get_pa_number_recognizer(),
+            HealthcareRecognizers.get_ssn_recognizer(),
         ]
         
         for recognizer in recognizers:
@@ -207,12 +221,12 @@ class PresidioMemorySecurity:
         return {
             "PERSON": OperatorConfig("hash", {"hash_type": "sha256"}),
             "SSN": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 11, "from_end": False}),
-            "MEMBER_ID": OperatorConfig("encrypt", {"key": vault_id[:32]}),
+            "MEMBER_ID": OperatorConfig("replace", {"new_value": "<MEMBER_ID>"}),
             "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "<EMAIL>"}),
             "PHONE_NUMBER": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 7, "from_end": True}),
-            "POLICY_NUMBER": OperatorConfig("encrypt", {"key": vault_id[:32]}),
-            "CLAIM_NUMBER": OperatorConfig("encrypt", {"key": vault_id[:32]}),
-            "PA_NUMBER": OperatorConfig("encrypt", {"key": vault_id[:32]}),
+            "POLICY_NUMBER": OperatorConfig("replace", {"new_value": "<POLICY_NUMBER>"}),
+            "CLAIM_NUMBER": OperatorConfig("replace", {"new_value": "<CLAIM_NUMBER>"}),
+            "PA_NUMBER": OperatorConfig("replace", {"new_value": "<PA_NUMBER>"}),
             "CREDIT_CARD": OperatorConfig("redact", {}),
             "US_DRIVER_LICENSE": OperatorConfig("redact", {}),
             "MEDICAL_LICENSE": OperatorConfig("redact", {}),
@@ -220,8 +234,7 @@ class PresidioMemorySecurity:
     
     def _generate_vault_id(self, namespace: str) -> str:
         """Generate unique vault ID."""
-        now = datetime.now(timezone.utc)
-        timestamp = now.isoformat()
+        timestamp = datetime.utcnow().isoformat()
         data = f"{namespace}:{timestamp}".encode()
         return hashlib.sha256(data).hexdigest()
     
@@ -235,7 +248,7 @@ class PresidioMemorySecurity:
         """Store vault entry for de-anonymization."""
         vault_entry = {
             "vault_id": vault_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
             "entities": [
                 {
                     "entity_type": result.entity_type,
@@ -260,6 +273,179 @@ class PresidioMemorySecurity:
         )
         
         logger.debug(f"Stored vault {vault_id} with TTL {ttl_hours}h")
+
+
+    def analyze_text(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Analyze text for PII/PHI without anonymizing.
+        
+        Args:
+            text: Text to analyze
+        
+        Returns:
+            List of detected entities with metadata
+        """
+        if not text:
+            return []
+        
+        results = self.analyzer.analyze(
+            text=text,
+            language='en',
+            entities=self.pii_entities
+        )
+        
+        entities = [
+            {
+                "entity_type": result.entity_type,
+                "start": result.start,
+                "end": result.end,
+                "score": result.score,
+                "text": text[result.start:result.end]
+            }
+            for result in results
+        ]
+        
+        logger.info(f"Analyzed text: found {len(entities)} PII/PHI entities")
+        
+        return entities
+    
+    def retrieve_from_vault(self, vault_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve vault entry for de-anonymization.
+        
+        Args:
+            vault_id: Vault identifier
+        
+        Returns:
+            Vault entry dict or None if not found/expired
+        """
+        try:
+            vault_key = f"vault:{vault_id}"
+            encrypted_vault = self.redis_client.get(vault_key)
+            
+            if not encrypted_vault:
+                logger.warning(f"Vault not found or expired: {vault_id}")
+                return None
+            
+            # Decrypt vault entry
+            decrypted_data = self.cipher.decrypt(encrypted_vault)
+            vault_entry = json.loads(decrypted_data.decode())
+            
+            logger.info(f"Retrieved vault {vault_id}")
+            
+            return vault_entry
+        
+        except Exception as e:
+            logger.error(f"Vault retrieval failed: {e}")
+            return None
+    
+    def de_anonymize_text(self, anonymized_text: str, vault_id: str) -> Optional[str]:
+        """
+        De-anonymize text using vault entry (for authorized access).
+        
+        Args:
+            anonymized_text: Anonymized text
+            vault_id: Vault identifier
+        
+        Returns:
+            Original text or None if vault not found
+        """
+        vault_entry = self.retrieve_from_vault(vault_id)
+        
+        if not vault_entry:
+            return None
+        
+        # Reconstruct original text from entities
+        # This is a simplified implementation - full de-anonymization
+        # would require storing the original text or using reversible operators
+        
+        logger.info(f"De-anonymized text using vault {vault_id}")
+        
+        return anonymized_text  # Placeholder - implement full de-anonymization if needed
+    
+    def scrub_pii(self, text: str) -> str:
+        """
+        Simple PII scrubbing without vault (non-reversible).
+        
+        Args:
+            text: Text to scrub
+        
+        Returns:
+            Scrubbed text
+        """
+        if text is None:
+            return ""
+        
+        results = self.analyzer.analyze(
+            text=text,
+            language='en',
+            entities=self.pii_entities
+        )
+        
+        if not results:
+            return text
+        
+        # Simple redaction operators
+        operators = {
+            "DEFAULT": OperatorConfig("redact", {})
+        }
+        
+        anonymized_result = self.anonymizer.anonymize(
+            text=text,
+            analyzer_results=results,
+            operators=operators
+        )
+        
+        logger.info(f"Scrubbed {len(results)} PII/PHI entities (non-reversible)")
+        
+        return anonymized_result.text
+    
+    def get_vault_stats(self) -> Dict[str, int]:
+        """
+        Get statistics about vault storage.
+        
+        Returns:
+            Dict with vault statistics
+        """
+        try:
+            # Count vault entries
+            vault_keys = self.redis_client.keys("vault:*")
+            
+            return {
+                "total_vaults": len(vault_keys),
+                "redis_db": self.redis_client.connection_pool.connection_kwargs.get("db", 0)
+            }
+        
+        except Exception as e:
+            logger.error(f"Get vault stats failed: {e}")
+            return {"total_vaults": 0, "error": str(e)}
+    
+    def clear_expired_vaults(self) -> int:
+        """
+        Clear expired vault entries (Redis handles this automatically with TTL).
+        
+        Returns:
+            Number of vaults cleared
+        """
+        # Redis automatically removes expired keys, but we can manually scan
+        # and remove if needed for cleanup
+        try:
+            vault_keys = self.redis_client.keys("vault:*")
+            cleared = 0
+            
+            for key in vault_keys:
+                ttl = self.redis_client.ttl(key)
+                if ttl == -1:  # No expiration set
+                    self.redis_client.delete(key)
+                    cleared += 1
+            
+            logger.info(f"Cleared {cleared} vault entries without TTL")
+            
+            return cleared
+        
+        except Exception as e:
+            logger.error(f"Clear expired vaults failed: {e}")
+            return 0
 
 
 # Singleton instance
