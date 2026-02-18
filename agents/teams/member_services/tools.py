@@ -7,16 +7,25 @@ from datetime import datetime
 
 from langchain_core.tools import tool
 
+from agents.tools_util import ( 
+                               circuit_breaker, 
+                               require_rate_limits, 
+                               require_permissions, 
+                               track_tool_execution_in_cg, 
+                               scrub_output
+                            )
+
 from databases.knowledge_graph_data_access import get_kg_data_access
-from agents.tools_util import require_permissions, track_tool_execution_in_cg, scrub_output
 from security.nh3_sanitization import sanitize_text
 
 logger = logging.getLogger(__name__)
 
 
 @tool
+@circuit_breaker
+@require_rate_limits
 @require_permissions("MEMBER", "READ")
-def member_lookup(member_id: str, user_role: str, session_id: str = "default") -> str:
+def member_lookup(member_id: str, user_role: str, user_id: str = "unknown", session_id: str = "default") -> str:
     """
     Look up member information by member ID.
 
@@ -63,8 +72,10 @@ def member_lookup(member_id: str, user_role: str, session_id: str = "default") -
 
 
 @tool
+@circuit_breaker
+@require_rate_limits
 @require_permissions("MEMBER", "READ")
-def check_eligibility(member_id: str, service_date: str, user_role: str, session_id: str = "default") -> str:
+def check_eligibility(member_id: str, service_date: str, user_role: str, user_id: str = "unknown", session_id: str = "default") -> str:
     """
     Check member eligibility for services on a specific date.
 
@@ -110,8 +121,10 @@ def check_eligibility(member_id: str, service_date: str, user_role: str, session
 
 
 @tool
+@circuit_breaker
+@require_rate_limits
 @require_permissions("MEMBER", "READ")
-def coverage_lookup(member_id: str, procedure_code: str, user_role: str, session_id: str = "default") -> str:
+def coverage_lookup(member_id: str, procedure_code: str, user_role: str, user_id: str = "unknown", session_id: str = "default") -> str:
     """
     Look up coverage details for a member and optionally a specific procedure.
 

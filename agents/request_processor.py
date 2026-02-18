@@ -16,7 +16,8 @@ from security.nemo_guardrails_integration import get_nemo_filter
 from security.presidio_memory_security import get_presidio_security
 from security.guardrails_output_validation import get_output_validator
 from agents.central_supervisor import hierarchical_agent_graph
-from agents.security import rbac_service, audit_logger
+from agents.security import rbac_service, audit_logger, get_rate_limiter, RateLimitError
+from security.approval_workflow import get_approval_workflow, CircuitBreakerError
 
 # Import Prometheus metrics
 from observability.prometheus_metrics import (
@@ -29,6 +30,7 @@ from observability.prometheus_metrics import (
     track_output_validation,
     track_authorization_denial,
     track_audit_log,
+    track_rate_limit_exceeded,
     input_sanitization_operations,
     requests_blocked
 )
@@ -83,6 +85,7 @@ def process_user_request(
     nemo_filter = get_nemo_filter()
     presidio_security = get_presidio_security()
     output_validator = get_output_validator()
+    approval_workflow = get_approval_workflow()
     
     # Log request received
     audit_logger.log_action(
@@ -100,6 +103,32 @@ def process_user_request(
         
         with request_processing_latency.time():
             # ============================================
+            # CONTROL 5 (PRE-CHECK): CIRCUIT BREAKER
+            # ============================================
+            if approval_workflow._is_circuit_breaker_active():
+                logger.critical(
+                    f"[{session_id}] Circuit breaker active – rejecting request"
+                )
+
+                requests_blocked.labels(
+                    control_name="circuit_breaker",
+                    reason="emergency_stop"
+                ).inc()
+
+                audit_logger.log_action(
+                    user_id=user_id,
+                    action="REQUEST_BLOCKED_CIRCUIT_BREAKER",
+                    resource_type="AGENT",
+                    resource_id=session_id,
+                    status="BLOCKED"
+                )
+
+                return (
+                    "The system is temporarily unavailable due to an "
+                    "emergency stop. Please contact your supervisor."
+                )
+                
+            # ============================================
             # CONTROL 1: INPUT VALIDATION (NeMo Guardrails)
             # ============================================
             logger.info(f"[{session_id}] Applying Control 1: Input Validation")
@@ -116,7 +145,7 @@ def process_user_request(
                 )
             validation_latency = time.time() - validation_start
         
-        # Track input validation metrics
+            # Track input validation metrics
             track_input_validation(
                 result=validation_result,
                 user_role=user_role or "unknown",
@@ -177,6 +206,50 @@ def process_user_request(
             return "You do not have permission to query the agent system."
         
         logger.info(f"[{session_id}] Authorization passed")
+        
+        # ============================================
+        # CONTROL 6 (PRE-CHECK): GLOBAL REQUEST RATE LIMITING
+        # ============================================
+        logger.info(f"[{session_id}] Applying Control 6: Global Rate Limiting")
+
+        try:
+            rate_limiter = get_rate_limiter()
+            rate_limiter.check_rate_limit(
+                user_id=user_id,
+                resource_type="REQUEST",
+                resource_name="global_request",
+                limit_per_minute=120  # 120 requests per minute per user (global)
+            )
+            logger.info(f"[{session_id}] Global rate limit check passed")
+        except RateLimitError as rle:
+            logger.warning(
+                f"[{session_id}] User {user_id} rate limited at request level: {rle}"
+            )
+
+            requests_blocked.labels(
+                control_name="rate_limiting",
+                reason="global_request_limit"
+            ).inc()
+
+            track_rate_limit_exceeded(
+                user_id=user_id,
+                tool_name="global_request",
+                user_role=user_role or "unknown"
+            )
+
+            audit_logger.log_action(
+                user_id=user_id,
+                action="REQUEST_RATE_LIMITED",
+                resource_type="AGENT",
+                resource_id=session_id,
+                changes={"reason": str(rle)},
+                status="BLOCKED"
+            )
+
+            return (
+                "You have exceeded the maximum request rate. "
+                "Please wait a moment before trying again."
+            )
         
         # ============================================
         # CONTROL 3: INPUT SANITIZATION
@@ -299,36 +372,53 @@ def process_user_request(
         final_response = validation_result["sanitized_output"]
         logger.info(f"[{session_id}] Output validation passed")
         
-            # ============================================
-            # CONTROL 10: AUDIT LOGGING
-            # ============================================
-            audit_start = time.time()
-            audit_logger.log_action(
-                user_id=user_id,
-                action="REQUEST_COMPLETE",
-                resource_type="AGENT",
-                resource_id=session_id,
-                changes={
-                    "execution_path": result.get("execution_path", []),
-                    "tool_count": len(result.get("tool_results", [])),
-                    "response_length": len(final_response)
-                },
-                status="SUCCESS"
-            )
-            audit_latency = time.time() - audit_start
-            
-            # Track audit logging metrics
-            track_audit_log(
-                action_type="REQUEST_COMPLETE",
-                resource_type="AGENT",
-                status="SUCCESS",
-                latency=audit_latency
-            )
-            
-            logger.info(f"[{session_id}] Request processing complete")
-            
-            return final_response
+        # ============================================
+        # CONTROL 10: AUDIT LOGGING
+        # ============================================
+        audit_start = time.time()
+        audit_logger.log_action(
+            user_id=user_id,
+            action="REQUEST_COMPLETE",
+            resource_type="AGENT",
+            resource_id=session_id,
+            changes={
+                "execution_path": result.get("execution_path", []),
+                "tool_count": len(result.get("tool_results", [])),
+                "response_length": len(final_response)
+            },
+            status="SUCCESS"
+        )
+        audit_latency = time.time() - audit_start
+        
+        # Track audit logging metrics
+        track_audit_log(
+            action_type="REQUEST_COMPLETE",
+            resource_type="AGENT",
+            status="SUCCESS",
+            latency=audit_latency
+        )
+        
+        logger.info(f"[{session_id}] Request processing complete")
+        
+        return final_response
     
+    except CircuitBreakerError as e:
+        logger.critical(f"[{session_id}] Circuit breaker error: {e}")
+
+        audit_logger.log_action(
+            user_id=user_id,
+            action="REQUEST_BLOCKED_CIRCUIT_BREAKER",
+            resource_type="AGENT",
+            resource_id=session_id,
+            changes={"error": str(e)},
+            status="BLOCKED"
+        )
+
+        return (
+            "The system is temporarily unavailable due to an "
+            "emergency stop. Please contact your supervisor."
+        )
+        
     except Exception as e:
         # Log error
         logger.error(f"[{session_id}] Request processing failed: {e}", exc_info=True)
@@ -350,73 +440,6 @@ def process_user_request(
         )
         
         return "I apologize, but an error occurred while processing your request. Please try again later."
-
-
-def process_user_request_async(
-    user_input: str,
-    session_id: str,
-    user_id: str,
-    user_role: Optional[str] = None,
-    member_id: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Async version of process_user_request that returns detailed results.
-    
-    This version is suitable for API endpoints that need to return
-    structured responses with execution details.
-    
-    Returns:
-        Dict containing:
-        - session_id: str
-        - response: str
-        - execution_path: List[str]
-        - tool_results: List[Dict]
-        - security_checks: Dict[str, bool]
-    """
-    
-    # Initialize tracking
-    security_checks = {
-        "input_validation": False,
-        "authorization": False,
-        "input_sanitization": False,
-        "memory_security": False,
-        "output_validation": False
-    }
-    
-    try:
-        # Process request with all security controls
-        response = process_user_request(
-            user_input=user_input,
-            session_id=session_id,
-            user_id=user_id,
-            user_role=user_role,
-            member_id=member_id
-        )
-        
-        # Mark all checks as passed if we got here
-        security_checks = {k: True for k in security_checks}
-        
-        return {
-            "session_id": session_id,
-            "response": response,
-            "execution_path": [],  # Would be populated from graph result
-            "tool_results": [],     # Would be populated from graph result
-            "security_checks": security_checks,
-            "status": "success"
-        }
-    
-    except Exception as e:
-        logger.error(f"Async request processing failed: {e}")
-        
-        return {
-            "session_id": session_id,
-            "response": "An error occurred processing your request.",
-            "execution_path": [],
-            "tool_results": [],
-            "security_checks": security_checks,
-            "status": "error",
-            "error": str(e)
-        }
 
 
 # Convenience function for testing

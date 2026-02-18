@@ -2,7 +2,7 @@
 Security controls: Authentication, RBAC, and access control
 """
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import hashlib
 import secrets
@@ -57,9 +57,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     """
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
@@ -158,7 +158,7 @@ class AuthService:
         try:
             session_id = secrets.token_urlsafe(32)
             session_token = secrets.token_urlsafe(64)
-            expires_at = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+            expires_at = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
             
             query = """
             INSERT INTO user_sessions (session_id, user_id, session_token, ip_address, user_agent, expires_at)
@@ -340,6 +340,43 @@ class RBACService:
             logger.error(f"Get tool permissions failed: {e}")
             return []
 
+    def get_tool_rate_limit(self, user_role: str, tool_name: str) -> int:
+        """
+        Get the per-minute rate limit for a specific tool and role.
+        
+        Args:
+            user_role: User's role (CSR_READONLY, CSR_TIER1, CSR_TIER2, CSR_SUPERVISOR)
+            tool_name: Name of the tool
+        
+        Returns:
+            Rate limit per minute. Returns 0 if tool is not permitted for the role,
+            or a default of 30 if the lookup fails.
+        """
+        cache_key = f"rate:{user_role}:{tool_name}"
+        
+        if cache_key in self._tool_permission_cache:
+            return self._tool_permission_cache[cache_key]
+        
+        try:
+            query = """
+            SELECT rate_limit_per_minute
+            FROM tool_permissions
+            WHERE role = %s AND tool_name = %s AND is_allowed = TRUE
+            """
+            result = self.mysql.execute_query(query, (user_role, tool_name))
+            
+            if result:
+                limit = result[0]["rate_limit_per_minute"]
+                self._tool_permission_cache[cache_key] = limit
+                return limit
+            
+            # Tool not permitted for this role
+            return 0
+        
+        except Exception as e:
+            logger.error(f"Get tool rate limit failed: {e}")
+            return 30  # Default fallback
+
 
 class RateLimiter:
     """Rate limiting service"""
@@ -370,8 +407,8 @@ class RateLimiter:
             RateLimitError: If rate limit exceeded
         """
         try:
-            window_start = datetime.utcnow() - timedelta(minutes=1)
-            window_end = datetime.utcnow()
+            window_start = datetime.now(timezone.utc) - timedelta(minutes=1)
+            window_end = datetime.now(timezone.utc)
             
             # Get current count
             query = """
@@ -470,3 +507,8 @@ auth_service = AuthService()
 rbac_service = RBACService()
 rate_limiter = RateLimiter()
 audit_logger = AuditLogger()
+
+
+def get_rate_limiter() -> RateLimiter:
+    """Get the global RateLimiter instance."""
+    return rate_limiter

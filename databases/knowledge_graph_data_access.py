@@ -15,6 +15,7 @@ SCHEMA REFERENCE:
 
 from typing import Dict, Any, List, Optional
 import logging
+from datetime import datetime
 from databases.connections import get_neo4j_kg
 
 logger = logging.getLogger(__name__)
@@ -419,6 +420,45 @@ class KnowledgeGraphDataAccess:
             logger.error(f"Error retrieving claim status {claim_number}: {e}")
             return None
     
+    def update_member_field(self, member_id: str, field: str, value: str) -> bool:
+        """
+        Update a single field on a Member node.
+
+        Allowed fields: phone, email, address_street, address_city,
+        address_state, address_zip
+
+        Args:
+            member_id: Member ID
+            field: Property name to update
+            value: New value
+
+        Returns:
+            True if successful
+        """
+        ALLOWED = {"phone", "email", "address_street", "address_city",
+                   "address_state", "address_zip"}
+        if field not in ALLOWED:
+            logger.error(f"Field '{field}' is not updatable on Member")
+            return False
+
+        # Use parameterised property name via APOC or string-safe SET
+        # Neo4j does not support parameterised property keys, so we
+        # whitelist above and interpolate safely.
+        query = f"""
+        MATCH (m:Member {{memberId: $memberId}})
+        SET m.`{field}` = $value
+        RETURN m.memberId AS memberId
+        """
+
+        try:
+            result = self.conn.execute_query(
+                query, {"memberId": member_id, "value": value}
+            )
+            return len(result) > 0
+        except Exception as e:
+            logger.error(f"Error updating member {member_id} field {field}: {e}")
+            return False
+            
     def update_claim_status(self, claim_id: str, status: str) -> bool:
         """
         Update claim status.
@@ -777,7 +817,6 @@ class KnowledgeGraphDataAccess:
             Eligibility status dict
         """
         if not service_date:
-            from datetime import datetime
             service_date = datetime.now().strftime("%Y-%m-%d")
         
         query = """

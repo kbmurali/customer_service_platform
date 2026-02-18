@@ -3,14 +3,17 @@ import logging
 import json
 import functools
 import inspect
+from datetime import datetime
 
 from langchain_core.tools import tool
 
 from databases.context_graph_data_access import get_cg_data_access
 from databases.chroma_vector_data_access import get_chroma_data_access
-from agents.security import RBACService
+from agents.security import RBACService, RateLimiter, RateLimitError
+from security.approval_workflow import get_approval_workflow
 from security.presidio_memory_security import get_presidio_security
 from security.nh3_sanitization import sanitize_text
+from observability.prometheus_metrics import rate_limit_checks, track_rate_limit_exceeded
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +23,195 @@ rbac_service = RBACService()
 # Initialize Presidio security
 presidio_security = get_presidio_security()
 
+# Initialize Rate Limiter (Control 6)
+rate_limiter = RateLimiter()
+
 # Initialize Chroma vector data access for semantic search
 chroma_data_access = get_chroma_data_access()
 
+# Initialize Context Graph data access for tool execution tracking
+cg_data_access = get_cg_data_access()
+
 # ============================================
-# Permission Decorator
+# Permission Decorators
 # ============================================
+def circuit_breaker(func):
+    """
+    Decorator that checks for circuit breaker flag before a tool function executes.
+
+    On active circuit breaker it tracks the event via track_tool_execution_in_cg and returns a
+    JSON error string.
+
+    The tool name is derived automatically from the decorated function's __name__,
+    so it never needs to be supplied manually.
+
+    Stacking order with @tool:
+        @tool                                      # outermost  — registered last
+        @circuit_breaker                           # second - should check breaker first
+        @require_rate_limits                       # middle - should run before permissions
+        @require_permissions("MEMBER", "READ")     # innermost  — runs first at call time
+
+    Usage:
+        @tool
+        @circuit_breaker
+        @require_rate_limits
+        @require_permissions("MEMBER", "READ")
+        def member_lookup(member_id: str, user_role: str, ...) -> str:
+            ...
+    """
+    # Resolve the tool name once at decoration time — never at call time.
+    tool_name = func.__name__
+    
+    # Identify which positional index holds user_role, user_id, session_id.
+    sig = inspect.signature(func)
+    param_names = list(sig.parameters.keys())
+    
+    def _get(name, args, kwargs):
+        """Extract a parameter by name from args or kwargs."""
+        if name in kwargs:
+            return kwargs[name]
+        try:
+            return args[param_names.index(name)]
+        except (ValueError, IndexError):
+            return None
+        
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        user_role  = _get("user_role",  args, kwargs) or "unknown"
+        user_id = _get("user_role",  args, kwargs) or ""
+        session_id = _get("session_id", args, kwargs) or "default"
+        
+        try:
+            approval_wf = get_approval_workflow()
+            
+            if approval_wf.is_circuit_breaker_active():
+                error = "The system is temporarily unavailable due to an emergency stop. Please contact your supervisor."
+                
+                # Track in Context Graph
+                track_tool_execution_in_cg(
+                    session_id, tool_name,
+                    {"user_role": user_role, "user_id": user_id, "action": "check_circuit_breaker" },
+                    status="circuit_breaker_active",
+                    error=error
+                )
+                
+                return json.dumps({"error": error})        
+        except Exception as e:
+            logger.warning(f"Circuit breaker check failed for tool call {tool_name} with error: {e}")
+        
+        return func(*args, **kwargs)
+    
+    return wrapper
+        
+def require_rate_limits(func):
+    """
+    Decorator that enforces tool call rate limits before a tool function executes.
+
+    On any denial it tracks the event via track_tool_execution_in_cg and returns a
+    JSON error string.
+
+    The tool name is derived automatically from the decorated function's __name__,
+    so it never needs to be supplied manually.
+
+    Stacking order with @tool:
+        @tool                                      # outermost  — registered last
+        @require_rate_limits                       # middle - should run before permissions
+        @require_permissions("MEMBER", "READ")     # innermost  — runs first at call time
+
+    Usage:
+        @tool
+        @require_rate_limits
+        @require_permissions("MEMBER", "READ")
+        def member_lookup(member_id: str, user_role: str, ...) -> str:
+            ...
+    """
+    # Resolve the tool name once at decoration time — never at call time.
+    tool_name = func.__name__
+    
+    # Identify which positional index holds user_role, user_id, session_id.
+    sig = inspect.signature(func)
+    param_names = list(sig.parameters.keys())
+    
+    def _get(name, args, kwargs):
+        """Extract a parameter by name from args or kwargs."""
+        if name in kwargs:
+            return kwargs[name]
+        try:
+            return args[param_names.index(name)]
+        except (ValueError, IndexError):
+            return None
+        
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        user_role  = _get("user_role",  args, kwargs) or "unknown"
+        user_id = _get("user_role",  args, kwargs) or ""
+        session_id = _get("session_id", args, kwargs) or "default"
+        
+        try:
+            # Look up the per-role rate limit for this tool
+            limit_per_minute = rbac_service.get_tool_rate_limit(user_role, tool_name)
+            
+            if limit_per_minute <= 0:
+                # Tool not permitted for this role (handled by RBAC check),
+                # or rate limit is 0 – deny
+                logger.warning(
+                    f"Rate limit lookup returned 0 for {user_role}/{tool_name}"
+                )
+                return func(*args, **kwargs)  # Let RBAC check handle the denial
+            
+            # Record the check in Prometheus
+            rate_limit_checks.labels(
+                endpoint=tool_name,
+                user_id=user_id,
+                result="checked"
+            ).inc()
+            
+            # Enforce the sliding-window rate limit
+            rate_limiter.check_rate_limit(
+                user_id=user_id,
+                resource_type="TOOL",
+                resource_name=tool_name,
+                limit_per_minute=limit_per_minute
+            )
+            
+            # If it is here, then it is within limits
+            return func(*args, **kwargs)
+        except RateLimitError as e:
+            logger.warning(
+                f"Control 6: Rate limit exceeded for user {user_id} "
+                f"on tool {tool_name} (role={user_role}): {e}"
+            )
+            
+            # Track in Prometheus
+            track_rate_limit_exceeded(
+                user_id=user_id,
+                tool_name=tool_name,
+                user_role=user_role,
+                limit_type="per_minute"
+            )
+            
+            rate_limit_checks.labels(
+                endpoint=tool_name,
+                user_id=user_id,
+                result="exceeded"
+            ).inc()
+            
+            # Track in Context Graph
+            track_tool_execution_in_cg(
+                session_id, tool_name,
+                {"user_role": user_role, "user_id": user_id, "action": "require_rate_limits" },
+                status="rate_limit_exceeded",
+                error=str(e),
+            )
+            
+            return json.dumps({
+                "error": f"Rate limit exceeded for {tool_name}. "
+                        f"Please wait before trying again.",
+                "rate_limited": True,
+                "tool_name": tool_name
+            })
+            
+    return wrapper
 
 def require_permissions(resource_type: str, action: str):
     """
@@ -52,7 +238,7 @@ def require_permissions(resource_type: str, action: str):
     Usage:
         @tool
         @require_permissions("MEMBER", "READ")
-        def member_lookup(member_id: str, user_role: str, session_id: str = "default") -> str:
+        def member_lookup(member_id: str, user_role: str, ...) -> str:
             ...
     """
     def decorator(func):
@@ -105,8 +291,92 @@ def require_permissions(resource_type: str, action: str):
         return wrapper
     return decorator
 
-# Initialize Context Graph data access for tool execution tracking
-cg_data_access = get_cg_data_access()
+def check_rate_limit_for_tool(
+    tool_name: str,
+    user_id: str,
+    user_role: str,
+    session_id: str = "default"
+) -> Optional[str]:
+    """
+    Utility for Control 6: Enforce per-tool, per-role rate limiting.
+    
+    Looks up the rate_limit_per_minute for the given role/tool pair from
+    the MySQL tool_permissions table (via RBACService) and then checks
+    the sliding-window counter in the rate_limits table (via RateLimiter).
+    
+    Args:
+        tool_name: Name of the tool being invoked
+        user_id: User identifier for per-user tracking
+        user_role: User's role for per-role limits
+        session_id: Session ID for audit tracking
+    
+    Returns:
+        None if within limits, or a JSON error string if rate limit exceeded.
+    """
+    try:
+        # Look up the per-role rate limit for this tool
+        limit_per_minute = rbac_service.get_tool_rate_limit(user_role, tool_name)
+        
+        if limit_per_minute <= 0:
+            # Tool not permitted for this role (handled by RBAC check),
+            # or rate limit is 0 – deny
+            logger.warning(
+                f"Rate limit lookup returned 0 for {user_role}/{tool_name}"
+            )
+            return None  # Let RBAC check handle the denial
+        
+        # Record the check in Prometheus
+        rate_limit_checks.labels(
+            endpoint=tool_name,
+            user_id=user_id,
+            result="checked"
+        ).inc()
+        
+        # Enforce the sliding-window rate limit
+        rate_limiter.check_rate_limit(
+            user_id=user_id,
+            resource_type="TOOL",
+            resource_name=tool_name,
+            limit_per_minute=limit_per_minute
+        )
+        
+        # Within limits
+        return None
+    
+    except RateLimitError as e:
+        logger.warning(
+            f"Control 6: Rate limit exceeded for user {user_id} "
+            f"on tool {tool_name} (role={user_role}): {e}"
+        )
+        
+        # Track in Prometheus
+        track_rate_limit_exceeded(
+            user_id=user_id,
+            tool_name=tool_name,
+            user_role=user_role,
+            limit_type="per_minute"
+        )
+        rate_limit_checks.labels(
+            endpoint=tool_name,
+            user_id=user_id,
+            result="exceeded"
+        ).inc()
+        
+        # Track in Context Graph
+        track_tool_execution_in_cg(session_id, tool_name, {}, status="rate_limited")
+        
+        return json.dumps({
+            "error": f"Rate limit exceeded for {tool_name}. "
+                     f"Please wait before trying again.",
+            "rate_limited": True,
+            "tool_name": tool_name
+        })
+    
+    except Exception as e:
+        # Fail open – log but allow the request
+        logger.error(f"Rate limit check failed for {tool_name}: {e}")
+        return None
+
 
 def track_tool_execution_in_cg(
     session_id: str,
@@ -191,7 +461,7 @@ def search_policy_info(query: str, user_role: str, plan_type: str = "", session_
     Returns:
         JSON string with semantically matched policy documents
     """
-    from datetime import datetime
+    
     start_time = datetime.now()
 
     # Sanitize inputs
@@ -250,7 +520,6 @@ def search_medical_codes(
     Returns:
         JSON string with matched CPT/ICD-10 codes and descriptions
     """
-    from datetime import datetime
     start_time = datetime.now()
 
     query = sanitize_text(query)
@@ -310,7 +579,6 @@ def search_knowledge_base(
     Returns:
         JSON string with matched knowledge-base documents
     """
-    from datetime import datetime
     start_time = datetime.now()
 
     query = sanitize_text(query)

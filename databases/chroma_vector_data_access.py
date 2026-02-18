@@ -6,12 +6,12 @@ data/load_sample_data.py. Each method maps to a specific collection and
 returns structured results with documents, metadata, and relevance scores.
 
 Collections (from load_sample_data.py):
-  1. policies          – Policy documents (plan details, premiums, deductibles)
-  2. procedures         – CPT procedure codes and descriptions
-  3. diagnoses          – ICD-10 diagnosis codes and descriptions
-  4. faqs               – Frequently asked questions and answers
-  5. clinical_guidelines – Clinical guidelines and treatment protocols
-  6. regulations        – Regulatory documents (collection created, data TBD)
+  1. policies               - Policy documents (plan details, premiums, deductibles)
+  2. procedures             - CPT procedure codes and descriptions
+  3. diagnoses              - ICD-10 diagnosis codes and descriptions
+  4. faqs                   - Frequently asked questions and answers
+  5. clinical_guidelines    - Clinical guidelines and treatment protocols
+  6. regulations            - Regulatory documents (collection created, data TBD)
 """
 
 import logging

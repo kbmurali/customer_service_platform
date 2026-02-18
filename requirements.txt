@@ -58,6 +58,9 @@ nest_asyncio>=1.5.0
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 
+# Observability
+prometheus-client==0.21.1
+
 # Control 1: Prompt Injection Defense
 nemoguardrails==0.11.0
 

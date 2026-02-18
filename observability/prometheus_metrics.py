@@ -60,7 +60,7 @@ topic_violations = Counter(
 
 
 # ============================================
-# CONTROL 2: AUTHENTICATION & AUTHORIZATION (Casbin)
+# CONTROL 2: AUTHENTICATION & AUTHORIZATION (MySQL RBAC)
 # ============================================
 
 authentication_attempts = Counter(
@@ -438,7 +438,7 @@ def track_input_validation(
     
     Args:
         result: Validation result from NeMo Guardrails
-        user_role: User's role (member, csr, csr_supervisor)
+        user_role: User's role (CSR_READONLY, CSR_TIER1, CSR_TIER2, CSR_SUPERVISOR)
         latency: Validation latency in seconds (optional)
     """
     if not result.get("safe", True):
@@ -557,24 +557,61 @@ def track_authorization_denial(
     ).inc()
 
 
-def track_rate_limit_exceeded(
-    endpoint: str,
+def track_rate_limit_check(
     user_id: str,
-    limit_type: str = "per_minute"
+    tool_name: str,
+    result: str = "allowed"
+) -> None:
+    """
+    Track a rate limit check (allowed or exceeded).
+    
+    Args:
+        user_id: User identifier
+        tool_name: Name of the tool or action being checked
+        result: Result of the check (allowed, exceeded)
+    """
+    rate_limit_checks.labels(
+        endpoint=tool_name,
+        user_id=user_id,
+        result=result
+    ).inc()
+
+
+def track_rate_limit_exceeded(
+    user_id: str,
+    tool_name: str,
+    user_role: str = "unknown",
+    limit_type: str = "per_minute",
+    endpoint: str = ""
 ) -> None:
     """
     Track rate limit violations.
     
     Args:
-        endpoint: API endpoint
         user_id: User identifier
+        tool_name: Name of the tool or action that was rate limited
+        user_role: Role of the user being rate limited
         limit_type: Type of rate limit (per_minute, per_hour, per_day)
+        endpoint: API endpoint (deprecated, use tool_name instead)
     """
+    effective_endpoint = endpoint or tool_name
     rate_limit_exceeded.labels(
-        endpoint=endpoint,
+        endpoint=effective_endpoint,
         user_id=user_id,
         limit_type=limit_type
     ).inc()
+    
+    # Also increment the rate_limit_checks counter with exceeded result
+    rate_limit_checks.labels(
+        endpoint=effective_endpoint,
+        user_id=user_id,
+        result="exceeded"
+    ).inc()
+    
+    logger.warning(
+        f"Rate limit exceeded: user={user_id}, tool={tool_name}, "
+        f"role={user_role}, limit_type={limit_type}"
+    )
 
 
 def track_security_incident(
