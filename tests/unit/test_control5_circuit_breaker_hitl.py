@@ -67,15 +67,14 @@ class TestApprovalWorkflow:
     def test_classify_low_impact(self, mock_workflow):
         """Test classification of low-impact tools"""
         wf = mock_workflow["workflow"]
-        assert wf._classify_impact("lookup_member") == ImpactLevel.LOW
-        assert wf._classify_impact("check_eligibility") == ImpactLevel.LOW
-        assert wf._classify_impact("search_policy_info") == ImpactLevel.LOW
+        for tool in ApprovalWorkflow.LOW_IMPACT_TOOLS:
+            assert wf._classify_impact(tool) == ImpactLevel.LOW
 
     def test_classify_medium_impact(self, mock_workflow):
         """Test classification of medium-impact tools (update_* prefix)"""
         wf = mock_workflow["workflow"]
-        assert wf._classify_impact("update_member_address") == ImpactLevel.MEDIUM
-        assert wf._classify_impact("delete_note") == ImpactLevel.MEDIUM
+        for tool in ApprovalWorkflow.MEDIUM_IMPACT_TOOLS:
+            assert wf._classify_impact(tool) == ImpactLevel.MEDIUM
 
     def test_classify_high_impact(self, mock_workflow):
         """Test classification of high-impact tools"""

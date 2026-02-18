@@ -18,7 +18,7 @@ import json
 import logging
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
@@ -105,7 +105,31 @@ class ApprovalWorkflow:
     - Complete audit trail in MySQL
     """
 
-    # Tools that require approval (HIGH impact)
+    # Tools classified by impact level for approval routing
+    # LOW: Auto-execute silently (read-only lookups and searches)
+    LOW_IMPACT_TOOLS = [
+        "pa_requirements",
+        "provider_search",
+        "network_check",
+        "search_policy_info",
+        "search_medical_codes",
+        "search_knowledge_base",
+    ]
+
+    # MEDIUM: Log and auto-execute (reserved for future moderate-risk tools)
+    MEDIUM_IMPACT_TOOLS = [
+        "member_lookup",
+        "check_eligibility",
+        "coverage_lookup",
+        "claim_lookup",
+        "claim_status",
+        "claim_payment_info",
+        "pa_lookup",
+        "pa_status",
+        "provider_lookup",
+    ]
+
+    # HIGH: Requires human approval before execution (write/mutate tools)
     HIGH_IMPACT_TOOLS = [
         "update_claim_status",
         "approve_prior_auth",
@@ -113,8 +137,7 @@ class ApprovalWorkflow:
         "update_member_info",
     ]
 
-    # Tools that require supervisor approval (CRITICAL impact)
-    # Reserved for future bulk operations (no tools implemented yet)
+    # CRITICAL: Requires supervisor approval (reserved for future bulk operations)
     CRITICAL_IMPACT_TOOLS = []
 
     def __init__(
@@ -168,7 +191,6 @@ class ApprovalWorkflow:
         agent_id: str,
         action_type: str,
         action_description: str,
-        impact_level: str,
         user_id: str,
         user_role: str,
         details: Optional[Dict[str, Any]] = None,
@@ -176,14 +198,14 @@ class ApprovalWorkflow:
         """
         Synchronous entry point for tool-level approval requests.
 
-        Classifies impact and either auto-approves (LOW/MEDIUM) or
-        submits for human review (HIGH/CRITICAL).
+        Classifies impact from the tool name (action_type) and either
+        auto-approves (LOW/MEDIUM) or submits for human review
+        (HIGH/CRITICAL).
 
         Args:
             agent_id: Agent or tool requesting approval
-            action_type: The tool / action name
+            action_type: The tool / action name (used to derive impact level)
             action_description: Human-readable description
-            impact_level: Hint from caller (may be overridden by classification)
             user_id: User initiating the action
             user_role: User's role
             details: Additional context for the reviewer
@@ -324,15 +346,22 @@ class ApprovalWorkflow:
     # ------------------------------------------------------------------
 
     def _classify_impact(self, tool_name: str) -> ImpactLevel:
-        """Classify impact level of tool."""
+        """Classify impact level of tool based on explicit tool lists."""
         if tool_name in self.CRITICAL_IMPACT_TOOLS:
             return ImpactLevel.CRITICAL
         elif tool_name in self.HIGH_IMPACT_TOOLS:
             return ImpactLevel.HIGH
-        elif tool_name.startswith("update_") or tool_name.startswith("delete_"):
+        elif tool_name in self.MEDIUM_IMPACT_TOOLS:
             return ImpactLevel.MEDIUM
-        else:
+        elif tool_name in self.LOW_IMPACT_TOOLS:
             return ImpactLevel.LOW
+        else:
+            # Unknown tools default to MEDIUM (log and auto-approve)
+            logger.warning(
+                f"Tool '{tool_name}' not found in any impact class; "
+                "defaulting to MEDIUM"
+            )
+            return ImpactLevel.MEDIUM
 
     # ------------------------------------------------------------------
     # Approval request lifecycle
@@ -346,7 +375,7 @@ class ApprovalWorkflow:
     ) -> ApprovalRequest:
         """Create approval request and add to queue."""
         request_id = f"approval_{action.action_id}_{uuid.uuid4().hex[:8]}"
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         expires_at = now + timedelta(minutes=30)
 
         request = ApprovalRequest(
@@ -407,9 +436,9 @@ class ApprovalWorkflow:
         self, request_id: str, timeout: int
     ) -> ApprovalResult:
         """Wait for approval decision by polling Redis."""
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.utcnow()
 
-        while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout:
+        while (datetime.utcnow() - start_time).total_seconds() < timeout:
             status_key = f"approval_status:{request_id}"
             status_json = self.redis_client.get(status_key)
 
@@ -449,7 +478,7 @@ class ApprovalWorkflow:
                     "approved": True,
                     "rationale": rationale,
                     "reviewed_by": reviewer_id,
-                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                    "reviewed_at": datetime.utcnow().isoformat(),
                 }
             ),
         )
@@ -472,7 +501,7 @@ class ApprovalWorkflow:
                     "approved": False,
                     "rationale": rationale,
                     "reviewed_by": reviewer_id,
-                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                    "reviewed_at": datetime.utcnow().isoformat(),
                 }
             ),
         )
@@ -502,7 +531,7 @@ class ApprovalWorkflow:
             (
                 status.value,
                 reviewer_id,
-                datetime.now(timezone.utc),
+                datetime.utcnow(),
                 rationale,
                 request_id,
             ),
@@ -549,11 +578,11 @@ class ApprovalWorkflow:
                 json.dumps(action.context) if action.context else None,
                 ImpactLevel.MEDIUM.value,
                 user_id,
-                datetime.now(timezone.utc),
-                datetime.now(timezone.utc),
+                datetime.utcnow(),
+                datetime.utcnow(),
                 ApprovalStatus.APPROVED.value,
                 "SYSTEM",
-                datetime.now(timezone.utc),
+                datetime.utcnow(),
                 "Auto-approved based on impact classification",
             ),
         )
@@ -575,7 +604,7 @@ class ApprovalWorkflow:
         self.redis_client.set("circuit_breaker:reason", reason)
         self.redis_client.set("circuit_breaker:activated_by", activated_by)
         self.redis_client.set(
-            "circuit_breaker:timestamp", datetime.now(timezone.utc).isoformat()
+            "circuit_breaker:timestamp", datetime.utcnow().isoformat()
         )
 
         # Log to MySQL (durable audit trail)
@@ -591,7 +620,7 @@ class ApprovalWorkflow:
                 "ACTIVATED",
                 reason,
                 activated_by,
-                datetime.now(timezone.utc),
+                datetime.utcnow(),
                 json.dumps({"source": "manual"}),
             ),
         )
@@ -630,7 +659,7 @@ class ApprovalWorkflow:
                 "DEACTIVATED",
                 rationale,
                 deactivated_by,
-                datetime.now(timezone.utc),
+                datetime.utcnow(),
                 json.dumps({"source": "manual"}),
             ),
         )
@@ -657,11 +686,11 @@ class ApprovalWorkflow:
             "title": title,
             "message": message,
             "triggered_by": triggered_by,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
         }
         self.redis_client.lpush("security:alerts", json.dumps(alert))
         self.redis_client.ltrim("security:alerts", 0, 99)  # Keep last 100
-        logger.critical(f"ALERT: {title} - {message}")
+        logger.critical(f"ALERT: {title} – {message}")
 
     # ------------------------------------------------------------------
     # Query helpers

@@ -8,7 +8,8 @@ from datetime import datetime
 from langchain_core.tools import tool
 
 from agents.tools_util import ( 
-                               circuit_breaker, 
+                               circuit_breaker,
+                               require_approvals,
                                require_rate_limits, 
                                require_permissions, 
                                track_tool_execution_in_cg, 
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 @tool
 @circuit_breaker
+@require_approvals( action="Read", record_name="member", record_id_arg="member_id" )
 @require_rate_limits
 @require_permissions("MEMBER", "READ")
 def member_lookup(member_id: str, user_role: str, user_id: str = "unknown", session_id: str = "default") -> str:
@@ -73,6 +75,7 @@ def member_lookup(member_id: str, user_role: str, user_id: str = "unknown", sess
 
 @tool
 @circuit_breaker
+@require_approvals( action="Read", record_name="member", record_id_arg="member_id" )
 @require_rate_limits
 @require_permissions("MEMBER", "READ")
 def check_eligibility(member_id: str, service_date: str, user_role: str, user_id: str = "unknown", session_id: str = "default") -> str:
@@ -122,6 +125,7 @@ def check_eligibility(member_id: str, service_date: str, user_role: str, user_id
 
 @tool
 @circuit_breaker
+@require_approvals( action="Read", record_name="member", record_id_arg="member_id" )
 @require_rate_limits
 @require_permissions("MEMBER", "READ")
 def coverage_lookup(member_id: str, procedure_code: str, user_role: str, user_id: str = "unknown", session_id: str = "default") -> str:
@@ -178,4 +182,72 @@ def coverage_lookup(member_id: str, procedure_code: str, user_role: str, user_id
         execution_time = (datetime.now() - start_time).total_seconds() * 1000
         error = str(e)
         track_tool_execution_in_cg(session_id, "coverage_lookup", {"member_id": member_id}, status="failed", execution_time_ms=execution_time, error=error)
+        return json.dumps({"error": error})
+    
+@tool
+@circuit_breaker
+@require_approvals( action="Update", record_name="member", record_id_arg="member_id", record_field_arg="field", changed_value_arg="new_value" )
+@require_rate_limits
+@require_permissions("MEMBER", "UPDATE")
+def update_member_info(
+    member_id: str,
+    field: str,
+    new_value: str,
+    reason: str,
+    user_id: str,
+    user_role: str,
+    session_id: str = "default",
+) -> str:
+    """
+    Update a member's information field. HIGH-IMPACT: requires human approval.
+
+    Updatable fields: phone, email, address_street, address_city, address_state,
+    address_zip
+
+    Args:
+        member_id: The member's unique identifier
+        field: The field to update
+        new_value: The new value
+        reason: Justification for the change
+        user_id: ID of the CSR making the change
+        user_role: Role of the CSR
+        session_id: Session ID for audit
+
+    Returns:
+        JSON string with result or approval-pending message
+    """
+    start_time = datetime.now()
+
+    member_id = sanitize_text(member_id)
+    field = sanitize_text(field)
+    new_value = sanitize_text(new_value)
+    reason = sanitize_text(reason)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        success = kg_data_access.update_member_field(member_id, field, new_value)
+        
+        inputs = { "member_id": member_id, "field": field}
+        
+        if not success:
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+            error = f"Member not found or update failed: {member_id}"
+            track_tool_execution_in_cg(session_id, "update_member_info", inputs, status="not_found", execution_time_ms=execution_time)
+            return json.dumps({"error": error})
+
+        result = {"member_id": member_id, "field": field, "updated": True}
+        scrubbed = scrub_output(json.dumps(result), session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(session_id, "update_member_info", inputs, status="success", execution_time_ms=execution_time)
+        return scrubbed
+
+    except Exception as e:
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        error = str(e)
+        
+        logger.error(f"update_member_info failed: {e}")
+        
+        inputs = { "member_id": member_id, "field": field}
+        track_tool_execution_in_cg(session_id, "update_member_info", inputs, status="failed", execution_time_ms=execution_time, error=error)
         return json.dumps({"error": error})

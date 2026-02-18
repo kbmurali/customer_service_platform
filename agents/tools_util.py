@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from databases.context_graph_data_access import get_cg_data_access
 from databases.chroma_vector_data_access import get_chroma_data_access
 from agents.security import RBACService, RateLimiter, RateLimitError
-from security.approval_workflow import get_approval_workflow
+from security.approval_workflow import get_approval_workflow, CircuitBreakerError
 from security.presidio_memory_security import get_presidio_security
 from security.nh3_sanitization import sanitize_text
 from observability.prometheus_metrics import rate_limit_checks, track_rate_limit_exceeded
@@ -35,6 +35,164 @@ cg_data_access = get_cg_data_access()
 # ============================================
 # Permission Decorators
 # ============================================
+def require_approvals(
+    action: str,
+    record_name: str,
+    record_id_arg: str,
+    record_field_arg: Optional[str] = None,
+    changed_value_arg: Optional[str] = None,
+):
+    """
+    Control 5: Decorator that gates a tool behind the human-in-the-loop
+    approval workflow.
+
+    The decorator automatically extracts user_id, user_role, reason, and
+    the record identifier from the wrapped function's keyword arguments,
+    builds the action_description and details dict, and submits the
+    approval request via ApprovalWorkflow.submit_approval_request().
+
+    If the request is not approved the tool returns the approval result
+    as a JSON string and the wrapped function body is **not** executed.
+
+    Args:
+        action: Human-readable verb label, e.g. "Update" or "Deny".
+        record_name: Human-readable noun, e.g. "claim" or "prior authorization".
+        record_id_arg: Name of the function kwarg that holds the record ID
+                       (e.g. "claim_id" or "pa_id").
+        record_field_arg: Optional name of the function kwarg that holds the
+                          field being changed (e.g. "field").
+        changed_value_arg: Optional name of the function kwarg that holds the
+                           new value (e.g. "new_status" or "new_value").
+    
+    Stacking order with @tool:
+        @tool                                      # outermost  — registered last
+        @circuit_breaker                           # second - should check breaker first
+        @require_approvals(...)                    # immediately after circuit breaker
+        @require_rate_limits                       # middle - should run before permissions
+        @require_permissions("MEMBER", "READ")     # innermost  — runs first at call time
+
+    Usage:
+        @tool
+        @circuit_breaker
+        @require_approvals( action="Update", record_name="Member", record_id_arg="member_id", record_field_arg="field",  changed_value_arg="new_value" )
+        @require_rate_limits
+        @require_permissions("MEMBER", "UPDATE")
+        def update_member_info( member_id: str, field: str, new_value: str, reason: str, ...) -> str:
+            ...
+    """
+
+    def decorator(func):
+        # Resolve the tool name once at decoration time — never at call time.
+        tool_name = func.__name__
+        
+        # Identify which positional index holds user_role, user_id, session_id.
+        sig = inspect.signature(func)
+        param_names = list(sig.parameters.keys())
+        
+        def _get(name, args, kwargs):
+            """Extract a parameter by name from args or kwargs."""
+            if name in kwargs:
+                return kwargs[name]
+            try:
+                return args[param_names.index(name)]
+            except (ValueError, IndexError):
+                return None
+            
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # --- Extract values from the tool's kwargs ---
+            user_role  = _get("user_role",  args, kwargs) or "unknown"
+            user_id = _get("user_role",  args, kwargs) or ""
+            session_id = _get("session_id", args, kwargs) or "default"
+            reason = _get("reason",  args, kwargs) or ""
+
+            extracted_record_id  = _get( record_id_arg,  args, kwargs) or "unknown"
+
+            extracted_record_field = _get( record_field_arg,  args, kwargs) if record_field_arg else None
+            
+            changed_value = _get( changed_value_arg,  args, kwargs) if changed_value_arg else None
+
+            # --- Build action_description dynamically ---
+            if record_field_arg is None and changed_value_arg is None:
+                action_description = f"{action} {record_name} {extracted_record_id}. Reason: {reason}"
+            elif changed_value_arg is not None and record_field_arg is None:
+                action_description = f"{action} {record_name} {extracted_record_id} to {changed_value}. Reason: {reason}"
+            else:  # both supplied
+                action_description = f"{action} {record_name} {extracted_record_id} {extracted_record_field} to {changed_value}. Reason: {reason}"
+
+            # --- Build details dict dynamically ---
+            if record_field_arg is None and changed_value_arg is None:
+                details = {
+                    record_id_arg: extracted_record_id,
+                    "action": action,
+                    "reason": reason,
+                }
+            elif changed_value_arg is not None and record_field_arg is None:
+                details = {
+                    record_id_arg: extracted_record_id,
+                    "action": action,
+                    changed_value_arg: changed_value,
+                    "reason": reason,
+                }
+            else:  # both supplied
+                details = {
+                    record_id_arg: extracted_record_id,
+                    "action": action,
+                    record_field_arg: extracted_record_field,
+                    changed_value_arg: changed_value,
+                    "reason": reason,
+                }
+
+            # --- Submit approval request ---
+            try:
+                approval_wf = get_approval_workflow()
+                
+                result = approval_wf.submit_approval_request(
+                    agent_id=tool_name,
+                    action_type=tool_name,
+                    action_description=action_description,
+                    user_id=user_id,
+                    user_role=user_role,
+                    details=details,
+                )
+                
+                logger.info(
+                    f"Approval result for {tool_name} by {user_id}: "
+                    f"approved={result['approved']}, "
+                    f"pending={result['pending']}, "
+                    f"request_id={result.get('request_id')}"
+                )
+            except CircuitBreakerError:
+                result = {
+                    "approved": False,
+                    "pending": False,
+                    "request_id": None,
+                    "message": "System is halted by circuit breaker. No actions can be submitted."
+                }
+            except Exception as e:
+                logger.error(
+                    f"Approval submission failed for {tool_name}: {e}"
+                )
+                result = {
+                    "approved": False,
+                    "pending": False,
+                    "request_id": None,
+                    "message": f"Approval submission failed: {str(e)}",
+                }
+
+            if not result["approved"]:
+                track_tool_execution_in_cg(
+                    session_id, tool_name, details, status="pending_approval"
+                )
+                return json.dumps(result)
+
+            # Approved – proceed to the actual tool logic
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
 def circuit_breaker(func):
     """
     Decorator that checks for circuit breaker flag before a tool function executes.
@@ -102,7 +260,7 @@ def circuit_breaker(func):
         return func(*args, **kwargs)
     
     return wrapper
-        
+
 def require_rate_limits(func):
     """
     Decorator that enforces tool call rate limits before a tool function executes.
