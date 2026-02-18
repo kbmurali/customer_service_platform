@@ -18,7 +18,7 @@ import json
 import logging
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
@@ -306,12 +306,12 @@ class ApprovalWorkflow:
         # 2. Classify impact
         impact = self._classify_impact(action.tool_name)
 
-        # 3. LOW impact – execute immediately
+        # 3. LOW impact - execute immediately
         if impact == ImpactLevel.LOW:
             logger.info(f"Auto-executing low-impact action: {action.tool_name}")
             return await self._execute_action(action)
 
-        # 4. MEDIUM impact – log and execute
+        # 4. MEDIUM impact - log and execute
         if impact == ImpactLevel.MEDIUM:
             logger.info(
                 f"Executing medium-impact action with logging: {action.tool_name}"
@@ -319,7 +319,7 @@ class ApprovalWorkflow:
             self._log_action_execution(action, user_id, auto_approved=True)
             return await self._execute_action(action)
 
-        # 5. HIGH / CRITICAL impact – request approval
+        # 5. HIGH / CRITICAL impact - request approval
         logger.info(
             f"Requesting approval for {impact.value}-impact action: "
             f"{action.tool_name}"
@@ -337,7 +337,7 @@ class ApprovalWorkflow:
             return await self._execute_action(action)
         else:
             logger.warning(
-                f"Action denied: {action.tool_name} – {result.rationale}"
+                f"Action denied: {action.tool_name} - {result.rationale}"
             )
             raise ApprovalDeniedError(result.rationale)
 
@@ -375,7 +375,7 @@ class ApprovalWorkflow:
     ) -> ApprovalRequest:
         """Create approval request and add to queue."""
         request_id = f"approval_{action.action_id}_{uuid.uuid4().hex[:8]}"
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=30)
 
         request = ApprovalRequest(
@@ -436,9 +436,9 @@ class ApprovalWorkflow:
         self, request_id: str, timeout: int
     ) -> ApprovalResult:
         """Wait for approval decision by polling Redis."""
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
-        while (datetime.utcnow() - start_time).total_seconds() < timeout:
+        while (datetime.now(timezone.utc) - start_time).total_seconds() < timeout:
             status_key = f"approval_status:{request_id}"
             status_json = self.redis_client.get(status_key)
 
@@ -453,7 +453,7 @@ class ApprovalWorkflow:
 
             await asyncio.sleep(1)
 
-        # Timeout – mark as expired
+        # Timeout - mark as expired
         self._expire_approval_request(request_id)
         raise ApprovalDeniedError("Approval request expired")
 
@@ -478,7 +478,7 @@ class ApprovalWorkflow:
                     "approved": True,
                     "rationale": rationale,
                     "reviewed_by": reviewer_id,
-                    "reviewed_at": datetime.utcnow().isoformat(),
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
                 }
             ),
         )
@@ -501,14 +501,14 @@ class ApprovalWorkflow:
                     "approved": False,
                     "rationale": rationale,
                     "reviewed_by": reviewer_id,
-                    "reviewed_at": datetime.utcnow().isoformat(),
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
                 }
             ),
         )
         logger.info(f"Approval request denied: {request_id} by {reviewer_id}")
 
     # ------------------------------------------------------------------
-    # Internal helpers – MySQL persistence
+    # Internal helpers - MySQL persistence
     # ------------------------------------------------------------------
 
     def _update_approval_status(
@@ -531,7 +531,7 @@ class ApprovalWorkflow:
             (
                 status.value,
                 reviewer_id,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 rationale,
                 request_id,
             ),
@@ -549,7 +549,7 @@ class ApprovalWorkflow:
         )
 
     async def _execute_action(self, action: AgentAction) -> Any:
-        """Execute the actual action (placeholder – integrate with agent system)."""
+        """Execute the actual action (placeholder - integrate with agent system)."""
         logger.info(
             f"Executing action: {action.tool_name} "
             f"with params {action.parameters}"
@@ -578,11 +578,11 @@ class ApprovalWorkflow:
                 json.dumps(action.context) if action.context else None,
                 ImpactLevel.MEDIUM.value,
                 user_id,
-                datetime.utcnow(),
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
+                datetime.now(timezone.utc),
                 ApprovalStatus.APPROVED.value,
                 "SYSTEM",
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 "Auto-approved based on impact classification",
             ),
         )
@@ -593,7 +593,7 @@ class ApprovalWorkflow:
 
     def activate_circuit_breaker(self, reason: str, activated_by: str):
         """
-        Emergency stop – halt all agent actions.
+        Emergency stop - halt all agent actions.
 
         Args:
             reason: Reason for activation
@@ -604,7 +604,7 @@ class ApprovalWorkflow:
         self.redis_client.set("circuit_breaker:reason", reason)
         self.redis_client.set("circuit_breaker:activated_by", activated_by)
         self.redis_client.set(
-            "circuit_breaker:timestamp", datetime.utcnow().isoformat()
+            "circuit_breaker:timestamp", datetime.now(timezone.utc).isoformat()
         )
 
         # Log to MySQL (durable audit trail)
@@ -620,7 +620,7 @@ class ApprovalWorkflow:
                 "ACTIVATED",
                 reason,
                 activated_by,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 json.dumps({"source": "manual"}),
             ),
         )
@@ -659,7 +659,7 @@ class ApprovalWorkflow:
                 "DEACTIVATED",
                 rationale,
                 deactivated_by,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 json.dumps({"source": "manual"}),
             ),
         )
@@ -686,11 +686,11 @@ class ApprovalWorkflow:
             "title": title,
             "message": message,
             "triggered_by": triggered_by,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         self.redis_client.lpush("security:alerts", json.dumps(alert))
         self.redis_client.ltrim("security:alerts", 0, 99)  # Keep last 100
-        logger.critical(f"ALERT: {title} – {message}")
+        logger.critical(f"ALERT: {title} - {message}")
 
     # ------------------------------------------------------------------
     # Query helpers

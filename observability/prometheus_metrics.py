@@ -237,6 +237,50 @@ encrypted_communications = Counter(
     ['protocol', 'direction']  # protocol: tls, mtls; direction: inbound, outbound
 )
 
+# MCP inter-agent encryption metrics (Control 8: Secure Remote Agent Communication)
+mcp_messages_encrypted = Counter(
+    'mcp_messages_encrypted_total',
+    'Total messages encrypted for remote MCP agents',
+    ['agent_name', 'direction']  # direction: outbound, inbound
+)
+
+mcp_messages_decrypted = Counter(
+    'mcp_messages_decrypted_total',
+    'Total messages decrypted from remote MCP agents',
+    ['agent_name', 'direction']
+)
+
+mcp_signature_failures = Counter(
+    'mcp_signature_failures_total',
+    'Total HMAC signature verification failures',
+    ['agent_name']
+)
+
+mcp_replay_rejections = Counter(
+    'mcp_replay_rejections_total',
+    'Total messages rejected due to replay detection',
+    ['agent_name']
+)
+
+mcp_schema_validation_failures = Counter(
+    'mcp_schema_validation_failures_total',
+    'Total JSON schema validation failures on MCP messages',
+    ['agent_name', 'tool_name', 'direction']
+)
+
+mcp_encryption_latency = Histogram(
+    'mcp_encryption_latency_seconds',
+    'Latency of MCP message encryption/decryption operations',
+    ['agent_name', 'operation'],  # operation: encrypt, decrypt
+    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25]
+)
+
+mcp_transport_failures = Counter(
+    'mcp_transport_failures_total',
+    'Total HTTP transport failures to remote MCP agents',
+    ['agent_name']
+)
+
 
 # ============================================
 # CONTROL 9: OUTPUT VALIDATION (Guardrails AI)
@@ -743,6 +787,41 @@ def initialize_metrics():
         circuit_breaker_state.labels(service_name=service).set(0)  # 0 = closed
     
     logger.info("Prometheus metrics initialized successfully")
+
+
+def track_mcp_encryption_event(event: str, agent_name: str, **kwargs) -> None:
+    """Track MCP inter-agent encryption events (Control 8).
+
+    Args:
+        event: Event type - 'encrypt', 'decrypt', 'security_failure',
+               'transport_failure', 'replay_rejection', 'schema_failure'
+        agent_name: Name of the remote MCP agent
+        **kwargs: Additional labels (tool_name, direction)
+    """
+    try:
+        direction = kwargs.get('direction', 'outbound')
+        if event == 'encrypt':
+            mcp_messages_encrypted.labels(
+                agent_name=agent_name, direction=direction
+            ).inc()
+        elif event == 'decrypt':
+            mcp_messages_decrypted.labels(
+                agent_name=agent_name, direction='inbound'
+            ).inc()
+        elif event == 'security_failure':
+            mcp_signature_failures.labels(agent_name=agent_name).inc()
+        elif event == 'transport_failure':
+            mcp_transport_failures.labels(agent_name=agent_name).inc()
+        elif event == 'replay_rejection':
+            mcp_replay_rejections.labels(agent_name=agent_name).inc()
+        elif event == 'schema_failure':
+            mcp_schema_validation_failures.labels(
+                agent_name=agent_name,
+                tool_name=kwargs.get('tool_name', 'unknown'),
+                direction=kwargs.get('direction', 'unknown'),
+            ).inc()
+    except Exception as e:
+        logger.warning(f"Failed to track MCP encryption event: {e}")
 
 
 # Initialize on module import

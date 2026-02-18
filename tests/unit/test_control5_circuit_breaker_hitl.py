@@ -8,8 +8,10 @@ Tests cover:
 
 import pytest
 from unittest.mock import Mock, patch
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+
+from agents.tools_util import require_approvals
 
 from security.approval_workflow import (
     ApprovalWorkflow,
@@ -233,6 +235,145 @@ class TestApprovalWorkflow:
         query_call = mock_workflow["mysql"].execute_query.call_args
         assert "PENDING" in query_call[0][1]
 
+class TestRequireApprovalsDecorator:
+    """Test the @require_approvals decorator used by write tools.
+
+    The decorator calls ApprovalWorkflow.submit_approval_request()
+    (without an impact_level parameter) which classifies impact from
+    the tool name and either auto-approves or submits for review.
+    """
+
+    def _make_decorated_fn(self):
+        """Create a minimal decorated function for testing.""" 
+        @require_approvals(
+            action="Update",
+            record_name="claim",
+            record_id_arg="claim_id",
+            changed_value_arg="new_status",
+        )
+        def update_claim_status(claim_id, new_status, reason, user_id, user_role, session_id="default"):
+            return json.dumps({"executed": True})
+
+        return update_claim_status
+
+    def test_decorator_auto_approved_executes_body(self):
+        """When approval is granted, the wrapped function body should execute."""
+        fn = self._make_decorated_fn()
+
+        mock_wf = Mock()
+        mock_wf.submit_approval_request.return_value = {
+            "approved": True,
+            "pending": False,
+            "request_id": None,
+            "message": "Action auto-approved (low impact).",
+        }
+
+        with patch('agents.tools_util.get_approval_workflow', return_value=mock_wf), \
+             patch('agents.tools_util.track_tool_execution_in_cg'):
+            result = fn(
+                claim_id="C123", new_status="APPROVED",
+                reason="Valid", user_id="user1", user_role="CSR_TIER2"
+            )
+            parsed = json.loads(result)
+            assert parsed["executed"] is True
+            mock_wf.submit_approval_request.assert_called_once()
+            # Verify impact_level is NOT passed
+            call_kwargs = mock_wf.submit_approval_request.call_args
+            assert "impact_level" not in (call_kwargs[1] if call_kwargs[1] else {})
+
+    def test_decorator_pending_blocks_body(self):
+        """When approval is pending, the wrapped function body should NOT execute."""
+        fn = self._make_decorated_fn()
+
+        mock_wf = Mock()
+        mock_wf.submit_approval_request.return_value = {
+            "approved": False,
+            "pending": True,
+            "request_id": "approval_abc123",
+            "message": "Pending review",
+        }
+
+        with patch('agents.tools_util.get_approval_workflow', return_value=mock_wf), \
+             patch('agents.tools_util.track_tool_execution_in_cg'):
+            result = fn(
+                claim_id="C123", new_status="APPROVED",
+                reason="Valid", user_id="user1", user_role="CSR_TIER2"
+            )
+            parsed = json.loads(result)
+            assert parsed["approved"] is False
+            assert parsed["pending"] is True
+            assert "executed" not in parsed
+
+    def test_decorator_circuit_breaker_blocks(self):
+        """Circuit breaker should return blocked result (not raise)."""
+        fn = self._make_decorated_fn()
+
+        mock_wf = Mock()
+        mock_wf.submit_approval_request.side_effect = CircuitBreakerError(
+            "System halted"
+        )
+
+        with patch('agents.tools_util.get_approval_workflow', return_value=mock_wf), \
+             patch('agents.tools_util.track_tool_execution_in_cg'):
+            result = fn(
+                claim_id="C123", new_status="APPROVED",
+                reason="Valid", user_id="user1", user_role="CSR_TIER2"
+            )
+            parsed = json.loads(result)
+            assert parsed["approved"] is False
+            assert "circuit breaker" in parsed["message"].lower()
+
+    def test_decorator_builds_details_with_changed_value(self):
+        """Details dict should include record_id and changed_value."""
+        fn = self._make_decorated_fn()
+
+        mock_wf = Mock()
+        mock_wf.submit_approval_request.return_value = {
+            "approved": True, "pending": False,
+            "request_id": None, "message": "Auto-approved",
+        }
+
+        with patch('agents.tools_util.get_approval_workflow', return_value=mock_wf), \
+             patch('agents.tools_util.track_tool_execution_in_cg'):
+            fn(
+                claim_id="C999", new_status="DENIED",
+                reason="Fraud", user_id="user1", user_role="CSR_TIER2"
+            )
+            call_kwargs = mock_wf.submit_approval_request.call_args[1]
+            assert call_kwargs["details"]["claim_id"] == "C999"
+            assert call_kwargs["details"]["new_status"] == "DENIED"
+            assert call_kwargs["details"]["reason"] == "Fraud"
+
+    def test_decorator_builds_details_with_field_and_value(self):
+        """Details dict should include record_id, field, and new_value."""
+
+        @require_approvals(
+            action="Update",
+            record_name="member",
+            record_id_arg="member_id",
+            record_field_arg="field",
+            changed_value_arg="new_value",
+        )
+        def update_member_info(member_id, field, new_value, reason, user_id, user_role, session_id="default"):
+            return json.dumps({"executed": True})
+
+        mock_wf = Mock()
+        mock_wf.submit_approval_request.return_value = {
+            "approved": True, "pending": False,
+            "request_id": None, "message": "Auto-approved",
+        }
+
+        with patch('agents.tools_util.get_approval_workflow', return_value=mock_wf), \
+             patch('agents.tools_util.track_tool_execution_in_cg'):
+            update_member_info(
+                member_id="M123", field="email",
+                new_value="new@example.com", reason="Requested",
+                user_id="user1", user_role="CSR_TIER2"
+            )
+            call_kwargs = mock_wf.submit_approval_request.call_args[1]
+            assert call_kwargs["details"]["member_id"] == "M123"
+            assert call_kwargs["details"]["field"] == "email"
+            assert call_kwargs["details"]["new_value"] == "new@example.com"
 
 # ============================================
 # Circuit Breaker / Kill Switch Tests
@@ -357,7 +498,7 @@ class TestCircuitBreaker:
                 "event_type": "ACTIVATED",
                 "reason": "Test",
                 "triggered_by": "supervisor_1",
-                "triggered_at": datetime.utcnow(),
+                "triggered_at": datetime.now(timezone.utc),
                 "metadata": json.dumps({"source": "manual"}),
             }
         ]

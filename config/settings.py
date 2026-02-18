@@ -1,17 +1,21 @@
 """
-Configuration settings for Health Insurance CSIP
+Configuration settings for Health Insurance AI Platform
 """
-from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
-from typing import Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional, Any
 import os
 
 
 class Settings(BaseSettings):
     """Application settings"""
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",        # Silently ignore unknown env vars (e.g. ANTHROPIC_API_KEY, LANGCHAIN_*)
+    )
     
     # Application
-    APP_NAME: str = "Health Insurance CSIP"
+    APP_NAME: str = "Health Insurance AI Platform"
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "production"
     DEBUG: bool = False
@@ -105,7 +109,7 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "json"
     LOG_FILE: Optional[str] = "/var/log/health-insurance-ai/app.log"
     
-    # MCP Server
+    # MCP Server (local)
     MCP_ENABLED: bool = True
     MCP_PORT: int = 8001
     
@@ -113,27 +117,28 @@ class Settings(BaseSettings):
     A2A_ENABLED: bool = True
     A2A_PORT: int = 8002
     
-    # Anthropic
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-
-    # LangChain / LangSmith extras (set by langchain CLI / SDK)
-    LANGCHAIN_TRACING_V2: str = os.getenv("LANGCHAIN_TRACING_V2", "false")
-    LANGCHAIN_PROJECT: str = os.getenv("LANGCHAIN_PROJECT", "")
-    LANGSMITH_ENDPOINT: str = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
-
-    # Neo4j single-instance shorthand (used in dev / notebooks)
-    NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
-    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "")
-
-    model_config = ConfigDict(
-        env_file=".env",
-        case_sensitive=True,
-        # Ignore extra env vars (e.g. ANTHROPIC_API_KEY, LANGCHAIN_* set by
-        # other tools) so they don't cause ValidationError on startup.
-        extra="ignore",
+    # Remote MCP Agents (Control 8: Inter-Agent Communication Security)
+    # Member services - remote MCP agent with encrypted communication
+    MCP_MEMBER_SERVICES_URL: str = os.getenv(
+        "MCP_MEMBER_SERVICES_URL", "https://mcp-member:8443"
     )
-
+    MCP_MEMBER_SERVICES_SHARED_SECRET: str = os.getenv(
+        "MCP_MEMBER_SERVICES_SHARED_SECRET", ""
+    )
+    # Claim services - remote MCP agent with encrypted communication
+    MCP_CLAIM_SERVICES_URL: str = os.getenv(
+        "MCP_CLAIM_SERVICES_URL", "https://mcp-claims:8443"
+    )
+    MCP_CLAIM_SERVICES_SHARED_SECRET: str = os.getenv(
+        "MCP_CLAIM_SERVICES_SHARED_SECRET", ""
+    )
+    # Encryption settings
+    MCP_ENCRYPTION_ENABLED: bool = True
+    MCP_NONCE_TTL_SECONDS: int = 300       # 5-minute nonce window
+    MCP_MESSAGE_MAX_AGE_SECONDS: int = 60  # Reject messages older than 60s
+    MCP_VERIFY_TLS: bool = True            # Verify remote TLS certificates
+    MCP_CLIENT_CERT_PATH: Optional[str] = os.getenv("MCP_CLIENT_CERT_PATH")
+    MCP_CLIENT_KEY_PATH: Optional[str] = os.getenv("MCP_CLIENT_KEY_PATH")
 
 # Global settings instance
 settings = Settings()
@@ -177,3 +182,40 @@ def get_chroma_config() -> dict:
         "port": settings.CHROMA_PORT,
         "persist_directory": settings.CHROMA_PERSIST_DIRECTORY,
     }
+
+
+def get_mcp_agent_config(agent_name: str) -> dict:
+    """Get configuration for a remote MCP agent.
+    
+    Args:
+        agent_name: 'member_services_team' or 'claim_services_team'
+    
+    Returns:
+        Dict with url, shared_secret, verify_tls, and client_cert fields.
+    """
+    configs = {
+        "member_services_team": {
+            "url": settings.MCP_MEMBER_SERVICES_URL,
+            "shared_secret": settings.MCP_MEMBER_SERVICES_SHARED_SECRET,
+        },
+        "claim_services_team": {
+            "url": settings.MCP_CLAIM_SERVICES_URL,
+            "shared_secret": settings.MCP_CLAIM_SERVICES_SHARED_SECRET,
+        },
+    }
+    agent_cfg: dict[str, Any] = configs.get(agent_name, {})
+    agent_cfg["verify_tls"] = settings.MCP_VERIFY_TLS
+    agent_cfg["encryption_enabled"] = settings.MCP_ENCRYPTION_ENABLED
+    agent_cfg["nonce_ttl"] = settings.MCP_NONCE_TTL_SECONDS
+    agent_cfg["message_max_age"] = settings.MCP_MESSAGE_MAX_AGE_SECONDS
+    
+    # mTLS client certificate (optional)
+    if settings.MCP_CLIENT_CERT_PATH and settings.MCP_CLIENT_KEY_PATH:
+        agent_cfg["client_cert"] = (
+            settings.MCP_CLIENT_CERT_PATH,
+            settings.MCP_CLIENT_KEY_PATH,
+        )
+    else:
+        agent_cfg["client_cert"] = None
+    
+    return agent_cfg

@@ -67,10 +67,10 @@ class ChromaVectorDataAccess:
         normalised list of result dicts.
 
         Each result dict contains:
-          - id       (str)   – document ID inside the collection
-          - document (str)   – the matched text chunk
-          - metadata (dict)  – metadata stored alongside the document
-          - distance (float) – cosine distance (lower = more similar)
+          - id       (str)   - document ID inside the collection
+          - document (str)   - the matched text chunk
+          - metadata (dict)  - metadata stored alongside the document
+          - distance (float) - cosine distance (lower = more similar)
         """
         try:
             collection = self._conn.get_collection(collection_name)
@@ -152,8 +152,8 @@ class ChromaVectorDataAccess:
         Args:
             query:     Natural-language query (e.g. "What is my deductible?")
             n_results: Maximum results to return.
-            plan_type: Optional filter – HMO, PPO, EPO, POS.
-            status:    Optional filter – ACTIVE, EXPIRED.
+            plan_type: Optional filter - HMO, PPO, EPO, POS.
+            status:    Optional filter - ACTIVE, EXPIRED.
 
         Returns:
             List of result dicts (id, document, metadata, distance).
@@ -188,9 +188,9 @@ class ChromaVectorDataAccess:
         Args:
             query:               Natural-language query (e.g. "knee surgery").
             n_results:           Maximum results to return.
-            category:            Optional filter – OFFICE_VISIT, DIAGNOSTIC,
+            category:            Optional filter - OFFICE_VISIT, DIAGNOSTIC,
                                  LABORATORY, SURGICAL, EMERGENCY.
-            requires_prior_auth: Optional filter – True / False.
+            requires_prior_auth: Optional filter - True / False.
 
         Returns:
             List of result dicts.
@@ -225,7 +225,7 @@ class ChromaVectorDataAccess:
         Args:
             query:    Natural-language query (e.g. "high blood pressure").
             n_results: Maximum results to return.
-            severity: Optional filter – MILD, MODERATE, SEVERE.
+            severity: Optional filter - MILD, MODERATE, SEVERE.
             category: Optional filter.
 
         Returns:

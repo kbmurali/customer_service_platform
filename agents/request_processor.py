@@ -107,7 +107,7 @@ def process_user_request(
             # ============================================
             if approval_workflow._is_circuit_breaker_active():
                 logger.critical(
-                    f"[{session_id}] Circuit breaker active – rejecting request"
+                    f"[{session_id}] Circuit breaker active - rejecting request"
                 )
 
                 requests_blocked.labels(

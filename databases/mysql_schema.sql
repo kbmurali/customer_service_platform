@@ -511,3 +511,44 @@ CREATE INDEX idx_audit_logs_timestamp_user ON audit_logs(timestamp, user_id);
 CREATE INDEX idx_security_events_timestamp_severity ON security_events(timestamp, severity);
 CREATE INDEX idx_agent_metrics_timestamp_agent ON agent_metrics(timestamp, agent_name);
 CREATE INDEX idx_tool_metrics_timestamp_tool ON tool_metrics(timestamp, tool_name);
+
+-- ============================================
+-- CONTROL 8: INTER-AGENT COMMUNICATION SECURITY
+-- ============================================
+
+-- Nonce tracking for replay protection
+-- Nonces are primarily tracked in Redis (sub-ms lookups) but persisted
+-- to MySQL for audit trail and forensic analysis.
+CREATE TABLE IF NOT EXISTS mcp_nonce_log (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    nonce           VARCHAR(64)  NOT NULL,
+    from_agent      VARCHAR(100) NOT NULL,
+    to_agent        VARCHAR(100) NOT NULL,
+    tool_name       VARCHAR(100) NOT NULL,
+    received_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    was_replay      BOOLEAN      DEFAULT FALSE,
+    INDEX idx_nonce_log_nonce (nonce),
+    INDEX idx_nonce_log_agents (from_agent, to_agent),
+    INDEX idx_nonce_log_received (received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Agent key metadata for key rotation auditing
+-- Actual keys are stored in Docker Swarm / K8s secrets, not in the DB.
+CREATE TABLE IF NOT EXISTS mcp_agent_keys (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_pair      VARCHAR(200) NOT NULL COMMENT 'Canonical pair e.g. central_supervisor:member_services_team',
+    key_version     INT          NOT NULL DEFAULT 1,
+    created_at      TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    rotated_at      TIMESTAMP    NULL,
+    is_active       BOOLEAN      DEFAULT TRUE,
+    UNIQUE KEY uk_agent_pair_version (agent_pair, key_version),
+    INDEX idx_agent_keys_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Seed initial agent key metadata for the two remote MCP agent pairs
+INSERT INTO mcp_agent_keys (agent_pair, key_version, is_active) VALUES
+    ('central_supervisor:claim_services_team',  1, TRUE),
+    ('central_supervisor:member_services_team', 1, TRUE);
+
+-- Performance indexes for Control 8
+CREATE INDEX idx_nonce_log_timestamp ON mcp_nonce_log(received_at);

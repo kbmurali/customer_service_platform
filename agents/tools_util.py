@@ -186,7 +186,7 @@ def require_approvals(
                 )
                 return json.dumps(result)
 
-            # Approved – proceed to the actual tool logic
+            # Approved - proceed to the actual tool logic
             return func(*args, **kwargs)
 
         return wrapper
@@ -311,7 +311,7 @@ def require_rate_limits(func):
             
             if limit_per_minute <= 0:
                 # Tool not permitted for this role (handled by RBAC check),
-                # or rate limit is 0 – deny
+                # or rate limit is 0 - deny
                 logger.warning(
                     f"Rate limit lookup returned 0 for {user_role}/{tool_name}"
                 )
@@ -477,7 +477,7 @@ def check_rate_limit_for_tool(
         
         if limit_per_minute <= 0:
             # Tool not permitted for this role (handled by RBAC check),
-            # or rate limit is 0 – deny
+            # or rate limit is 0 - deny
             logger.warning(
                 f"Rate limit lookup returned 0 for {user_role}/{tool_name}"
             )
@@ -531,7 +531,7 @@ def check_rate_limit_for_tool(
         })
     
     except Exception as e:
-        # Fail open – log but allow the request
+        # Fail open - log but allow the request
         logger.error(f"Rate limit check failed for {tool_name}: {e}")
         return None
 
@@ -613,7 +613,7 @@ def search_policy_info(query: str, user_role: str, plan_type: str = "", session_
     Args:
         query:     Natural-language question (e.g. "What is my deductible?")
         user_role: The role of the user making the request
-        plan_type: Optional filter – HMO, PPO, EPO, POS
+        plan_type: Optional filter - HMO, PPO, EPO, POS
         session_id: Session ID for audit and scrubbing
 
     Returns:
