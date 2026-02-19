@@ -15,6 +15,7 @@ import nh3
 from security.nemo_guardrails_integration import get_nemo_filter
 from security.presidio_memory_security import get_presidio_security
 from security.guardrails_output_validation import get_output_validator
+from security.dlp_scanner import get_dlp_scanner
 from agents.central_supervisor import hierarchical_agent_graph
 from agents.security import rbac_service, audit_logger, get_rate_limiter, RateLimitError
 from security.approval_workflow import get_approval_workflow, CircuitBreakerError
@@ -56,11 +57,11 @@ def process_user_request(
     3. Input Sanitization - Control 3
     4. Memory Security (Presidio) - Control 4
     5. Agent Processing (Central Supervisor)
-    6. Tool Authorization (Casbin) - Control 5
+    6. Tool Authorization - Control 5
     7. Human-in-the-Loop (if needed) - Control 6
     8. Rate Limiting & Circuit Breaker - Control 7
     9. Tool Execution - Control 8
-    10. Output Validation (Guardrails AI) - Control 9
+    10. Output Validation (Guardrails AI + DLP) - Control 9
     11. Audit Logging - Control 10
     
     Args:
@@ -85,6 +86,7 @@ def process_user_request(
     nemo_filter = get_nemo_filter()
     presidio_security = get_presidio_security()
     output_validator = get_output_validator()
+    dlp_scanner = get_dlp_scanner()
     approval_workflow = get_approval_workflow()
     
     # Log request received
@@ -373,7 +375,57 @@ def process_user_request(
         logger.info(f"[{session_id}] Output validation passed")
         
         # ============================================
-        # CONTROL 10: AUDIT LOGGING
+        # CONTROL 9b: DLP POST-VALIDATION AUDIT
+        # ============================================
+        # The DLP scanner runs on the *sanitized* output as a defence-in-depth
+        # layer.  It classifies sensitivity and logs to ClickHouse.
+        try:
+            dlp_result = dlp_scanner.scan_output(
+                text=final_response,
+                agent_id=f"request_processor:{session_id}",
+                action="post_guardrails_scan",
+            )
+
+            if not dlp_result.safe:
+                logger.warning(
+                    "[%s] DLP post-scan flagged RESTRICTED content "
+                    "(%d entities) after Guardrails passed — escalating",
+                    session_id, len(dlp_result.entities),
+                )
+                
+                # Use the DLP-redacted text as the final response
+                if dlp_result.redacted_text:
+                    final_response = dlp_result.redacted_text
+
+                requests_blocked.labels(
+                    control_name="dlp_post_scan",
+                    reason="restricted_content_after_guardrails",
+                ).inc()
+
+                audit_logger.log_action(
+                    user_id=user_id,
+                    action="DLP_ESCALATION",
+                    resource_type="AGENT",
+                    resource_id=session_id,
+                    changes={
+                        "sensitivity": dlp_result.sensitivity.value,
+                        "entity_count": len(dlp_result.entities),
+                        "warnings": dlp_result.warnings,
+                    },
+                    status="WARNING",
+                )
+            else:
+                logger.info(
+                    "[%s] DLP post-scan: sensitivity=%s, entities=%d",
+                    session_id, dlp_result.sensitivity.value,
+                    len(dlp_result.entities),
+                )
+        except Exception as dlp_exc:
+            # DLP is best-effort — never block the response
+            logger.error("[%s] DLP post-scan error: %s", session_id, dlp_exc)
+                
+        # ============================================
+        # CONTROL 7 and 10: AUDIT LOGGING
         # ============================================
         audit_start = time.time()
         audit_logger.log_action(

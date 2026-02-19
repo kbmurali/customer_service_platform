@@ -16,7 +16,7 @@ import hashlib
 import json
 import logging
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
 
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
@@ -24,76 +24,35 @@ from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 import redis
 
+from security.presidio_healthcare_recognizers import (
+    get_healthcare_recognizers,
+    get_healthcare_analyzer,
+    ALL_ENTITIES,
+)
+
 logger = logging.getLogger(__name__)
 
 
+# Backward-compatible alias — existing code that references
+# ``HealthcareRecognizers.get_member_id_recognizer()`` etc. will still work.
 class HealthcareRecognizers:
-    """Custom Presidio recognizers for healthcare domain."""
-    
+    """Thin wrapper delegating to ``presidio_healthcare_recognizers``."""
+
     @staticmethod
-    def get_member_id_recognizer() -> PatternRecognizer:
-        """Recognizer for health insurance member IDs."""
-        patterns = [
-            Pattern(name="member_id_pattern", regex=r"\b[A-Z]{1,2}\d{6,8}\b", score=0.85),
-        ]
-        return PatternRecognizer(
-            supported_entity="MEMBER_ID",
-            patterns=patterns,
-            name="MemberIDRecognizer",
-            supported_language="en"
-        )
-    
+    def get_member_id_recognizer():
+        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["MEMBER_ID"]][0]
+
     @staticmethod
-    def get_policy_number_recognizer() -> PatternRecognizer:
-        """Recognizer for insurance policy numbers."""
-        patterns = [
-            Pattern(name="policy_pattern", regex=r"\bPOL-\d{8,10}\b", score=0.85),
-        ]
-        return PatternRecognizer(
-            supported_entity="POLICY_NUMBER",
-            patterns=patterns,
-            name="PolicyNumberRecognizer",
-            supported_language="en"
-        )
-    
+    def get_policy_number_recognizer():
+        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["POLICY_NUMBER"]][0]
+
     @staticmethod
-    def get_claim_number_recognizer() -> PatternRecognizer:
-        """Recognizer for claim numbers."""
-        patterns = [
-            Pattern(name="claim_pattern", regex=r"\bCLM-\d{5,8}\b", score=0.85),
-        ]
-        return PatternRecognizer(
-            supported_entity="CLAIM_NUMBER",
-            patterns=patterns,
-            name="ClaimNumberRecognizer",
-            supported_language="en"
-        )
-    
+    def get_claim_number_recognizer():
+        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["CLAIM_NUMBER"]][0]
+
     @staticmethod
-    def get_pa_number_recognizer() -> PatternRecognizer:
-        """Recognizer for prior authorization numbers."""
-        patterns = [
-            Pattern(name="pa_pattern", regex=r"\bPA-\d{4}-\d{4,6}\b", score=0.85),
-        ]
-        return PatternRecognizer(
-            supported_entity="PA_NUMBER",
-            patterns=patterns,
-            name="PANumberRecognizer",
-            supported_language="en"
-        )
-    
-    @staticmethod
-    def get_ssn_recognizer() -> PatternRecognizer:
-        """Recognizer for US Social Security Numbers."""
-        patterns = [
-            Pattern(name="ssn_pattern", regex=r"\b\d{3}-\d{2}-\d{4}\b", score=0.85),
-        ]
-        return PatternRecognizer(
-            supported_entity="SSN",
-            patterns=patterns,
-            name="SSNRecognizer",
-            supported_language="en"
-        )
+    def get_pa_number_recognizer():
+        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["PA_NUMBER"]][0]
 
 
 class PresidioMemorySecurity:
@@ -130,8 +89,7 @@ class PresidioMemorySecurity:
             HealthcareRecognizers.get_member_id_recognizer(),
             HealthcareRecognizers.get_policy_number_recognizer(),
             HealthcareRecognizers.get_claim_number_recognizer(),
-            HealthcareRecognizers.get_pa_number_recognizer(),
-            HealthcareRecognizers.get_ssn_recognizer(),
+            HealthcareRecognizers.get_pa_number_recognizer()
         ]
         
         for recognizer in recognizers:
@@ -221,12 +179,12 @@ class PresidioMemorySecurity:
         return {
             "PERSON": OperatorConfig("hash", {"hash_type": "sha256"}),
             "SSN": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 11, "from_end": False}),
-            "MEMBER_ID": OperatorConfig("replace", {"new_value": "<MEMBER_ID>"}),
+            "MEMBER_ID": OperatorConfig("encrypt", {"key": vault_id[:32]}),
             "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "<EMAIL>"}),
             "PHONE_NUMBER": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 7, "from_end": True}),
-            "POLICY_NUMBER": OperatorConfig("replace", {"new_value": "<POLICY_NUMBER>"}),
-            "CLAIM_NUMBER": OperatorConfig("replace", {"new_value": "<CLAIM_NUMBER>"}),
-            "PA_NUMBER": OperatorConfig("replace", {"new_value": "<PA_NUMBER>"}),
+            "POLICY_NUMBER": OperatorConfig("encrypt", {"key": vault_id[:32]}),
+            "CLAIM_NUMBER": OperatorConfig("encrypt", {"key": vault_id[:32]}),
+            "PA_NUMBER": OperatorConfig("encrypt", {"key": vault_id[:32]}),
             "CREDIT_CARD": OperatorConfig("redact", {}),
             "US_DRIVER_LICENSE": OperatorConfig("redact", {}),
             "MEDICAL_LICENSE": OperatorConfig("redact", {}),
@@ -285,9 +243,6 @@ class PresidioMemorySecurity:
         Returns:
             List of detected entities with metadata
         """
-        if not text:
-            return []
-        
         results = self.analyzer.analyze(
             text=text,
             language='en',
@@ -373,9 +328,6 @@ class PresidioMemorySecurity:
         Returns:
             Scrubbed text
         """
-        if text is None:
-            return ""
-        
         results = self.analyzer.analyze(
             text=text,
             language='en',
