@@ -48,7 +48,6 @@ def member_lookup(member_id: str, user_role: str, user_id: str = "unknown", sess
         # Query Neo4j KG via data access layer
         kg_data_access = get_kg_data_access()
         member = kg_data_access.get_member(member_id)
-
         if not member:
             error = f"Member not found: {member_id}"
             execution_time = (datetime.now() - start_time).total_seconds() * 1000

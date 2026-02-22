@@ -375,7 +375,7 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     -- CSR_READONLY: Read-only tools, conservative rate limits
     -- -------------------------------------------------------
     (UUID(), 'CSR_READONLY', 'member_lookup',          TRUE,  20),
-    (UUID(), 'CSR_READONLY', 'eligibility_check',      TRUE,  20),
+    (UUID(), 'CSR_READONLY', 'check_eligibility',      TRUE,  20),
     (UUID(), 'CSR_READONLY', 'coverage_lookup',         TRUE,  20),
     (UUID(), 'CSR_READONLY', 'claim_lookup',            TRUE,  20),
     (UUID(), 'CSR_READONLY', 'claim_status',            TRUE,  20),
@@ -395,7 +395,7 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     -- CSR_TIER1: Standard read tools, moderate rate limits
     -- -------------------------------------------------------
     (UUID(), 'CSR_TIER1', 'member_lookup',          TRUE,  30),
-    (UUID(), 'CSR_TIER1', 'eligibility_check',      TRUE,  30),
+    (UUID(), 'CSR_TIER1', 'check_eligibility',      TRUE,  30),
     (UUID(), 'CSR_TIER1', 'coverage_lookup',         TRUE,  30),
     (UUID(), 'CSR_TIER1', 'claim_lookup',            TRUE,  30),
     (UUID(), 'CSR_TIER1', 'claim_status',            TRUE,  30),
@@ -415,7 +415,7 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     -- CSR_TIER2: All read tools + higher rate limits
     -- -------------------------------------------------------
     (UUID(), 'CSR_TIER2', 'member_lookup',          TRUE,  60),
-    (UUID(), 'CSR_TIER2', 'eligibility_check',      TRUE,  60),
+    (UUID(), 'CSR_TIER2', 'check_eligibility',      TRUE,  60),
     (UUID(), 'CSR_TIER2', 'coverage_lookup',         TRUE,  60),
     (UUID(), 'CSR_TIER2', 'claim_lookup',            TRUE,  60),
     (UUID(), 'CSR_TIER2', 'claim_status',            TRUE,  60),
@@ -439,7 +439,7 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     -- CSR_SUPERVISOR: All tools + highest rate limits
     -- -------------------------------------------------------
     (UUID(), 'CSR_SUPERVISOR', 'member_lookup',          TRUE, 120),
-    (UUID(), 'CSR_SUPERVISOR', 'eligibility_check',      TRUE, 120),
+    (UUID(), 'CSR_SUPERVISOR', 'check_eligibility',      TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'coverage_lookup',         TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'claim_lookup',            TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'claim_status',            TRUE, 120),

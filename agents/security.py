@@ -377,6 +377,25 @@ class RBACService:
             logger.error(f"Get tool rate limit failed: {e}")
             return 30  # Default fallback
 
+    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch role and active status for a user.
+
+        Args:
+            user_id: The user's unique identifier.
+
+        Returns:
+            Dict with keys 'role' and 'is_active', or None if not found.
+        """
+        try:
+            result = self.mysql.execute_query(
+                "SELECT `role`, is_active FROM users WHERE user_id = %s",
+                (user_id,),
+            )
+            return result[0] if result else None
+        except Exception as e:
+            logger.error(f"get_user failed for user_id={user_id}: {e}")
+            return None
 
 class RateLimiter:
     """Rate limiting service"""

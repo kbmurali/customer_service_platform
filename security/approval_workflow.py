@@ -148,10 +148,15 @@ class ApprovalWorkflow:
         """Initialize approval workflow with MySQL and Redis."""
         self.mysql = get_mysql()
 
+        resolved_host = settings.REDIS_HOST
+        resolved_port = settings.REDIS_PORT
+        
         self.redis_client = redis.Redis(
-            host=redis_host or getattr(settings, "REDIS_HOST", "localhost"),
-            port=redis_port or getattr(settings, "REDIS_PORT", 6379),
+            host=resolved_host,
+            port=resolved_port,
             decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=10
         )
 
         self._ensure_tables()

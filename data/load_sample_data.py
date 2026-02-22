@@ -351,11 +351,11 @@ class DatabaseLoader:
         
         try:
             # Create or get collections
-            policies_col   = self.chroma_client.get_or_create_collection(name="policies")
-            procedures_col = self.chroma_client.get_or_create_collection(name="procedures")
-            diagnoses_col  = self.chroma_client.get_or_create_collection(name="diagnoses")
-            faqs_col       = self.chroma_client.get_or_create_collection(name="faqs")
-            guidelines_col = self.chroma_client.get_or_create_collection(name="clinical_guidelines")
+            policies_col   = self.chroma_client.get_or_create_collection(name="policies", embedding_function=self.openai_ef )
+            procedures_col = self.chroma_client.get_or_create_collection(name="procedures", embedding_function=self.openai_ef)
+            diagnoses_col  = self.chroma_client.get_or_create_collection(name="diagnoses", embedding_function=self.openai_ef)
+            faqs_col       = self.chroma_client.get_or_create_collection(name="faqs", embedding_function=self.openai_ef)
+            guidelines_col = self.chroma_client.get_or_create_collection(name="clinical_guidelines", embedding_function=self.openai_ef)
 
             # Load policy documents
             print(f"Loading {len(data['policies'])} policy documents...")

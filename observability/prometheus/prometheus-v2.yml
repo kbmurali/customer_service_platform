@@ -22,25 +22,12 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Agent API service
-  - job_name: 'agent-api'
-    metrics_path: '/metrics'
+  # CircuitBreaker and HITL Redis
+  - job_name: 'cb-hitl-redis'
     static_configs:
-      - targets: ['agent-api:8000']
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: 'agent-api'
-
-  # MCP Server
-  - job_name: 'mcp-server'
+      - targets: ['cb-hitl-redis-exporter:9121']
     metrics_path: '/metrics'
-    static_configs:
-      - targets: ['mcp-server:8001']
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: 'mcp-server'
+    scrape_interval: 30s
 
   # Neo4j Knowledge Graph
   - job_name: 'neo4j-kg'

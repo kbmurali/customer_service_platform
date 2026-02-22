@@ -5,6 +5,8 @@ Pure Cypher-based data access for Neo4j Context Graph (CG)
 
 from typing import Dict, Any, List, Optional
 import logging
+import json
+
 from databases.connections import get_neo4j_cg
 
 logger = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ class ContextGraphDataAccess:
             result = self.conn.execute_query(query, {
                 "sessionId": session_id,
                 "userId": user_id,
-                "metadata": metadata or {}
+                "metadata": json.dumps( metadata or {} )
             })
             return len(result) > 0
         except Exception as e:
@@ -153,8 +155,8 @@ class ContextGraphDataAccess:
                 "sessionId": session_id,
                 "role": role,
                 "content": content,
-                "toolCalls": tool_calls or [],
-                "metadata": metadata or {}
+                "toolCalls": json.dumps( tool_calls or {} ),
+                "metadata": json.dumps( metadata or {} )
             })
             if result and len(result) > 0:
                 return result[0].get("messageId")
@@ -235,7 +237,7 @@ class ContextGraphDataAccess:
                 "agentName": agent_name,
                 "agentType": agent_type,
                 "status": status,
-                "metadata": metadata or {}
+                "metadata": json.dumps( metadata or {} )
             })
             if result and len(result) > 0:
                 return result[0].get("executionId")
@@ -277,7 +279,7 @@ class ContextGraphDataAccess:
         
         params = {"executionId": execution_id, "status": status}
         if result:
-            params["result"] = result
+            params["result"] = json.dumps( result or {} )
         if error:
             params["error"] = error
         
@@ -356,8 +358,8 @@ class ContextGraphDataAccess:
         try:
             result = self.conn.execute_query(query, {
                 "sessionId": session_id,
-                "goals": plan.get("goals", []),
-                "steps": plan.get("steps", []),
+                "goals": json.dumps( plan.get("goals", []) ),
+                "steps": json.dumps( plan.get("steps", []) ),
                 "agentName": agent_name
             })
             if result and len(result) > 0:
@@ -402,6 +404,7 @@ class ContextGraphDataAccess:
     
     def update_plan_progress(self,
                             session_id: str,
+                            plan_id: str,
                             completed_goal_index: int,
                             goal_result: str) -> bool:
         """
@@ -416,7 +419,7 @@ class ContextGraphDataAccess:
             True if successful
         """
         query = """
-        MATCH (s:Session {sessionId: $sessionId})-[:HAS_PLAN]->(p:Plan {status: 'active'})
+        MATCH (s:Session {sessionId: $sessionId})-[:HAS_PLAN]->(p:Plan {status: 'active', planId: $planId})
         CREATE (gc:GoalCompletion {
             goalIndex: $goalIndex,
             result: $result,
@@ -429,6 +432,7 @@ class ContextGraphDataAccess:
         try:
             result = self.conn.execute_query(query, {
                 "sessionId": session_id,
+                "planId": plan_id,
                 "goalIndex": completed_goal_index,
                 "result": goal_result
             })
@@ -437,28 +441,29 @@ class ContextGraphDataAccess:
             logger.error(f"Error updating plan progress for session {session_id}: {e}")
             return False
     
-    def complete_plan(self, session_id: str) -> bool:
+    def complete_plan(self, session_id: str, plan_id: str ) -> bool:
         """
         Mark plan as completed.
         
         Args:
             session_id: Session ID
+            plan_id: Plan ID
             
         Returns:
             True if successful
         """
         query = """
-        MATCH (s:Session {sessionId: $sessionId})-[:HAS_PLAN]->(p:Plan {status: 'active'})
+        MATCH (s:Session {sessionId: $sessionId})-[:HAS_PLAN]->(p:Plan {status: 'active', planId: $planId })
         SET p.status = 'completed',
             p.completedAt = datetime()
         RETURN p.planId AS planId
         """
         
         try:
-            result = self.conn.execute_query(query, {"sessionId": session_id})
+            result = self.conn.execute_query( query, {"sessionId": session_id, "planId": plan_id })
             return len(result) > 0
         except Exception as e:
-            logger.error(f"Error completing plan for session {session_id}: {e}")
+            logger.error(f"Error completing plan with {plan_id} for session {session_id} : {e}")
             return False
     
     # ==================== Tool Execution Operations ====================
@@ -506,8 +511,8 @@ class ContextGraphDataAccess:
             result = self.conn.execute_query(query, {
                 "sessionId": session_id,
                 "toolName": tool_name,
-                "input": input_data,
-                "output": output_data or {},
+                "input": json.dumps( input_data or {} ),
+                "output": json.dumps( output_data or {} ),
                 "status": status,
                 "execution_time_ms": execution_time_ms,
                 "error": error
@@ -584,7 +589,7 @@ class ContextGraphDataAccess:
                 "sessionId": session_id,
                 "eventType": event_type,
                 "severity": severity,
-                "details": details
+                "details": json.dumps( details or {} )
             })
             if result and len(result) > 0:
                 return result[0].get("eventId")

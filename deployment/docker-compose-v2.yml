@@ -1,8 +1,10 @@
 configs:
+  api_gateway_nginx_config:
+    file: ../deployment/nginx/api_gateway.conf
   mysql_schema:
     file: ../databases/mysql_schema.sql
   prometheus_config:
-    file: ../observability/prometheus/prometheus-v1.yml
+    file: ../observability/prometheus/prometheus-v2.yml
   clickhouse_config:
     file: ../observability/clickhouse/clickhouse_config.xml
   clickhouse_prometheus_config:
@@ -13,6 +15,29 @@ configs:
     file: ../observability/blackbox/blackbox-config.yml
 
 services:
+  # Redis for CircuitBreaker and HITL Metrics
+  cb-hitl-redis:
+    image: redis:7.2-alpine
+    ports:
+      - target: 6379
+        published: 6379
+        protocol: tcp
+        mode: host        # this is the key line for swarm mode
+    networks:
+      - health-insurance-network
+
+  # ── CircuitBreaker and HITL Redis Exporter ────────────────────────────────────────────
+  cb-hitl-redis-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      - REDIS_ADDR=redis://cb-hitl-redis:6379
+    networks:
+      - health-insurance-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
   # Neo4j Knowledge Graph
   neo4j-kg:
     image: neo4j:5.15-community
@@ -394,7 +419,7 @@ services:
         delay: 10s   # Wait for postgres to be ready
   
   langfuse:
-    image: langfuse/langfuse:latest
+    image: langfuse/langfuse:2
     ports:
       - target: 3000
         published: 3001
@@ -455,6 +480,14 @@ services:
           sleep 2
         done
         echo "Postgres is up!"
+
+        # --- ADDED: WAIT FOR CLICKHOUSE ---
+        echo "Waiting for ClickHouse (clickhouse:9000)..."
+        until nc -z clickhouse 9000; do
+          echo "ClickHouse is unavailable - sleeping"
+          sleep 2
+        done
+        echo "ClickHouse is up!"
         # --------------------------------
         exec ./web/entrypoint.sh node web/server.js
     depends_on:
@@ -516,6 +549,38 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── API Gateway (Nginx mTLS) ──────────────────────────────────────────────
+  # Single entry point for all internal MCP tool servers and future
+  # Supervisor A2A endpoints. Routes by path to internal services.
+  # Only this container exposes external ports for MCP/A2A traffic.
+  api-gateway:
+    image: nginx:alpine
+    ports:
+      - target: 8443
+        published: 8443
+        protocol: tcp
+        mode: host
+    configs:
+      - source: api_gateway_nginx_config
+        target: /etc/nginx/conf.d/api_gateway.conf
+    secrets:
+      - MCP_SERVER_CERT
+      - MCP_SERVER_KEY
+      - MCP_CA_CERT
+    networks:
+      - health-insurance-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
 
   # Grafana (Dashboards)
   grafana:
@@ -592,4 +657,10 @@ secrets:
   OPENAI_API_KEY:
     external: true
   ANTHROPIC_API_KEY:
+    external: true
+  MCP_SERVER_CERT:
+    external: true
+  MCP_SERVER_KEY:
+    external: true
+  MCP_CA_CERT:
     external: true

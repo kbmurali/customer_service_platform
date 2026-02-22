@@ -11,18 +11,19 @@ Control 4: Memory & Context Security
 - Integration with Chroma vector DB and Neo4j Context Graph
 """
 
-import os
 import hashlib
 import json
 import logging
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from cryptography.fernet import Fernet
 
-from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
+from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 import redis
+
+from config.settings import get_settings, Settings
 
 from security.presidio_healthcare_recognizers import (
     get_healthcare_recognizers,
@@ -31,6 +32,8 @@ from security.presidio_healthcare_recognizers import (
 )
 
 logger = logging.getLogger(__name__)
+
+settings: Settings = get_settings()
 
 
 # Backward-compatible alias — existing code that references
@@ -99,15 +102,16 @@ class PresidioMemorySecurity:
     def _get_redis_client(self) -> redis.Redis:
         """Get Redis client for vault storage."""
         return redis.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
-            db=int(os.getenv("REDIS_VAULT_DB", 2)),
+            host = settings.REDIS_HOST,
+            port = settings.REDIS_PORT,
+            db = settings.REDIS_VAULT_DB,
             decode_responses=False
         )
     
     def _get_encryption_key(self) -> bytes:
         """Get or generate encryption key for vault."""
-        key_env = os.getenv("VAULT_ENCRYPTION_KEY")
+        key_env = settings.VAULT_ENCRYPTION_KEY
+        
         if key_env:
             return key_env.encode()
         

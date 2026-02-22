@@ -1,0 +1,51 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_lg
+
+# Copy config
+COPY config/ ./config/
+
+# Copy security
+COPY security/ ./security/
+
+# Copy databases
+COPY databases/ ./databases/
+
+# Copy observability
+COPY observability/__init__.py ./observability/
+COPY observability/langfuse_integration.py ./observability/
+COPY observability/prometheus_metrics.py ./observability/
+
+# Copy agents/core
+COPY agents/__init__.py ./agents/
+COPY agents/core/ ./agents/core/
+
+# Copy agents/security.py and agents/tools_util.py
+COPY agents/security.py ./agents/
+COPY agents/tools_util.py ./agents/
+
+# Copy agents/teams/member_services/mcp_tools
+COPY agents/teams/__init__.py ./agents/teams/
+COPY agents/teams/member_services/__init__.py ./agents/teams/member_services/
+COPY agents/teams/member_services/mcp_tools/__init__.py ./agents/teams/member_services/mcp_tools/
+COPY agents/teams/member_services/mcp_tools/ ./agents/teams/member_services/mcp_tools/
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Expose MCP server port
+EXPOSE 8001
+
+# Run MCP server
+CMD ["python", "-m", "agents.teams.member_services.mcp_tools.mcp_server"]

@@ -1,5 +1,5 @@
 """
-Configuration settings for Health Insurance AI Platform
+Configuration settings for Health Insurance CSIP
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, Any
@@ -14,8 +14,21 @@ class Settings(BaseSettings):
         extra="ignore",        # Silently ignore unknown env vars (e.g. ANTHROPIC_API_KEY, LANGCHAIN_*)
     )
     
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o")
+    LLM_TEMPERATURE: float = float( os.getenv("LLM_TEMPERATURE", "0.7") )
+    LLM_MAX_TOKENS: int = int( os.getenv("LLM_MAX_TOKENS", "4096") )
+
+    # Anthropic
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # AWS Bedrock
+    AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
+
     # Application
-    APP_NAME: str = "Health Insurance AI Platform"
+    APP_NAME: str = "Health Insurance CSIP"
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "production"
     DEBUG: bool = False
@@ -44,7 +57,7 @@ class Settings(BaseSettings):
     NEO4J_KG_DATABASE: str = "neo4j"
     
     # Neo4j Context Graph
-    NEO4J_CG_URI: str = os.getenv("NEO4J_CG_URI", "bolt://neo4j-cg:7687")
+    NEO4J_CG_URI: str = os.getenv("NEO4J_CG_URI", "bolt://neo4j-cg:7688")
     NEO4J_CG_USER: str = os.getenv("NEO4J_CG_USER", "neo4j")
     NEO4J_CG_PASSWORD: str = os.getenv("NEO4J_CG_PASSWORD", "")
     NEO4J_CG_DATABASE: str = "neo4j"
@@ -61,12 +74,15 @@ class Settings(BaseSettings):
     CHROMA_PORT: int = int(os.getenv("CHROMA_PORT", "8000"))
     CHROMA_PERSIST_DIRECTORY: str = "/data/chroma"
     
+    # CB-HITL Redis
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_VAULT_DB: int = int(os.getenv("REDIS_VAULT_DB", 2))
+    VAULT_ENCRYPTION_KEY: str = os.getenv("VAULT_ENCRYPTION_KEY", "")
+    
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL: str = "gpt-4.1-mini"
-    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    OPENAI_TEMPERATURE: float = 0.7
-    OPENAI_MAX_TOKENS: int = 4096
+    OPENAI_EMBEDDING_MODEL: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # LangSmith
     LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY", "")
@@ -92,9 +108,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_WINDOW_SECONDS: int = 60
     
     # Agent Configuration
-    AGENT_TIMEOUT_SECONDS: int = 300
-    AGENT_MAX_RETRIES: int = 3
-    AGENT_RETRY_DELAY_SECONDS: int = 2
+    AGENT_TIMEOUT_SECONDS: int = int( os.getenv("AGENT_TIMEOUT_SECONDS", "300") )
+    AGENT_MAX_RETRIES: int = int( os.getenv("AGENT_MAX_RETRIES", "1") )
+    AGENT_RETRY_BACKOFF_DELAY_SECONDS: int = int( os.getenv("AGENT_RETRY_BACKOFF_DELAY_SECONDS", "10") )
     
     # Supervisor Configuration
     SUPERVISOR_MAX_ITERATIONS: int = 50
@@ -107,7 +123,7 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
-    LOG_FILE: Optional[str] = "/var/log/health-insurance-ai/app.log"
+    LOG_FILE: Optional[str] = "/var/log/health-insurance-csip/app.log"
     
     # MCP Server (local)
     MCP_ENABLED: bool = True

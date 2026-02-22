@@ -8,7 +8,9 @@ from contextlib import contextmanager
 from neo4j import GraphDatabase, Driver
 import pymysql
 from pymysql.cursors import DictCursor
+
 import chromadb
+from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 from chromadb.config import Settings as ChromaSettings
 
 from config.settings import get_settings, get_neo4j_kg_config, get_neo4j_cg_config, get_chroma_config
@@ -201,17 +203,27 @@ class ChromaConnection:
         return self.client
     
     def get_or_create_collection(self, name: str, metadata: Optional[Dict[str, Any]] = None):
-        """Get or create a collection"""
         client = self.connect()
+        embedding_function = OpenAIEmbeddingFunction(
+            api_key=settings.OPENAI_API_KEY,
+            model_name=settings.OPENAI_EMBEDDING_MODEL
+        )
         return client.get_or_create_collection(
             name=name,
-            metadata=metadata or {}
+            metadata=metadata or {},
+            embedding_function=embedding_function
         )
     
     def get_collection(self, name: str):
-        """Get an existing collection"""
         client = self.connect()
-        return client.get_collection(name=name)
+        embedding_function = OpenAIEmbeddingFunction(
+            api_key=settings.OPENAI_API_KEY,
+            model_name=settings.OPENAI_EMBEDDING_MODEL  # text-embedding-3-small = 1536 dims
+        )
+        return client.get_collection(
+            name=name,
+            embedding_function=embedding_function
+        )
     
     def list_collections(self) -> list:
         """List all collections"""

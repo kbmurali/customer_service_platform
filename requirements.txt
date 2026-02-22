@@ -43,6 +43,9 @@ pandas>=2.1.0
 numpy==1.26.4
 numexpr>=2.11.0
 
+# Web Framework
+fastapi==0.115.12
+
 # Development and Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
@@ -59,6 +62,7 @@ python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 
 # Observability
+langfuse==2.60.3
 prometheus-client==0.21.1
 
 # Control 1: Prompt Injection Defense

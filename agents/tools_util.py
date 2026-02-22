@@ -35,6 +35,90 @@ cg_data_access = get_cg_data_access()
 # ============================================
 # Permission Decorators
 # ============================================
+def validate_user_role(func):
+    """
+    Decorator that validates the user_role argument against the role stored
+    in the database for the given user_id, and checks that the user is active.
+
+    Checks (in order):
+        1. user_id exists in the users table.
+        2. The user's is_active flag is 1 (active).
+        3. The user_role argument matches the role stored in the database.
+
+    Returns a JSON error string and skips the tool body if any check fails.
+
+    Stacking order with @tool:
+        @tool
+        @circuit_breaker
+        @validate_user_role
+        @require_approvals(...)
+        @require_rate_limits
+        @require_permissions("MEMBER", "READ")     # innermost — runs first at call time
+
+    Usage:
+        @tool
+        @circuit_breaker
+        @validate_user_role
+        @require_rate_limits
+        @require_permissions("MEMBER", "READ")
+        def member_lookup(member_id: str, user_id: str, user_role: str, ...) -> str:
+            ...
+    """
+    sig = inspect.signature(func)
+    param_names = list(sig.parameters.keys())
+
+    def _get(name, args, kwargs):
+        if name in kwargs:
+            return kwargs[name]
+        try:
+            return args[param_names.index(name)]
+        except (ValueError, IndexError):
+            return None
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        user_id   = _get("user_id",   args, kwargs)
+        user_role = _get("user_role", args, kwargs)
+
+        try:
+            user = rbac_service.get_user(user_id)
+        except Exception as e:
+            logger.error(f"validate_user_role: DB lookup failed for user_id={user_id}: {e}")
+            return json.dumps({
+                "error": "User validation failed due to a database error.",
+                "error_type": "user_validation_error",
+            })
+
+        if user is None:
+            logger.warning(f"validate_user_role: unknown user_id={user_id}")
+            return json.dumps({
+                "error": f"User '{user_id}' not found.",
+                "error_type": "user_not_found",
+            })
+
+        if not user.get("is_active"):
+            logger.warning(f"validate_user_role: inactive user_id={user_id}")
+            return json.dumps({
+                "error": f"User '{user_id}' is not active.",
+                "error_type": "user_inactive",
+            })
+
+        db_role = user.get("role")
+        if db_role != user_role:
+            logger.warning(
+                f"validate_user_role: role mismatch for user_id={user_id} "
+                f"— claimed={user_role}, db={db_role}"
+            )
+            return json.dumps({
+                "error": f"Role mismatch for user '{user_id}': "
+                         f"claimed '{user_role}' but database has '{db_role}'.",
+                "error_type": "role_mismatch",
+            })
+
+        return func(*args, **kwargs)
+
+    return wrapper
+
 def require_approvals(
     action: str,
     record_name: str,
@@ -102,7 +186,7 @@ def require_approvals(
         def wrapper(*args, **kwargs):
             # --- Extract values from the tool's kwargs ---
             user_role  = _get("user_role",  args, kwargs) or "unknown"
-            user_id = _get("user_role",  args, kwargs) or ""
+            user_id = _get("user_id",  args, kwargs) or ""
             session_id = _get("session_id", args, kwargs) or "default"
             reason = _get("reason",  args, kwargs) or ""
 
@@ -185,7 +269,7 @@ def require_approvals(
                     session_id, tool_name, details, status="pending_approval"
                 )
                 return json.dumps(result)
-
+            
             # Approved - proceed to the actual tool logic
             return func(*args, **kwargs)
 
@@ -236,7 +320,7 @@ def circuit_breaker(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         user_role  = _get("user_role",  args, kwargs) or "unknown"
-        user_id = _get("user_role",  args, kwargs) or ""
+        user_id = _get("user_id",  args, kwargs) or ""
         session_id = _get("session_id", args, kwargs) or "default"
         
         try:
@@ -302,7 +386,7 @@ def require_rate_limits(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         user_role  = _get("user_role",  args, kwargs) or "unknown"
-        user_id = _get("user_role",  args, kwargs) or ""
+        user_id = _get("user_id",  args, kwargs) or ""
         session_id = _get("session_id", args, kwargs) or "default"
         
         try:
@@ -323,7 +407,7 @@ def require_rate_limits(func):
                 user_id=user_id,
                 result="checked"
             ).inc()
-            
+    
             # Enforce the sliding-window rate limit
             rate_limiter.check_rate_limit(
                 user_id=user_id,
@@ -421,7 +505,7 @@ def require_permissions(resource_type: str, action: str):
         def wrapper(*args, **kwargs):
             user_role  = _get("user_role",  args, kwargs)
             session_id = _get("session_id", args, kwargs) or "default"
-
+            
             # ── Check 1: Tool-level permission ────────────────────────────────
             if not rbac_service.check_tool_permission(user_role, tool_name):
                 error = f"Access denied: insufficient permissions for {tool_name} tool"
@@ -432,7 +516,7 @@ def require_permissions(resource_type: str, action: str):
                     error=error,
                 )
                 return json.dumps({"error": error})
-
+            
             # ── Check 2: Resource-level permission ────────────────────────────
             if not rbac_service.check_permission(user_role, resource_type, action):
                 error = f"Access denied: insufficient permissions for {resource_type} resource"
@@ -443,7 +527,7 @@ def require_permissions(resource_type: str, action: str):
                     error=error,
                 )
                 return json.dumps({"error": error})
-
+            
             return func(*args, **kwargs)
 
         return wrapper
