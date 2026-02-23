@@ -1,0 +1,117 @@
+services:
+  member-services-mcp-tools:
+    image: csip/member-services-mcp-tools:latest
+    # No host ports — all external access goes through api-gateway
+    secrets:
+      - LANGFUSE_SECRET_KEY
+      - LANGFUSE_PUBLIC_KEY
+      - OPENAI_API_KEY
+      - MYSQL_PASSWORD
+      - NEO4J_KG_PASSWORD
+      - NEO4J_CG_PASSWORD
+      - SECRET_KEY
+      - VAULT_ENCRYPTION_KEY
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        export LANGFUSE_SECRET_KEY="$$(cat /run/secrets/LANGFUSE_SECRET_KEY)" 
+        export LANGFUSE_PUBLIC_KEY="$$(cat /run/secrets/LANGFUSE_PUBLIC_KEY)"
+        export OPENAI_API_KEY="$$(cat /run/secrets/OPENAI_API_KEY)"
+        export MYSQL_PASSWORD="$$(cat /run/secrets/MYSQL_PASSWORD)"
+        export NEO4J_KG_PASSWORD="$$(cat /run/secrets/NEO4J_KG_PASSWORD)"
+        export NEO4J_CG_PASSWORD="$$(cat /run/secrets/NEO4J_CG_PASSWORD)"
+        export SECRET_KEY="$$(cat /run/secrets/SECRET_KEY)"
+        export VAULT_ENCRYPTION_KEY="$$(cat /run/secrets/VAULT_ENCRYPTION_KEY)"
+        exec python -m agents.teams.member_services.mcp_tools.mcp_server
+    environment:
+      # ── Application ──
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      PYTHONPATH: /app
+      # ── MCP Server ──
+      MEMBER_POLICY_MCP_PORT: "8001"
+      # ── MySQL ──
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: app_user
+      MYSQL_DATABASE: health_insurance
+      # ── Neo4j Knowledge Graph ──
+      NEO4J_KG_URI: bolt://neo4j-kg:7687
+      NEO4J_KG_USER: neo4j
+      NEO4J_KG_DATABASE: neo4j
+      # ── Neo4j Context Graph ──
+      NEO4J_CG_URI: bolt://neo4j-cg:7687
+      NEO4J_CG_USER: neo4j
+      NEO4J_CG_DATABASE: neo4j
+      # ── ChromaDB ──
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      # ── Redis (Circuit Breaker / Vault) ──
+      REDIS_HOST: cb-hitl-redis
+      REDIS_PORT: "6379"
+      REDIS_VAULT_DB: "2"
+    depends_on:
+      - mysql
+      - neo4j-kg
+      - neo4j-cg
+      - chroma
+      - cb-hitl-redis
+    networks:
+      - health_insurance_health-insurance-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          memory: 2G
+
+networks:
+  health_insurance_health-insurance-network:
+    external: true
+
+# ============================================
+# Secrets (Docker Swarm external secrets)
+# ============================================
+secrets:
+  NEO4J_KG_PASSWORD:
+    external: true
+  NEO4J_CG_PASSWORD:
+    external: true
+  MYSQL_ROOT_PASSWORD:
+    external: true
+  MYSQL_PASSWORD:
+    external: true
+  CLICKHOUSE_PASSWORD:
+    external: true
+  MINIO_ROOT_PASSWORD:
+    external: true
+  LANGFUSE_DB_PASSWORD:
+    external: true
+  LANGFUSE_NEXTAUTH_SECRET:
+    external: true
+  LANGFUSE_SALT:
+    external: true
+  LANGFUSE_ENCRYPT_KEY:
+    external: true
+  LANGFUSE_SECRET_KEY:
+    external: true
+  LANGFUSE_PUBLIC_KEY:
+    external: true
+  GRAFANA_ADMIN_PASSWORD:
+    external: true
+  SECRET_KEY:
+    external: true
+  OPENAI_API_KEY:
+    external: true
+  ANTHROPIC_API_KEY:
+    external: true
+  VAULT_ENCRYPTION_KEY:
+    external: true

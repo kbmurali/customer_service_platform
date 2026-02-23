@@ -115,8 +115,36 @@ class MCPToolClient:
             client = MultiServerMCPClient(config)
             return await client.get_tools(server_name=server_name)
 
+        def _run_in_thread():
+            """Run _fetch() in a dedicated thread with its own event loop.
+
+            asyncio.run() cannot be called when an event loop is already
+            running (e.g. inside uvicorn lifespan or a FastAPI handler).
+            A thread is fully isolated from the caller's event loop.
+            """
+            import threading
+            result_holder: list = []
+            exc_holder:    list = []
+
+            def _target():
+                loop = asyncio.new_event_loop()
+                try:
+                    result_holder.append(loop.run_until_complete(_fetch()))
+                except Exception as exc:
+                    exc_holder.append(exc)
+                finally:
+                    loop.close()
+
+            t = threading.Thread(target=_target, daemon=True)
+            t.start()
+            t.join()
+
+            if exc_holder:
+                raise exc_holder[0]
+            return result_holder[0]
+
         try:
-            tools = asyncio.run(_fetch())
+            tools = _run_in_thread()
             self._async_tool_map = {t.name: t for t in tools}
             logger.info(
                 "Connected to %s — discovered tools: %s",

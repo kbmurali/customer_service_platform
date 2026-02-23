@@ -1,0 +1,59 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+# Bake spaCy model into image to avoid runtime download and healthcheck timeouts
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_lg
+
+# Copy config
+COPY config/ ./config/
+
+# Copy security
+COPY security/ ./security/
+
+# Copy databases
+COPY databases/ ./databases/
+
+# Copy LLM providers
+COPY llm_providers/ ./llm_providers/
+
+# Copy observability
+COPY observability/__init__.py ./observability/
+COPY observability/langfuse_integration.py ./observability/
+COPY observability/prometheus_metrics.py ./observability/
+
+# Copy agents/core (state, error_handling, context_graph, etc.)
+COPY agents/__init__.py ./agents/
+COPY agents/core/ ./agents/core/
+
+# Copy agents/security.py
+COPY agents/security.py ./agents/
+
+# Copy agents/teams/member_services — supervisor + workers + mcp client + a2a server
+COPY agents/teams/__init__.py ./agents/teams/
+COPY agents/teams/member_services/__init__.py ./agents/teams/member_services/
+COPY agents/teams/member_services/member_services_mcp_tool_client.py ./agents/teams/member_services/
+COPY agents/teams/member_services/member_services_a2a_agent_card.py ./agents/teams/member_services/
+COPY agents/teams/member_services/supervisor/ ./agents/teams/member_services/supervisor/
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Expose A2A server port
+EXPOSE 8101
+
+# Run A2A server
+CMD ["python", "-m", "uvicorn", \
+     "agents.teams.member_services.supervisor.member_services_a2a_server:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8101", \
+     "--workers", "1"]

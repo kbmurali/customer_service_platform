@@ -1,32 +1,51 @@
 services:
-  member-services-mcp-tools:
-    image: csip/member-services-mcp-tools:latest
-    # No host ports — all external access goes through api-gateway
+  member-services-a2a-server:
+    image: csip/member-services-a2a-server:latest
+    # No host ports — all external access goes through api-gateway on port 8443
     secrets:
+      - LANGFUSE_SECRET_KEY
+      - LANGFUSE_PUBLIC_KEY
+      - MCP_MASTER_SECRET
       - OPENAI_API_KEY
       - MYSQL_PASSWORD
       - NEO4J_KG_PASSWORD
       - NEO4J_CG_PASSWORD
       - SECRET_KEY
       - VAULT_ENCRYPTION_KEY
+      - MCP_CLIENT_CERT
+      - MCP_CLIENT_KEY
+      - MCP_CA_CERT
     entrypoint:
       - /bin/sh
       - -lc
       - |
+        export MCP_MASTER_SECRET="$$(cat /run/secrets/MCP_MASTER_SECRET)"
+        export LANGFUSE_SECRET_KEY="$$(cat /run/secrets/LANGFUSE_SECRET_KEY)" 
+        export LANGFUSE_PUBLIC_KEY="$$(cat /run/secrets/LANGFUSE_PUBLIC_KEY)" 
         export OPENAI_API_KEY="$$(cat /run/secrets/OPENAI_API_KEY)"
         export MYSQL_PASSWORD="$$(cat /run/secrets/MYSQL_PASSWORD)"
         export NEO4J_KG_PASSWORD="$$(cat /run/secrets/NEO4J_KG_PASSWORD)"
         export NEO4J_CG_PASSWORD="$$(cat /run/secrets/NEO4J_CG_PASSWORD)"
         export SECRET_KEY="$$(cat /run/secrets/SECRET_KEY)"
         export VAULT_ENCRYPTION_KEY="$$(cat /run/secrets/VAULT_ENCRYPTION_KEY)"
-        exec python -m agents.teams.member_services.mcp_tools.mcp_server
+        exec python -m uvicorn \
+          agents.teams.member_services.supervisor.member_services_a2a_server:app \
+          --host 0.0.0.0 \
+          --port 8101 \
+          --workers 1
     environment:
       # ── Application ──
       APP_ENV: production
       LOG_LEVEL: INFO
       PYTHONPATH: /app
-      # ── MCP Server ──
-      MEMBER_POLICY_MCP_PORT: "8001"
+      # ── A2A Server ──
+      A2A_AGENT_PORT: "8101"
+      A2A_MEMBER_SERVICES_URL: "https://api-gateway:8443/a2a/member"
+      # ── MCP Client (connects to member-services-mcp-tools via api-gateway) ──
+      MCP_MEMBER_SERVICES_HTTP_URL: "https://api-gateway:8443/member-services"
+      MCP_CLIENT_CERT: "/run/secrets/MCP_CLIENT_CERT"
+      MCP_CLIENT_KEY: "/run/secrets/MCP_CLIENT_KEY"
+      MCP_CA_CERT: "/run/secrets/MCP_CA_CERT"
       # ── MySQL ──
       MYSQL_HOST: mysql
       MYSQL_PORT: "3306"
@@ -37,7 +56,7 @@ services:
       NEO4J_KG_USER: neo4j
       NEO4J_KG_DATABASE: neo4j
       # ── Neo4j Context Graph ──
-      NEO4J_CG_URI: bolt://neo4j-cg:7688
+      NEO4J_CG_URI: bolt://neo4j-cg:7687
       NEO4J_CG_USER: neo4j
       NEO4J_CG_DATABASE: neo4j
       # ── ChromaDB ──
@@ -47,16 +66,10 @@ services:
       REDIS_HOST: cb-hitl-redis
       REDIS_PORT: "6379"
       REDIS_VAULT_DB: "2"
-    depends_on:
-      - mysql
-      - neo4j-kg
-      - neo4j-cg
-      - chroma
-      - cb-hitl-redis
     networks:
       - health_insurance_health-insurance-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health')"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -97,6 +110,10 @@ secrets:
     external: true
   LANGFUSE_ENCRYPT_KEY:
     external: true
+  LANGFUSE_SECRET_KEY:
+    external: true
+  LANGFUSE_PUBLIC_KEY:
+    external: true
   GRAFANA_ADMIN_PASSWORD:
     external: true
   SECRET_KEY:
@@ -106,4 +123,12 @@ secrets:
   ANTHROPIC_API_KEY:
     external: true
   VAULT_ENCRYPTION_KEY:
+    external: true
+  MCP_CLIENT_CERT:
+    external: true
+  MCP_CLIENT_KEY:
+    external: true
+  MCP_CA_CERT:
+    external: true
+  MCP_MASTER_SECRET:
     external: true

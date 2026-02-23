@@ -8,7 +8,8 @@ configs:
   clickhouse_config:
     file: ../observability/clickhouse/clickhouse_config.xml
   clickhouse_prometheus_config:
-    file: ../observability/clickhouse/prometheus.xml  
+    file: ../observability/clickhouse/prometheus.xml
+  
   jmx_exporter_config:
     file: ../observability/jmx_exporter/jmx-config.yml
   blackbox_config:

@@ -155,6 +155,14 @@ class Settings(BaseSettings):
     MCP_VERIFY_TLS: bool = True            # Verify remote TLS certificates
     MCP_CLIENT_CERT_PATH: Optional[str] = os.getenv("MCP_CLIENT_CERT_PATH")
     MCP_CLIENT_KEY_PATH: Optional[str] = os.getenv("MCP_CLIENT_KEY_PATH")
+    
+    CONTEXT_COMPRESSION_ENABLED: bool = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").strip().lower() == "true"
+    CONTEXT_COMPRESSION_MAX_VERBATIM_TURNS: int = int( os.getenv("CONTEXT_COMPRESSION_MAX_VERBATIM_TURNS", "2") )
+    CONTEXT_COMPRESSION_RATE: float = float( os.getenv("CONTEXT_COMPRESSION_RATE", "0.5") )
+    CONTEXT_COMPRESSION_MODEL: str = os.getenv("CONTEXT_COMPRESSION_MODEL", "openai-community/gpt2")
+    CONTEXT_COMPRESSION_DEVICE: str = os.getenv("CONTEXT_COMPRESSION_DEVICE", "cpu")
+    CONTEXT_COMPRESSION_SEMANTIC_RATE: float = float( os.getenv("CONTEXT_COMPRESSION_SEMANTIC_RATE", "0.3") )
+    CONTEXT_COMPRESSION_CROSS_AGENT_RATE: float = float( os.getenv("CONTEXT_COMPRESSION_CROSS_AGENT_RATE", "0.4") )
 
 # Global settings instance
 settings = Settings()

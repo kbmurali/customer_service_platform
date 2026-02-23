@@ -23,6 +23,9 @@ langchain-aws==0.2.10
 chromadb==1.3.6
 pinecone-client==6.0.0
 
+# Token Compression
+llmlingua==0.2.2
+
 # MySQL
 pymysql==1.1.1
 mysql-connector-python==9.6.0

@@ -265,7 +265,7 @@ UPDATE_CLAIM_STATUS_RESPONSE = {
 }
 
 # ============================================================================
-# INVOKE-LEVEL SCHEMAS – full agent invocation envelope payloads
+# INVOKE-LEVEL SCHEMAS - full agent invocation envelope payloads
 # Used by RemoteMCPNode ↔ remote agent server communication
 # ============================================================================
 
