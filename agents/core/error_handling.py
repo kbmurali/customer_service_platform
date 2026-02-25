@@ -82,12 +82,13 @@ def is_retryable_error(error_message: str) -> bool:
     error_type = classify_error(error_message)
     
     # Retryable errors
+    # Rate limits are NOT retryable here — fail fast and let the caller retry
+    # after the limit window resets rather than burning time on backoff loops.
     retryable_types = {
         ErrorType.TOOL_EXECUTION_FAILED,
         ErrorType.DATABASE_ERROR,
         ErrorType.NETWORK_ERROR,
         ErrorType.TIMEOUT_ERROR,
-        ErrorType.RATE_LIMIT_EXCEEDED
     }
     
     return error_type in retryable_types
@@ -293,6 +294,90 @@ def get_error_metrics() -> ErrorMetrics:
     if _error_metrics is None:
         _error_metrics = ErrorMetrics()
     return _error_metrics
+
+
+def check_tool_result_for_errors(agent_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Inspect the agent message list for tool-level error responses.
+
+    MCP tool decorators (rate limit, circuit breaker, permission denied,
+    pending approval) and tool runtime failures all return structured JSON
+    with an "error" key.  The LangGraph ReAct agent captures this as a
+    ToolMessage in the message list and then composes a natural-language
+    summary as the final AIMessage — so checking only the last message
+    text misses the error entirely.
+
+    This function scans every ToolMessage in the result for an "error" key
+    and returns a normalised error dict if one is found, or None if all
+    tool calls succeeded.
+
+    Args:
+        agent_result: The dict returned by agent.invoke()
+
+    Returns:
+        {"error": str, "error_type": str, "is_retryable": bool} if a tool
+        error was found, None otherwise.
+    """
+    import json as _json
+
+    messages = agent_result.get("messages", [])
+
+    for msg in messages:
+        # ToolMessage carries the raw JSON string the MCP tool returned.
+        # content may be a list of content blocks (MCP protocol) or a plain string.
+        if getattr(msg, "type", None) == "tool" or msg.__class__.__name__ == "ToolMessage":
+            content = getattr(msg, "content", "") or ""
+            if isinstance(content, list):
+                # Extract text from MCP content blocks: [{"type":"text","text":"..."}]
+                parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        parts.append(block.get("text") or block.get("content") or "")
+                    elif isinstance(block, str):
+                        parts.append(block)
+                content = "".join(parts)
+            try:
+                payload = _json.loads(content)
+            except (ValueError, TypeError):
+                logger.warning("  ToolMessage content not JSON: %s", repr(content)[:200])
+                continue
+
+            # langchain_mcp_adapters wraps the MCP response as a JSON array:
+            # ["<escaped-json-string>", null]
+            # Unwrap: take the first non-null element and parse it again.
+            if isinstance(payload, list):
+                inner = next((x for x in payload if x is not None), None)
+                if inner is None:
+                    continue
+                if isinstance(inner, str):
+                    try:
+                        payload = _json.loads(inner)
+                    except (ValueError, TypeError):
+                        continue
+                elif isinstance(inner, dict):
+                    payload = inner
+                else:
+                    continue
+
+            if isinstance(payload, dict) and "error" in payload:
+                error_msg  = payload["error"]
+                # Preserve structured error_type from decorator if present,
+                # otherwise classify from the message text
+                error_type = payload.get(
+                    "error_type",
+                    classify_error(error_msg),
+                )
+                is_retryable = is_retryable_error(error_msg)
+                logger.debug(
+                    "Tool error detected in ToolMessage: type=%s retryable=%s msg=%s",
+                    error_type, is_retryable, error_msg,
+                )
+                return {
+                    "error":       error_msg,
+                    "error_type":  error_type,
+                    "is_retryable": is_retryable,
+                }
+    return None
 
 
 def handle_worker_error(

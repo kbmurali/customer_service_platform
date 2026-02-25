@@ -39,6 +39,37 @@ MCP_CLIENT_KEY  = os.getenv("MCP_CLIENT_KEY",  "/run/secrets/MCP_CLIENT_KEY")
 MCP_CA_CERT     = os.getenv("MCP_CA_CERT",     "/run/secrets/MCP_CA_CERT")
 
 
+class ToolExecutionError(Exception):
+    """
+    Raised by the sync MCP tool wrapper when the remote tool returns a
+    structured error payload (JSON with an "error" key).
+
+    Covers all decorator guard failures — rate limit, circuit breaker,
+    permission denied, pending approval — and runtime tool exceptions.
+    Raising here means the LangGraph worker's except block catches it
+    directly, so the error is never summarised away by the LLM.
+
+    Attributes:
+        message:     Human-readable error string from the tool
+        error_type:  Categorised error type if provided by the tool
+        raw_payload: Full JSON payload the tool returned
+    """
+
+    def __init__(self, message: str, error_type: str = "", raw_payload: dict = None):
+        super().__init__(message)
+        self.error_type  = error_type
+        self.raw_payload = raw_payload or {}
+
+    def is_retryable(self) -> bool:
+        """Transient failures are retryable; rate limits and denials are not.
+        Rate limits must fail fast — let the caller retry after the window resets."""
+        retryable = {
+            "failed",
+            "circuit_breaker_active",
+        }
+        return self.error_type in retryable
+
+
 # ─────────────────────────────────────────────────────────────
 # Sync wrapper
 # ─────────────────────────────────────────────────────────────
@@ -47,11 +78,23 @@ def _make_sync_tool(async_tool: BaseTool) -> BaseTool:
     """
     Convert an async MCP tool to a sync StructuredTool.
     user_id and user_role are passed through as regular kwargs at call time.
+
+    If the tool returns a JSON payload containing an "error" key — which all
+    MCP decorator guards (rate limit, circuit breaker, permission denied,
+    pending approval) and runtime tool failures do — this wrapper returns it
+    as-is so the raw JSON remains in the ToolMessage content. The worker's
+    check_tool_result_for_errors() then finds it by scanning ToolMessages
+    before the LLM response is treated as a success.
     """
+    import json as _json
+
     async_fn = async_tool.coroutine
 
     def sync_fn(**kwargs):
-        return asyncio.run(async_fn(**kwargs))
+        raw = asyncio.run(async_fn(**kwargs))
+        # Pass through as-is — error JSON stays intact in the ToolMessage
+        # so check_tool_result_for_errors() can find it.
+        return raw
 
     return StructuredTool.from_function(
         sync_fn,

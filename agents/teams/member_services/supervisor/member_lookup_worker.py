@@ -13,7 +13,8 @@ from agents.teams.member_services.member_services_mcp_tool_client import MemberS
 from agents.security import RBACService, AuditLogger
 
 from llm_providers.llm_provider_factory import LLMProviderFactory, get_factory, ChatModel
-from agents.core.error_handling import get_error_metrics, is_retryable_error, classify_error
+from agents.core.error_handling import get_error_metrics, is_retryable_error, classify_error, check_tool_result_for_errors
+from agents.core.mcp_tool_client_base import ToolExecutionError
 
 from security.presidio_memory_security import get_presidio_security
 from security.nh3_sanitization import sanitize_html
@@ -49,7 +50,10 @@ class MemberLookupWorker:
         prompt = (
                     "You are a member lookup specialist for a health insurance company. "
                     "Look up member information by member ID. "
-                    "You must also use user ID, user role, and session ID to provide accurate details."
+                    "You must also use user ID, user role, and session ID to provide accurate details. "
+                    "The query may include a line of the form 'execution_id: <value>'. "
+                    "If present, extract that value and pass it as the execution_id "
+                    "argument when calling the tool so the Context Graph can trace this execution."
         )
         
         self.agent = create_react_agent(llm, [self.tool], prompt=prompt)
@@ -86,11 +90,24 @@ class MemberLookupWorker:
                     )
 
                 # Prepend context to user message
+                # Extract execution_id appended by the supervisor.
+                # Arrives as a trailing line: "\nexecution_id: <val>".
+                _exec_id  = ""
+                _query_lines = clean_query.splitlines()
+                _clean_lines = []
+                for _line in _query_lines:
+                    if _line.startswith("execution_id: "):
+                        _exec_id = _line[len("execution_id: "):].strip()
+                    else:
+                        _clean_lines.append(_line)
+                _bare_query = "\n".join(_clean_lines)
+
                 contextualized_query = (
                     f"User Role: {user_role}\n"
                     f"User ID: {user_id}\n"
                     f"Session ID: {session_id}\n"
-                    f"Query: {clean_query}"
+                    f"Execution ID: {_exec_id}\n"
+                    f"Query: {_bare_query}"
                 )
 
                 agent_inputs = {"messages": [("user", contextualized_query)]}
@@ -107,7 +124,38 @@ class MemberLookupWorker:
 
                 # Extract output from last message
                 output_text = result["messages"][-1].content
-                
+
+                # Scan ToolMessages for structured error JSON before treating the
+                # output as success. MCP decorator errors (rate limit, circuit
+                # breaker, permission denied, pending approval) and runtime tool
+                # failures all return {"error": ...} JSON. The LLM receives this
+                # as the ToolMessage content and summarises it — checking the raw
+                # ToolMessage catches it before the summary hides it.
+                tool_error = check_tool_result_for_errors(result)
+                if tool_error:
+                    logger.error(
+                        f"{self.name} tool error detected: {tool_error['error']}"
+                    )
+                    metrics.record_error(
+                        self.name, tool_error["error_type"], tool_error["is_retryable"]
+                    )
+                    if not tool_error["is_retryable"] or retry_count >= max_retries:
+                        return {
+                            "error":        tool_error["error"],
+                            "error_type":   tool_error["error_type"],
+                            "is_retryable": tool_error["is_retryable"],
+                            "retry_count":  retry_count,
+                        }
+                    retry_count += 1
+                    metrics.record_retry(self.name, retry_count)
+                    backoff_delay = min(
+                        2 ** retry_count,
+                        settings.AGENT_RETRY_BACKOFF_DELAY_SECONDS
+                    )
+                    logger.info(f"Retrying {self.name} in {backoff_delay}s...")
+                    time.sleep(backoff_delay)
+                    continue
+
                 # Scrub PII/PHI from output
                 memory_start = time.time()
                 scrubbed_output, vault_id, entities_found = self.presidio.scrub_before_storage(
@@ -159,6 +207,27 @@ class MemberLookupWorker:
                     "worker": self.name,
                     "retry_count": retry_count
                 }
+
+            except ToolExecutionError as e:
+                # Structured error from the MCP tool wrapper — the tool
+                # returned an error payload (rate limit, permission denied,
+                # circuit breaker, etc.). Use its structured fields directly
+                # rather than re-classifying from a string.
+                logger.error(f"{self.name} tool error (attempt {retry_count + 1}/{max_retries + 1}): {e}")
+                metrics.record_error(self.name, e.error_type or "tool_error", e.is_retryable())
+                if not e.is_retryable() or retry_count >= max_retries:
+                    return {
+                        "error":       str(e),
+                        "error_type":  e.error_type or classify_error(str(e)),
+                        "is_retryable": e.is_retryable(),
+                        "retry_count": retry_count,
+                    }
+                retry_count += 1
+                metrics.record_retry(self.name, retry_count)
+                backoff_delay = min(2 ** retry_count, settings.AGENT_RETRY_BACKOFF_DELAY_SECONDS)
+                logger.info(f"Retrying {self.name} in {backoff_delay}s...")
+                time.sleep(backoff_delay)
+                continue
 
             except Exception as e:
                 logger.error(f"{self.name} error (attempt {retry_count + 1}/{max_retries + 1}): {e}")

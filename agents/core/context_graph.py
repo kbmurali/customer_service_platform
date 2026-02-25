@@ -85,54 +85,38 @@ class ContextGraphManager:
         agent_name: str,
         agent_type: str,
         status: str = "running",
-        tools_used: Optional[List[str]] = None
+        tools_used: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Track agent execution in Context Graph.
-        
+
+        Delegates to DAL which only creates (Session)-[:HAS_EXECUTION] for
+        a2a_client — all other types (supervisor, a2a_server, worker) are
+        standalone nodes linked via the plan graph.
+
         Args:
             session_id: Session identifier
             agent_name: Name of the agent
-            agent_type: Type of agent (supervisor, worker)
-            status: Execution status (running, completed, failed)
-            tools_used: List of tools used by the agent
-        
+            agent_type: Type of agent (a2a_client, a2a_server, supervisor, worker)
+            status:     Execution status (running, completed, failed)
+            tools_used: List of tools used (stored as toolCallCount)
+            metadata:   Optional metadata dict
+
         Returns:
             Execution ID if successful, None otherwise
         """
         try:
-            execution_id = f"{session_id}_{agent_name}_{datetime.now(timezone.utc).isoformat()}"
-            
-            query = """
-            MATCH (s:Session {sessionId: $sessionId})
-            CREATE (e:AgentExecution {
-                executionId: $executionId,
-                agentName: $agentName,
-                agentType: $agentType,
-                startTime: datetime(),
-                status: $status,
-                toolCallCount: $toolCallCount
-            })
-            CREATE (s)-[:HAS_EXECUTION]->(e)
-            RETURN e.executionId as executionId
-            """
-            
-            results = self.cg_data_access.conn.execute_query(
-                query,
-                {
-                    "sessionId": session_id,
-                    "executionId": execution_id,
-                    "agentName": agent_name,
-                    "agentType": agent_type,
-                    "status": status,
-                    "toolCallCount": len(tools_used) if tools_used else 0
-                }
+            merged_metadata = dict(metadata or {})
+            if tools_used:
+                merged_metadata["toolCallCount"] = len(tools_used)
+            return self.cg_data_access.track_agent_execution(
+                session_id=session_id,
+                agent_name=agent_name,
+                agent_type=agent_type,
+                status=status,
+                metadata=merged_metadata or None,
             )
-            
-            if results:
-                logger.info(f"Tracked agent execution: {execution_id}")
-                return results[0]["executionId"]
-            return None
         except Exception as e:
             logger.error(f"Error tracking agent execution: {e}")
             return None
@@ -141,54 +125,99 @@ class ContextGraphManager:
         self,
         execution_id: str,
         status: str,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        routing_note: Optional[str] = None,
+        worker_name: Optional[str] = None,
     ) -> bool:
         """
         Update agent execution status.
-        
+
         Args:
             execution_id: Execution identifier
-            status: New status (completed, failed)
+            status:       New status (completed, failed)
             error_message: Error message if failed
-        
+            routing_note: Routing decision text stored directly on the node,
+                          e.g. "Routing: member_lookup — goal is to look up member"
+            worker_name:  Worker name to set as agentName once routing is known,
+                          e.g. "member_lookup_worker"
         Returns:
             True if successful, False otherwise
         """
         try:
             return self.cg_data_access.update_execution_status(
-                execution_id, status, error_message
+                execution_id, status,
+                error=error_message,
+                routing_note=routing_note,
+                worker_name=worker_name,
             )
         except Exception as e:
             logger.error(f"Error updating execution status: {e}")
             return False
-    
-    def add_message_to_session(
+
+
+    def create_tool_error(
         self,
-        session_id: str,
-        role: str,
-        content: str,
-        tool_calls: Optional[List[str]] = None
+        tool_execution_id: str,
+        error_type: str,
+        error_message: str,
     ) -> Optional[str]:
         """
-        Add a message to the conversation session.
-        
+        Attach a ToolError node to a ToolExecution.
+
+        Covers all errors within the tool boundary: decorator guards
+        (rate limit, circuit breaker, permission denied, pending approval)
+        and runtime exceptions inside the tool function itself.
+        Creates (ToolExecution)-[:HAD_ERROR]->(ToolError).
+
         Args:
-            session_id: Session identifier
-            role: Message role (user, assistant, system)
-            content: Message content
-            tool_calls: List of tool calls made
-        
-        Returns:
-            Message ID if successful, None otherwise
+            tool_execution_id: ToolExecution.toolExecutionId
+            error_type:        failed | not_found | rate_limited |
+                               rate_limit_exceeded | circuit_breaker_active |
+                               tool_permission_denied |
+                               resource_permission_denied | pending_approval
+            error_message:     Full human-readable error detail
         """
         try:
-            return self.cg_data_access.add_message(
-                session_id, role, content, tool_calls
+            return self.cg_data_access.create_tool_error(
+                tool_execution_id=tool_execution_id,
+                error_type=error_type,
+                error_message=error_message,
             )
         except Exception as e:
-            logger.error(f"Error adding message to session: {e}")
+            logger.error(f"Error creating tool error node: {e}")
             return None
-    
+
+    def create_agent_error(
+        self,
+        execution_id: str,
+        error_type: str,
+        error_message: str,
+    ) -> Optional[str]:
+        """
+        Attach an AgentError node to an AgentExecution.
+
+        Used for failures outside the tool boundary: worker-level logic
+        errors, LLM failures, state machine errors, unhandled exceptions
+        in the agent loop. These have no associated ToolExecution.
+        Creates (AgentExecution)-[:HAD_ERROR]->(AgentError) and sets
+        AgentExecution.status = 'failed'.
+
+        Args:
+            execution_id:  AgentExecution.executionId
+            error_type:    e.g. "llm_error", "state_error",
+                           "unhandled_exception"
+            error_message: Full human-readable error detail
+        """
+        try:
+            return self.cg_data_access.create_agent_error(
+                execution_id=execution_id,
+                error_type=error_type,
+                error_message=error_message,
+            )
+        except Exception as e:
+            logger.error(f"Error creating agent error node: {e}")
+            return None
+
     def get_recent_security_events(
         self,
         session_id: Optional[str] = None,
@@ -309,31 +338,47 @@ class ContextGraphManager:
             logger.error(f"Error closing session: {e}")
             return False
     
+
+    def link_step_to_execution(self, plan_id: str, step_id: str, execution_id: str) -> None:
+        """Create (Step)-[:EXECUTED_BY]->(AgentExecution) scoped by planId."""
+        self.cg_data_access.link_step_to_execution(plan_id, step_id, execution_id)
+
+
+    def link_a2a_client_to_server(self, session_id: str, a2a_task_id: str) -> None:
+        """Create (a2a_client)-[:CALLED_AGENT]->(a2a_server) via shared a2a_task_id."""
+        self.cg_data_access.link_a2a_client_to_server(session_id, a2a_task_id)
+
+    def link_a2a_server_to_plan(self, session_id: str, a2a_task_id: str, plan_id: str) -> None:
+        """Create (a2a_server)-[:HAS_PLAN]->(Plan)."""
+        self.cg_data_access.link_a2a_server_to_plan(session_id, a2a_task_id, plan_id)
+
     def store_plan(
         self,
         session_id: str,
         plan: Dict[str, Any],
-        agent_name: str = "supervisor"
-    ) -> Optional[str]:
+        agent_name: str = "supervisor",
+        plan_type: str = "central",
+        team_name: str = "",
+        central_step_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
-        Store execution plan in Context Graph.
-        
-        Args:
-            session_id: Session identifier
-            plan: Plan dictionary with goals and steps
-            agent_name: Name of agent that created the plan
-        
+        Store execution plan as a proper node graph.
+
+        Creates (Session)-[:HAS_PLAN]->(Plan)-[:HAS_GOAL]->(Goal)-[:HAS_STEP]->(Step).
+        When central_step_id provided: (CentralStep)-[:DELEGATED_TO]->(TeamPlan).
+
         Returns:
-            True if successful, False otherwise
+            Dict {"plan_id": str, "step_map": {step_id: step_id}} or None
         """
         try:
-            plan_id = self.cg_data_access.store_plan( 
-                                                  session_id=session_id,
-                                                  plan=plan,
-                                                  agent_name=agent_name
+            return self.cg_data_access.store_plan(
+                session_id=session_id,
+                plan=plan,
+                agent_name=agent_name,
+                plan_type=plan_type,
+                team_name=team_name,
+                central_step_id=central_step_id,
             )
-            
-            return plan_id
         except Exception as e:
             logger.error(f"Error storing plan: {e}")
             return None
@@ -358,31 +403,50 @@ class ContextGraphManager:
         self,
         session_id: str,
         plan_id: str,
-        completed_goal_index: int,
-        goal_result: str
+        goal_id: str,
+        goal_result: str,
     ) -> bool:
         """
-        Update plan progress when a goal is completed.
-        
+        Mark a Goal and its Steps as completed or skipped.
+
         Args:
-            session_id: Session identifier
-            completed_goal_index: Index of completed goal
-            goal_result: Result of the completed goal
-        
-        Returns:
-            True if successful, False otherwise
+            session_id:  Session identifier
+            plan_id:     Plan ID
+            goal_id:     Goal.goalId to mark
+            goal_result: "completed" or "skipped"
         """
         try:
-            return self.cg_data_access.update_plan_progress( 
-                            session_id=session_id,
-                            plan_id=plan_id,
-                            completed_goal_index=completed_goal_index,
-                            goal_result=goal_result
-                        )
+            return self.cg_data_access.update_plan_progress(
+                session_id=session_id,
+                plan_id=plan_id,
+                goal_id=goal_id,
+                goal_result=goal_result,
+            )
         except Exception as e:
             logger.error(f"Error updating plan progress: {e}")
             return False
     
+    def fail_plan(self, session_id: str, plan_id: str) -> bool:
+        """Mark plan as incomplete due to a goal failure."""
+        try:
+            return self.cg_data_access.fail_plan(session_id, plan_id)
+        except Exception as e:
+            logger.error(f"Error marking plan incomplete: {e}")
+            return False
+
+    def cancel_remaining_goals(self, session_id: str, plan_id: str) -> int:
+        """
+        Mark all pending Goals and Steps as 'cancelled' after a goal failure.
+
+        Returns:
+            Number of goals cancelled, or 0 on error.
+        """
+        try:
+            return self.cg_data_access.cancel_remaining_goals(session_id, plan_id)
+        except Exception as e:
+            logger.error(f"Error cancelling remaining goals: {e}")
+            return 0
+
     def complete_plan(self, session_id: str, plan_id:str ) -> bool:
         """
         Mark plan as completed.

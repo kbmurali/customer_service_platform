@@ -192,18 +192,27 @@ Return JSON only (no markdown fences, no explanation):
             
             plan = json.loads( plan_text )
             
-            # Store plan in Context Graph
-            plan_id = self.cg_manager.store_plan(
+            # Store plan in CG as a team plan.
+            # store_plan returns {"plan_id": ..., "step_map": {step_id: step_id}}.
+            # central_step_id (from state) creates:
+            #   (CentralStep)-[:DELEGATED_TO]->(TeamPlan)  [central supervisor only]
+            plan_result = self.cg_manager.store_plan(
                 session_id=session_id,
                 plan=plan,
-                agent_name=self.name
+                agent_name=self.name,
+                plan_type=state.get("plan_type", "team"),
+                team_name=state.get("team_name", "member_services"),
+                central_step_id=state.get("central_step_id") or None,
             )
-            
+            plan_id  = plan_result.get("plan_id")  if plan_result else None
+            step_map = plan_result.get("step_map") if plan_result else {}
+
             # Update state
-            state["plan_id"] = plan_id
-            state["plan"] = plan
+            state["plan_id"]            = plan_id
+            state["plan"]               = plan
+            state["step_map"]           = step_map
             state["current_goal_index"] = 0
-            state["completed_goals"] = []
+            state["completed_goals"]    = []
             
             logger.info(f"{self.name}: Created plan with {len(plan.get('goals', []))} goals")
             
@@ -214,11 +223,14 @@ Return JSON only (no markdown fences, no explanation):
             
             # Fallback plan
             state["plan"] = {
-                "goals": [{"id": "goal_1", "description": "Handle user query", "priority": 1}],
-                "steps": [{"step_id": "step_1", "goal_id": "goal_1", "action": "process_query"}]
+                "goals": [{"id": "goal_1", "description": "Handle user query",
+                           "priority": 1, "required_workers": []}],
+                "steps": [{"step_id": "step_1", "goal_id": "goal_1",
+                           "action": "process_query", "worker": ""}]
             }
             state["current_goal_index"] = 0
-            state["completed_goals"] = []
+            state["completed_goals"]    = []
+            state["step_map"]           = {}
             return state
         
     def supervisor_node(self, state: SupervisorState) -> SupervisorState:
@@ -378,8 +390,15 @@ Return JSON only (no markdown fences, no explanation):
             try:
                 self.cg_manager.update_plan_progress(
                     session_id=session_id, plan_id=plan_id,
-                    completed_goal_index=current_index, goal_result="skipped",
+                    goal_id=goal_id, goal_result="skipped",
                 )
+            except Exception:
+                pass
+
+            # Close the AgentExecution that was opened for this goal
+            try:
+                if execution_id:
+                    self.cg_manager.update_execution_status(execution_id, "skipped")
             except Exception:
                 pass
 
@@ -408,16 +427,36 @@ Return JSON only (no markdown fences, no explanation):
                     "execution_path": execution_path,
                 }
 
+        # ── Valid worker — link Step->AgentExecution before worker fires ──────────
+        # Uses already-resolved locals: plan_id, goal_id, plan["steps"].
+        # Scoped by planId+stepId — no cross-session ambiguity possible.
+        try:
+            if execution_id and plan_id:
+                _steps       = plan.get("steps", [])
+                _lnk_step_id = next(
+                    (s.get("step_id", "") for s in _steps if s.get("goal_id") == goal_id), ""
+                )
+                if _lnk_step_id:
+                    self.cg_manager.link_step_to_execution(
+                        plan_id=plan_id,
+                        step_id=_lnk_step_id,
+                        execution_id=execution_id,
+                    )
+                else:
+                    logger.warning(f"{self.name}: No step found for goal_id={goal_id!r} in plan steps={_steps}")
+        except Exception as e:
+            logger.warning(f"{self.name}: Failed to link step to execution (non-fatal): {e}")
+
         # ── Valid worker — return it for graph routing ────────────────────────
         execution_path.append(f"{self.name} -> {next_worker}")
 
         try:
             if execution_id:
-                self.cg_manager.update_execution_status(execution_id, "completed")
-            self.cg_manager.add_message_to_session(
-                session_id=session_id, role="system",
-                content=f"Routing: {next_worker} — {reasoning}", tool_calls=[],
-            )
+                self.cg_manager.update_execution_status(
+                    execution_id, "completed",
+                    routing_note=f"Routing: {next_worker} — {reasoning}",
+                    worker_name=f"{next_worker}_worker",
+                )
         except Exception:
             pass
 
@@ -429,8 +468,11 @@ Return JSON only (no markdown fences, no explanation):
         )
 
         return {
-            "next": next_worker,
-            "execution_path": execution_path,
+            "next":                 next_worker,
+            "execution_path":       execution_path,
+            # Stored so worker_node can pass it to the MCP tool, completing:
+            #   (AgentExecution)-[:CALLED_TOOL]->(ToolExecution)
+            "current_execution_id": execution_id or "",
         }
 
     def _advance_goal(self, state: SupervisorState) -> SupervisorState:
@@ -452,7 +494,7 @@ Return JSON only (no markdown fences, no explanation):
             try:
                 self.cg_manager.update_plan_progress(
                     session_id=session_id, plan_id=plan_id,
-                    completed_goal_index=current_index, goal_result="completed",
+                    goal_id=goal_id, goal_result="completed",
                 )
             except Exception:
                 pass
@@ -482,6 +524,16 @@ Return JSON only (no markdown fences, no explanation):
             else:
                 query = "Query not specified"
             
+            # Inject execution_id so the ReAct agent passes it to the MCP tool,
+            # completing: (AgentExecution)-[:CALLED_TOOL]->(ToolExecution)
+            # EXECUTED_BY is already linked in the routing block above via
+            # link_step_to_execution(planId, stepId, executionId).
+            _exec_id = state.get("current_execution_id", "")
+            query = (
+                query
+                + "\nexecution_id: " + _exec_id
+            )
+
             # Execute worker
             result = worker.execute(
                 query=query,
@@ -517,8 +569,38 @@ Return JSON only (no markdown fences, no explanation):
                 
                 # Record error duration metric
                 metrics.record_error_duration(worker_name, error_type, duration_ms / 1000)
-                
-                logger.error(f"Worker {{worker_name}} failed: {{error_msg}}")
+
+                # Mark the current goal as failed and cancel all remaining
+                # pending goals so no nodes are left in an orphaned state.
+                try:
+                    plan          = state.get("plan", {})
+                    goals         = plan.get("goals", [])
+                    current_idx   = state.get("current_goal_index", 0)
+                    plan_id_cg    = state.get("plan_id", "")
+                    session_id_cg = state.get("session_id", "default")
+                    if current_idx < len(goals):
+                        goal_id = goals[current_idx].get("id", f"goal_{{current_idx}}")
+                        self.cg_manager.update_plan_progress(
+                            session_id=session_id_cg,
+                            plan_id=plan_id_cg,
+                            goal_id=goal_id,
+                            goal_result="failed",
+                        )
+                    # Cancel every goal still pending — downstream goals that
+                    # will never run because this goal failed.
+                    self.cg_manager.cancel_remaining_goals(
+                        session_id=session_id_cg,
+                        plan_id=plan_id_cg,
+                    )
+                    # Mark the plan itself as incomplete.
+                    self.cg_manager.fail_plan(
+                        session_id=session_id_cg,
+                        plan_id=plan_id_cg,
+                    )
+                except Exception:
+                    pass
+
+                logger.error(f"Worker {worker_name} failed: {error_msg}")
                 
                 return {
                     "messages": [RemoveMessage(id=msg.id) for msg in state["messages"] if msg.id ],
@@ -527,7 +609,7 @@ Return JSON only (no markdown fences, no explanation):
                     "error_history": error_history,
                     "retry_count": retry_count,
                     "is_recoverable": is_retryable,
-                    "execution_path": state.get("execution_path", []) + [f"{{worker_name}}_failed"],
+                    "execution_path": state.get("execution_path", []) + [f"{worker_name}_failed"],
                     "duration_ms": duration_ms
                 }
             
@@ -607,9 +689,22 @@ Return JSON only (no markdown fences, no explanation):
         # create_plan → supervisor
         workflow.add_edge("create_plan", "supervisor")
 
-        # workers → goal_advance → supervisor (goal index bumped between calls)
+        # workers → goal_advance → supervisor (success path)
+        # workers → error_handler             (error path, skips goal_advance
+        #                                      so the failed goal is never
+        #                                      marked completed or advanced)
+        def worker_router(state: SupervisorState) -> Literal["goal_advance", "error_handler"]:
+            return "error_handler" if state.get("error") else "goal_advance"
+
         for worker_name in self.workers.keys():
-            workflow.add_edge(worker_name, "goal_advance")
+            workflow.add_conditional_edges(
+                worker_name,
+                worker_router,
+                {
+                    "goal_advance":  "goal_advance",
+                    "error_handler": "error_handler",
+                },
+            )
         workflow.add_edge("goal_advance", "supervisor")
 
         # error_handler always terminates

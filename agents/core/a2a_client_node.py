@@ -222,25 +222,21 @@ class A2AClientNode:
         user_role: str,
         session_id: str,
         plan: Optional[Dict[str, Any]] = None,
+        central_step_id: str = "",
     ) -> Dict[str, Any]:
         """
         Build an A2A Task envelope with Message and Parts.
 
-        A2A Task structure:
-            {
-                "id": "<uuid>",
-                "message": {
-                    "role": "user",
-                    "parts": [
-                        {"type": "text", "text": "<query>"},
-                        {"type": "data", "data": {<metadata>}}
-                    ]
-                }
-            }
+        Parts emitted:
+            1. {"type": "text",  "text": "<query>"}
+            2. {"type": "data",  "data": {user_id, user_role, session_id}}
+            3. {"type": "data",  "data": {"plan": ...}}         (optional)
+            4. {"type": "data",  "data": {"central_step_id": ...}} (when delegating)
 
-        The metadata Part carries session context (user_id, user_role,
-        session_id) and the execution plan if one exists. This replaces
-        the flat payload dict used by RemoteMCPNode.
+        central_step_id is the Step.stepId from the central supervisor's
+        plan that is delegating this work.  The receiving team supervisor
+        stores it to create:
+            (CentralStep)-[:DELEGATED_TO]->(TeamPlan)
         """
         task_id = str(uuid.uuid4())
 
@@ -249,8 +245,8 @@ class A2AClientNode:
             {
                 "type": "data",
                 "data": {
-                    "user_id": user_id,
-                    "user_role": user_role,
+                    "user_id":    user_id,
+                    "user_role":  user_role,
                     "session_id": session_id,
                 },
             },
@@ -258,6 +254,9 @@ class A2AClientNode:
 
         if plan:
             parts.append({"type": "data", "data": {"plan": plan}})
+
+        if central_step_id:
+            parts.append({"type": "data", "data": {"central_step_id": central_step_id}})
 
         return {
             "id": task_id,
@@ -403,12 +402,29 @@ class A2AClientNode:
             # Proceed with uncompressed plan
 
         # ── Step 1: Build A2A Task ──
+        # Derive the Step.stepId for the current goal so the team supervisor
+        # can link its TeamPlan back to this central step in the CG:
+        #   (CentralStep)-[:DELEGATED_TO]->(TeamPlan)
+        central_step_id = ""
+        try:
+            _idx     = state.get("current_goal_index", 0)
+            _plan    = state.get("plan") or {}
+            _goals   = _plan.get("goals", [])
+            _steps   = _plan.get("steps", [])
+            _gid     = _goals[_idx].get("id", "") if _idx < len(_goals) else ""
+            central_step_id = next(
+                (s.get("step_id", "") for s in _steps if s.get("goal_id") == _gid), ""
+            )
+        except Exception:
+            pass  # Non-fatal — traceability degrades gracefully
+
         a2a_task = self._build_a2a_task(
             query=str(query),
             user_id=user_id,
             user_role=user_role,
             session_id=session_id,
             plan=compressed_plan,
+            central_step_id=central_step_id,
         )
         task_id = a2a_task["id"]
 
@@ -471,6 +487,18 @@ class A2AClientNode:
                 elapsed_ms=elapsed_ms,
                 task_id=task_id,
             )
+
+            # ── CG: link (a2a_client)-[:CALLED_AGENT]->(a2a_server) ────────
+            # Matched via shared a2a_task_id. Works generically across all
+            # teams — member_services, claims, provider, etc.
+            try:
+                cg = self._get_cg()
+                cg.link_a2a_client_to_server(
+                    session_id=session_id,
+                    a2a_task_id=task_id,
+                )
+            except Exception as e:
+                logger.warning("Failed to link a2a_client to server (non-fatal): %s", e)
 
             # ── Step 7: Build return state ──
             response_messages = result.get("messages", [])

@@ -188,6 +188,7 @@ def require_approvals(
             user_role  = _get("user_role",  args, kwargs) or "unknown"
             user_id = _get("user_id",  args, kwargs) or ""
             session_id = _get("session_id", args, kwargs) or "default"
+            execution_id = _get("execution_id", args, kwargs) or None
             reason = _get("reason",  args, kwargs) or ""
 
             extracted_record_id  = _get( record_id_arg,  args, kwargs) or "unknown"
@@ -266,7 +267,10 @@ def require_approvals(
 
             if not result["approved"]:
                 track_tool_execution_in_cg(
-                    session_id, tool_name, details, status="pending_approval"
+                    session_id, tool_name, details,
+                    status="pending_approval",
+                    error=result.get("message"),
+                    execution_id=execution_id,
                 )
                 return json.dumps(result)
             
@@ -322,6 +326,7 @@ def circuit_breaker(func):
         user_role  = _get("user_role",  args, kwargs) or "unknown"
         user_id = _get("user_id",  args, kwargs) or ""
         session_id = _get("session_id", args, kwargs) or "default"
+        execution_id = _get("execution_id", args, kwargs) or None
         
         try:
             approval_wf = get_approval_workflow()
@@ -334,7 +339,8 @@ def circuit_breaker(func):
                     session_id, tool_name,
                     {"user_role": user_role, "user_id": user_id, "action": "check_circuit_breaker" },
                     status="circuit_breaker_active",
-                    error=error
+                    error=error,
+                    execution_id=execution_id,
                 )
                 
                 return json.dumps({"error": error})        
@@ -388,9 +394,9 @@ def require_rate_limits(func):
         user_role  = _get("user_role",  args, kwargs) or "unknown"
         user_id = _get("user_id",  args, kwargs) or ""
         session_id = _get("session_id", args, kwargs) or "default"
+        execution_id = _get("execution_id", args, kwargs) or None
         
         try:
-            # Look up the per-role rate limit for this tool
             limit_per_minute = rbac_service.get_tool_rate_limit(user_role, tool_name)
             
             if limit_per_minute <= 0:
@@ -444,6 +450,7 @@ def require_rate_limits(func):
                 {"user_role": user_role, "user_id": user_id, "action": "require_rate_limits" },
                 status="rate_limit_exceeded",
                 error=str(e),
+                execution_id=execution_id,
             )
             
             return json.dumps({
@@ -503,8 +510,9 @@ def require_permissions(resource_type: str, action: str):
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            user_role  = _get("user_role",  args, kwargs)
-            session_id = _get("session_id", args, kwargs) or "default"
+            user_role    = _get("user_role",    args, kwargs)
+            session_id   = _get("session_id",   args, kwargs) or "default"
+            execution_id = _get("execution_id", args, kwargs) or None
             
             # ── Check 1: Tool-level permission ────────────────────────────────
             if not rbac_service.check_tool_permission(user_role, tool_name):
@@ -514,6 +522,7 @@ def require_permissions(resource_type: str, action: str):
                     {"user_role": user_role},
                     status="tool_permission_denied",
                     error=error,
+                    execution_id=execution_id,
                 )
                 return json.dumps({"error": error})
             
@@ -525,6 +534,7 @@ def require_permissions(resource_type: str, action: str):
                     {"user_role": user_role, "resource_type": resource_type, "action": action},
                     status="resource_permission_denied",
                     error=error,
+                    execution_id=execution_id,
                 )
                 return json.dumps({"error": error})
             
@@ -627,33 +637,84 @@ def track_tool_execution_in_cg(
     output_data: Optional[Dict[str, Any]] = None,
     status: str = "success",
     execution_time_ms: Optional[float] = None,
-    error: Optional[str] = None
+    error: Optional[str] = None,
+    execution_id: Optional[str] = None,
 ) -> None:
     """
-    Track tool execution in Context Graph using ContextGraphDataAccess.
-    
+    Track tool execution in Context Graph.
+
+    A ToolExecution node is always created — for every call regardless of
+    status, including decorator-level denials (rate limit, circuit breaker,
+    permission denied, pending approval). This means:
+
+        (AgentExecution)-[:CALLED_TOOL]->(ToolExecution)
+
+    When the call fails for any reason a ToolError node is also created:
+
+        (ToolExecution)-[:HAD_ERROR]->(ToolError)
+
+    This covers:
+        - Decorator guard errors: rate_limited, rate_limit_exceeded,
+          circuit_breaker_active, tool_permission_denied,
+          resource_permission_denied, pending_approval
+        - Runtime tool errors: failed, not_found
+
+    For errors outside the tool boundary entirely (worker-level agent loop
+    failures, LLM errors) use cg_manager.create_agent_error() directly,
+    which creates (AgentExecution)-[:HAD_ERROR]->(AgentError).
+
     Args:
-        session_id: Session ID
-        tool_name: Tool name
-        input_data: Tool input
-        output_data: Tool output
-        status: Execution status (success, failed, permission_denied, not_found)
+        session_id:        Session ID
+        tool_name:         Tool name
+        input_data:        Tool input data
+        output_data:       Tool output data
+        status:            success | failed | not_found | rate_limited |
+                           rate_limit_exceeded | circuit_breaker_active |
+                           tool_permission_denied | resource_permission_denied |
+                           pending_approval
         execution_time_ms: Execution time in milliseconds
-        error: Optional error message
+        error:             Error message (required when status != success)
+        execution_id:      AgentExecution.executionId for CALLED_TOOL link.
     """
+    # ── ToolExecution node ────────────────────────────────────────────────
+    # Always created. For decorator-level denials execution_time_ms may be
+    # None or near-zero since the tool body never ran.
+    tool_execution_id = None
     try:
-        cg_data_access.track_tool_execution(
+        tool_execution_id = cg_data_access.track_tool_execution(
             session_id=session_id,
             tool_name=tool_name,
             input_data=input_data,
             output_data=output_data,
             status=status,
             execution_time_ms=execution_time_ms,
-            error=error
+            error=error,
+            execution_id=execution_id,
         )
-        logger.debug(f"Tracked tool execution in CG: {tool_name} ({status})")
+        logger.debug(
+            "Tracked tool execution in CG: %s (%s) execution_id=%s tool_execution_id=%s",
+            tool_name, status, execution_id, tool_execution_id,
+        )
     except Exception as e:
         logger.warning(f"Failed to track tool execution in CG: {e}")
+
+    # ── ToolError node ────────────────────────────────────────────────────
+    # Any non-success status attaches a structured ToolError to the
+    # ToolExecution created above.
+    if status != "success" and error and tool_execution_id:
+        try:
+            cg_data_access.create_tool_error(
+                tool_execution_id=tool_execution_id,
+                error_type=status,
+                error_message=error,
+            )
+            logger.debug(
+                "Created ToolError for tool_execution %s: type=%s",
+                tool_execution_id, status,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create tool error node (non-fatal): {e}")
+
 
 def scrub_output(text: str, session_id: str) -> str:
     """
@@ -858,5 +919,5 @@ def search_knowledge_base(
         execution_time = (datetime.now() - start_time).total_seconds() * 1000
         inputs = { "user_role": user_role, "query": query }
         error = str(e)
-        track_tool_execution_in_cg(session_id, "search_medisearch_knowledge_basecal_codes", inputs, status="failed", execution_time_ms=execution_time, error=error)
+        track_tool_execution_in_cg(session_id, "search_knowledge_base", inputs, status="failed", execution_time_ms=execution_time, error=error)
         return json.dumps({"error": error})

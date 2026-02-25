@@ -103,15 +103,17 @@ def member_lookup(
     user_id: str,
     user_role: str,
     session_id: str,
+    execution_id: str = "",
 ) -> str:
     """
     Look up member information by member ID.
 
     Args:
-        member_id:  The member's unique identifier (e.g. M123456).
-        user_id:    ID of the requesting user (for audit logging).
-        user_role:  RBAC role of the requesting user.
-        session_id: Session ID for audit and PII scrubbing.
+        member_id:    The member's unique identifier (e.g. M123456).
+        user_id:      ID of the requesting user (for audit logging).
+        user_role:    RBAC role of the requesting user.
+        session_id:   Session ID for audit and PII scrubbing.
+        execution_id: AgentExecution.executionId for CG CALLED_TOOL link.
 
     Returns:
         JSON string with member information, or an error payload.
@@ -129,6 +131,7 @@ def member_lookup(
             track_tool_execution_in_cg(
                 session_id, "member_lookup", {"member_id": member_id},
                 status="not_found", execution_time_ms=execution_time, error=error,
+                execution_id=execution_id or None,
             )
             return json.dumps({"error": error})
 
@@ -139,6 +142,7 @@ def member_lookup(
         track_tool_execution_in_cg(
             session_id, "member_lookup", {"member_id": member_id},
             status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
         )
         return scrubbed_output
 
@@ -149,6 +153,7 @@ def member_lookup(
         track_tool_execution_in_cg(
             session_id, "member_lookup", {"member_id": member_id},
             status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
         )
         return json.dumps({"error": error})
 
@@ -165,6 +170,7 @@ def check_eligibility(
     user_id: str,
     user_role: str,
     session_id: str,
+    execution_id: str = "",
 ) -> str:
     """
     Check member eligibility for services on a specific date.
@@ -175,6 +181,7 @@ def check_eligibility(
         user_id:      ID of the requesting user (for audit logging).
         user_role:    RBAC role of the requesting user.
         session_id:   Session ID for audit and PII scrubbing.
+        execution_id: AgentExecution.executionId for CG CALLED_TOOL link.
 
     Returns:
         JSON string with eligibility information, or an error payload.
@@ -203,6 +210,7 @@ def check_eligibility(
         track_tool_execution_in_cg(
             session_id, "check_eligibility", inputs,
             status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
         )
         return scrubbed_output
 
@@ -214,6 +222,7 @@ def check_eligibility(
         track_tool_execution_in_cg(
             session_id, "check_eligibility", inputs,
             status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
         )
         return json.dumps({"error": error})
 
@@ -230,6 +239,7 @@ def coverage_lookup(
     user_id: str,
     user_role: str,
     session_id: str,
+    execution_id: str = "",
 ) -> str:
     """
     Look up coverage details derived from a member's active policy.
@@ -242,6 +252,7 @@ def coverage_lookup(
         user_id:        ID of the requesting user (for audit logging).
         user_role:      RBAC role of the requesting user.
         session_id:     Session ID for audit and PII scrubbing.
+        execution_id:   AgentExecution.executionId for CG CALLED_TOOL link.
 
     Returns:
         JSON string with coverage information, or an error payload.
@@ -260,6 +271,7 @@ def coverage_lookup(
             track_tool_execution_in_cg(
                 session_id, "coverage_lookup", {"member_id": member_id},
                 status="not_found", execution_time_ms=execution_time, error=error,
+                execution_id=execution_id or None,
             )
             return json.dumps({"covered": False, "reason": error})
 
@@ -273,6 +285,7 @@ def coverage_lookup(
         track_tool_execution_in_cg(
             session_id, "coverage_lookup", {"member_id": member_id},
             status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
         )
         return scrubbed_output
 
@@ -283,6 +296,7 @@ def coverage_lookup(
         track_tool_execution_in_cg(
             session_id, "coverage_lookup", {"member_id": member_id},
             status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
         )
         return json.dumps({"error": error})
 

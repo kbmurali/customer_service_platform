@@ -197,11 +197,12 @@ def _extract_from_a2a_task(task: Dict[str, Any]) -> Dict[str, Any]:
     message = task.get("message", {})
     parts = message.get("parts", [])
 
-    query = ""
-    user_id = "unknown"
-    user_role = "unknown"
-    session_id = "default"
-    plan = None
+    query           = ""
+    user_id         = "unknown"
+    user_role       = "unknown"
+    session_id      = "default"
+    plan            = None
+    central_step_id = ""
 
     for part in parts:
         part_type = part.get("type", "")
@@ -209,21 +210,19 @@ def _extract_from_a2a_task(task: Dict[str, Any]) -> Dict[str, Any]:
             query = part.get("text", "")
         elif part_type == "data":
             data = part.get("data", {})
-            if "user_id" in data:
-                user_id = data["user_id"]
-            if "user_role" in data:
-                user_role = data["user_role"]
-            if "session_id" in data:
-                session_id = data["session_id"]
-            if "plan" in data:
-                plan = data["plan"]
+            if "user_id"         in data: user_id         = data["user_id"]
+            if "user_role"       in data: user_role       = data["user_role"]
+            if "session_id"      in data: session_id      = data["session_id"]
+            if "plan"            in data: plan            = data["plan"]
+            if "central_step_id" in data: central_step_id = data["central_step_id"]
 
     return {
-        "query": query,
-        "user_id": user_id,
-        "user_role": user_role,
-        "session_id": session_id,
-        "plan": plan,
+        "query":           query,
+        "user_id":         user_id,
+        "user_role":       user_role,
+        "session_id":      session_id,
+        "plan":            plan,
+        "central_step_id": central_step_id,
     }
 
 
@@ -343,16 +342,21 @@ async def a2a_tasks_send(request: Request):
             len(extracted["query"]),
         )
 
-        # ── Step 3: Build LangGraph state from extracted data ── 
+        # ── Step 3: Build LangGraph state from extracted data ──
         state: SupervisorState = {
-            "messages": [HumanMessage(content=extracted["query"])],
-            "user_id": extracted["user_id"],
-            "user_role": extracted["user_role"],
-            "session_id": extracted["session_id"],
-            "execution_path": [],
-            "tool_results": {},
+            "messages":        [HumanMessage(content=extracted["query"])],
+            "user_id":         extracted["user_id"],
+            "user_role":       extracted["user_role"],
+            "session_id":      extracted["session_id"],
+            "execution_path":  [],
+            "tool_results":    {},
+            # CG traceability fields — tell the team supervisor what it is
+            # and which central step delegated work here via A2A.
+            "plan_type":       "team",
+            "team_name":       "member_services",
+            "central_step_id": extracted["central_step_id"],
         }
-        
+
         if extracted["plan"]:
             state["plan"] = extracted["plan"]
 
@@ -411,6 +415,22 @@ async def a2a_tasks_send(request: Request):
             elapsed_ms=elapsed_ms,
             task_id=task_id,
         )
+
+        # ── CG: link (a2a_server)-[:HAS_PLAN]->(Plan) ───────────────────────
+        # Connects the A2A transport layer to the team execution graph,
+        # enabling full end-to-end traceability from central supervisor
+        # down to every tool call across every team.
+        try:
+            _plan_id = result.get("plan_id", "")
+            if _plan_id and task_id:
+                cg = get_cg_data_access()
+                cg.link_a2a_server_to_plan(
+                    session_id=extracted["session_id"],
+                    a2a_task_id=task_id,
+                    plan_id=_plan_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to link a2a_server to plan (non-fatal): %s", e)
 
         return JSONResponse(content=response_envelope)
 
