@@ -2,6 +2,22 @@ docker stack rm health_insurance
 
 sleep 10
 
+docker rmi csip/claims-services-mcp-tools:latest
+
+sleep 5
+
+docker build -f Dockerfile.cs_mcp_tools -t csip/claims-services-mcp-tools:latest ..
+
+sleep 2
+
+docker rmi csip/claims-services-a2a-server:latest
+
+sleep 5
+
+docker build -f Dockerfile.cs_a2a_server -t csip/claims-services-a2a-server:latest ..
+
+sleep 2
+
 docker rmi csip/member-services-mcp-tools:latest
 
 sleep 5
@@ -27,6 +43,15 @@ docker stack deploy -c docker-compose-ms-mcp-tools.yml health_insurance
 sleep 5
 
 docker stack deploy -c docker-compose-ms-a2a-server.yml health_insurance
+
+sleep 5
+
+docker stack deploy -c docker-compose-cs-mcp-tools.yml health_insurance
+
+sleep 5
+
+docker stack deploy -c docker-compose-cs-a2a-server.yml health_insurance
+
 
 for i in {1..5}; do
   docker stack services health_insurance
