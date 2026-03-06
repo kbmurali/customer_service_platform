@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-AGENT_URL       = "https://localhost:8443/a2a/member"
+AGENT_URL         = os.getenv("A2A_MEMBER_SERVICES_URL", "https://localhost:8443/a2a/member")
 AGENT_NAME      = "member_services_supervisor_agent"
 TEST_USER_ID    = os.getenv("TEST_USER_ID",    "usr-tier2-001")
 TEST_USER_ROLE  = os.getenv("TEST_USER_ROLE",  "CSR_TIER2")
@@ -131,6 +131,8 @@ class TestA2AServerHealth:
         with httpx.Client(verify=ssl_ctx, timeout=10) as http:
             response = http.get(f"{AGENT_URL}/health")
 
+        #print( f">>>>>>>>>>>>>staus code: {response.status_code}")
+        
         assert response.status_code == 200
         data = response.json()
         assert data.get("status") == "healthy"
@@ -196,11 +198,11 @@ class TestMemberLookup:
         """Look up a member ID that doesn't exist — should return graceful response."""
         state = _make_state("Look up member M9999999")
         result = client_node(state)
-
+        #print( f">>>>>>>>>>>>>>>>>>>\n\n{result}\n")
         # Should not crash — either an error message or graceful not-found
         assert result is not None
-        assert "messages" in result
-        content = result["messages"][-1].content if result["messages"] else ""
+        assert "error" in result
+        content = result["error"] if result["error"] else ""
         assert content.strip(), "Expected non-empty response for unknown member"
 
 
@@ -218,14 +220,14 @@ class TestEligibilityCheck:
         )
         #exceed_rate_limit( TEST_USER_ID, TEST_USER_ROLE, "member_lookup" )
         result = client_node(state)
-        print( f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}" )
+        #print( f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}" )
         _assert_successful_response(result, "test_eligibility_check_basic")
 
     def test_eligibility_check_without_date(self, client_node):
         """Check eligibility without specifying a service date."""
         state = _make_state(f"Is member {TEST_MEMBER_ID} currently eligible?")
         result = client_node(state)
-        print( f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}" )
+        #print( f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}" )
         _assert_successful_response(result, "test_eligibility_check_without_date")
 
     def test_eligibility_check_tool_results(self, client_node):
@@ -253,7 +255,7 @@ class TestCoverageLookup:
             f"What is the coverage for member {TEST_MEMBER_ID}?"
         )
         result = client_node(state)
-        print( f">>>>>>>>>>>>>>>>>\n\n{result}" )
+        #print( f">>>>>>>>>>>>>>>>>\n\n{result}" )
         
         _assert_successful_response(result, "test_coverage_lookup_basic")
 
@@ -294,16 +296,19 @@ class TestA2ARouting:
         """Successful tasks should have a2a_task_state of 'completed'."""
         state = _make_state(f"Look up member {TEST_MEMBER_ID}")
         result = client_node(state)
-
-        task_state = result.get("a2a_task_state")
-        assert task_state == "completed", \
-            f"Expected 'completed', got '{task_state}'"
+        #print( f">>>>>>>>>>>>\n\n{result}\n")
+        exec_path_list = result.get( 'execution_path')
+        assert "member_services_supervisor -> FINISH (all steps done)" in exec_path_list, \
+            f"Expected 'true', got '{exec_path_list}'"
 
     def test_session_isolation(self, client_node):
         """Two requests with different session IDs should not interfere."""
         session_a = f"test-session-a-{uuid.uuid4().hex[:6]}"
         session_b = f"test-session-b-{uuid.uuid4().hex[:6]}"
-
+        
+        cg_dao.create_session( session_id=session_a, user_id=TEST_USER_ID )
+        cg_dao.create_session( session_id=session_b, user_id=TEST_USER_ID )
+        
         state_a = _make_state(f"Look up member {TEST_MEMBER_ID}", session_id=session_a)
         state_b = _make_state(f"Look up member {TEST_MEMBER_ID}", session_id=session_b)
 

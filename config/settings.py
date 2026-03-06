@@ -163,6 +163,13 @@ class Settings(BaseSettings):
     CONTEXT_COMPRESSION_DEVICE: str = os.getenv("CONTEXT_COMPRESSION_DEVICE", "cpu")
     CONTEXT_COMPRESSION_SEMANTIC_RATE: float = float( os.getenv("CONTEXT_COMPRESSION_SEMANTIC_RATE", "0.3") )
     CONTEXT_COMPRESSION_CROSS_AGENT_RATE: float = float( os.getenv("CONTEXT_COMPRESSION_CROSS_AGENT_RATE", "0.4") )
+    
+    SCRUB_OUTPUT_MEMBER_ID: bool = os.getenv("SCRUB_OUTPUT_MEMBER_ID", "false").strip().lower() == "true"
+    SCRUB_OUTPUT_POLICY_NUMBER: bool = os.getenv("SCRUB_OUTPUT_POLICY_NUMBER", "false").strip().lower() == "true"
+    SCRUB_OUTPUT_CLAIM_NUMBER: bool = os.getenv("SCRUB_OUTPUT_CLAIM_NUMBER", "false").strip().lower() == "true"
+    SCRUB_OUTPUT_PA_NUMBER: bool = os.getenv("SCRUB_OUTPUT_PA_NUMBER", "false").strip().lower() == "true"
+    SCRUB_OUTPUT_NPI_NUMBER: bool = os.getenv("SCRUB_OUTPUT_NPI_NUMBER", "true").strip().lower() == "true"
+    SCRUB_OUTPUT_ICD_CODE: bool = os.getenv("SCRUB_OUTPUT_ICD_CODE", "false").strip().lower() == "true"
 
 # Global settings instance
 settings = Settings()

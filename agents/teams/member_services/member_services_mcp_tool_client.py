@@ -20,7 +20,7 @@ from agents.core.mcp_tool_client_base import MCPToolClient
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_URL = "https://api-gateway:8443/member-services"
+_DEFAULT_URL = "https://api-gateway:8443/mcp/member"
 
 
 class MemberServicesMCPToolClient(MCPToolClient):

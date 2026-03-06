@@ -300,7 +300,7 @@ async def agent_card():
     return JSONResponse(content=card.to_dict())
 
 
-@app.post("/a2a/tasks/send")
+@app.post("/tasks/send")
 async def a2a_tasks_send(request: Request):
     """
     Claims Services A2A task endpoint: receive an encrypted A2A task envelope,
@@ -459,21 +459,6 @@ async def a2a_tasks_send(request: Request):
         _trace_langfuse(session_id=session_id, user_id=user_id, status="execution_error", elapsed_ms=elapsed_ms, error=str(exc))
         _track_cg(session_id=session_id, status="execution_error", elapsed_ms=elapsed_ms, task_id=task_id_err, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
-
-
-# ---------------------------------------------------------------------------
-# Backward compatibility: keep /mcp/invoke as deprecated alias
-# ---------------------------------------------------------------------------
-@app.post("/mcp/invoke")
-async def invoke_legacy(request: Request):
-    """
-    Legacy endpoint for backward compatibility with RemoteMCPNode clients.
-    Delegates to the Claims Services A2A task handler after wrapping the payload.
-
-    Deprecated: Use POST /a2a/tasks/send instead.
-    """
-    logger.warning("Legacy /mcp/invoke called — migrate to /a2a/tasks/send")
-    return await a2a_tasks_send(request)
 
 
 # ---------------------------------------------------------------------------

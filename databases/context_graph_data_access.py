@@ -533,6 +533,7 @@ class ContextGraphDataAccess:
                     {timestamp_clause}
                 WITH g
                 OPTIONAL MATCH (g)-[:HAS_STEP]->(st:Step)
+                WHERE st.status <> 'completed'
                 SET st.status = $goalResult,
                     {step_ts_clause}
                 RETURN g.goalId AS goalId

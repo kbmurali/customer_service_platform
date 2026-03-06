@@ -51,7 +51,7 @@ class SupervisorState(AgentState, total=False):
     # ── Plan content & progress ───────────────────────────────────────────
     plan_id: Optional[str]               # Neo4j Plan.planId for THIS supervisor's plan
     plan: Optional[Dict[str, Any]]       # Goals + steps created by first LLM call
-    current_goal_index: int              # Index into plan["goals"] currently executing
+    current_step_index: int              # Index into sorted plan["steps"] currently executing
     completed_goals: List[str]           # Goal IDs completed or skipped
     step_map: Dict[str, str]             # {step_id -> step_id} returned by store_plan()
 

@@ -42,7 +42,7 @@ services:
       A2A_AGENT_PORT: "8101"
       A2A_CLAIMS_SERVICES_URL: "https://api-gateway:8443/a2a/claims"
       # ── MCP Client (connects to claims-services-mcp-tools via api-gateway) ──
-      MCP_CLAIM_SERVICES_HTTP_URL: "https://api-gateway:8443/claims-services"
+      MCP_CLAIM_SERVICES_HTTP_URL: "https://api-gateway:8443/mcp/claims"
       MCP_CLIENT_CERT: "/run/secrets/MCP_CLIENT_CERT"
       MCP_CLIENT_KEY: "/run/secrets/MCP_CLIENT_KEY"
       MCP_CA_CERT: "/run/secrets/MCP_CA_CERT"

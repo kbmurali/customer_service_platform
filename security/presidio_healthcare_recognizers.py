@@ -15,9 +15,13 @@ PII/PHI detection shares the same entity catalogue and detection quality.
 import logging
 from typing import List
 
+from config.settings import get_settings, Settings
+
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
 
 logger = logging.getLogger(__name__)
+
+settings: Settings = get_settings()
 
 # ============================================================================
 # Custom Healthcare Recognizers
@@ -32,46 +36,70 @@ def _build_recognizers() -> List[PatternRecognizer]:
     if _HEALTHCARE_RECOGNIZERS:
         return _HEALTHCARE_RECOGNIZERS
 
-    _HEALTHCARE_RECOGNIZERS = [
-        PatternRecognizer(
-            supported_entity="MEMBER_ID",
-            patterns=[Pattern(name="member_id_pattern", regex=r"\b[A-Z]{1,2}\d{6,8}\b", score=0.85)],
-            name="MemberIDRecognizer",
-            supported_language="en",
-        ),
-        PatternRecognizer(
-            supported_entity="POLICY_NUMBER",
-            patterns=[Pattern(name="policy_pattern", regex=r"\bPOL-\d{8,10}\b", score=0.85)],
-            name="PolicyNumberRecognizer",
-            supported_language="en",
-        ),
-        PatternRecognizer(
-            supported_entity="CLAIM_NUMBER",
-            patterns=[Pattern(name="claim_pattern", regex=r"\bCLM-\d{5,8}\b", score=0.85)],
-            name="ClaimNumberRecognizer",
-            supported_language="en",
-        ),
-        PatternRecognizer(
-            supported_entity="PA_NUMBER",
-            patterns=[Pattern(name="pa_pattern", regex=r"\bPA-\d{4}-\d{4,6}\b", score=0.85)],
-            name="PANumberRecognizer",
-            supported_language="en",
-        ),
-        PatternRecognizer(
-            supported_entity="NPI_NUMBER",
-            patterns=[Pattern(name="npi_pattern", regex=r"\b\d{10}\b", score=0.40)],
-            name="NPINumberRecognizer",
-            supported_language="en",
-            context=["npi", "provider", "national provider"],
-        ),
-        PatternRecognizer(
-            supported_entity="ICD_CODE",
-            patterns=[Pattern(name="icd10_pattern", regex=r"\b[A-Z]\d{2}(?:\.\d{1,4})?\b", score=0.45)],
-            name="ICD10Recognizer",
-            supported_language="en",
-            context=["diagnosis", "icd", "code", "dx"],
-        ),
-    ]
+    _HEALTHCARE_RECOGNIZERS = []
+    
+    if settings.SCRUB_OUTPUT_MEMBER_ID:
+        _HEALTHCARE_RECOGNIZERS.append( 
+            PatternRecognizer(
+                supported_entity="MEMBER_ID",
+                patterns=[Pattern(name="member_id_pattern", regex=r"\b[A-Z]{1,2}\d{6,8}\b", score=0.85)],
+                name="MemberIDRecognizer",
+                supported_language="en",
+            )
+        )
+        
+    if settings.SCRUB_OUTPUT_POLICY_NUMBER:
+        _HEALTHCARE_RECOGNIZERS.append( 
+            PatternRecognizer(
+                supported_entity="POLICY_NUMBER",
+                patterns=[Pattern(name="policy_pattern", regex=r"\bPOL-\d{8,10}\b", score=0.85)],
+                name="PolicyNumberRecognizer",
+                supported_language="en",
+            )
+        )
+    
+    if settings.SCRUB_OUTPUT_CLAIM_NUMBER:
+        _HEALTHCARE_RECOGNIZERS.append( 
+            PatternRecognizer(
+                supported_entity="CLAIM_NUMBER",
+                patterns=[Pattern(name="claim_pattern", regex=r"\bCLM-\d{5,8}\b", score=0.85)],
+                name="ClaimNumberRecognizer",
+                supported_language="en",
+            )
+        )
+        
+    if settings.SCRUB_OUTPUT_PA_NUMBER:
+        _HEALTHCARE_RECOGNIZERS.append(
+            PatternRecognizer(
+                supported_entity="PA_NUMBER",
+                patterns=[Pattern(name="pa_pattern", regex=r"\bPA-\d{4}-\d{4,6}\b", score=0.85)],
+                name="PANumberRecognizer",
+                supported_language="en",
+            )
+        )
+    
+    if settings.SCRUB_OUTPUT_NPI_NUMBER:
+        _HEALTHCARE_RECOGNIZERS.append(
+            PatternRecognizer(
+                supported_entity="NPI_NUMBER",
+                patterns=[Pattern(name="npi_pattern", regex=r"\b\d{10}\b", score=0.40)],
+                name="NPINumberRecognizer",
+                supported_language="en",
+                context=["npi", "provider", "national provider"],
+            )
+        )
+        
+    if settings.SCRUB_OUTPUT_ICD_CODE:
+        _HEALTHCARE_RECOGNIZERS.append( 
+            PatternRecognizer(
+                supported_entity="ICD_CODE",
+                patterns=[Pattern(name="icd10_pattern", regex=r"\b[A-Z]\d{2}(?:\.\d{1,4})?\b", score=0.45)],
+                name="ICD10Recognizer",
+                supported_language="en",
+                context=["diagnosis", "icd", "code", "dx"],
+            )
+        )
+        
     return _HEALTHCARE_RECOGNIZERS
 
 

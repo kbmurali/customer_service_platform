@@ -25,11 +25,7 @@ import redis
 
 from config.settings import get_settings, Settings
 
-from security.presidio_healthcare_recognizers import (
-    get_healthcare_recognizers,
-    get_healthcare_analyzer,
-    ALL_ENTITIES,
-)
+from security.presidio_healthcare_recognizers import get_healthcare_recognizers
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +39,31 @@ class HealthcareRecognizers:
 
     @staticmethod
     def get_member_id_recognizer():
-        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["MEMBER_ID"]][0]
+        if settings.SCRUB_OUTPUT_MEMBER_ID:
+            return [r for r in get_healthcare_recognizers() if r.supported_entities == ["MEMBER_ID"]][0]
+        
+        return None
 
     @staticmethod
     def get_policy_number_recognizer():
-        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["POLICY_NUMBER"]][0]
+        if settings.SCRUB_OUTPUT_POLICY_NUMBER:
+            return [r for r in get_healthcare_recognizers() if r.supported_entities == ["POLICY_NUMBER"]][0]
+        
+        return None
 
     @staticmethod
     def get_claim_number_recognizer():
-        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["CLAIM_NUMBER"]][0]
+        if settings.SCRUB_OUTPUT_CLAIM_NUMBER:
+            return [r for r in get_healthcare_recognizers() if r.supported_entities == ["CLAIM_NUMBER"]][0]
+        
+        return None
 
     @staticmethod
     def get_pa_number_recognizer():
-        return [r for r in get_healthcare_recognizers() if r.supported_entities == ["PA_NUMBER"]][0]
+        if settings.SCRUB_OUTPUT_PA_NUMBER:
+            return [r for r in get_healthcare_recognizers() if r.supported_entities == ["PA_NUMBER"]][0]
+        
+        return None
 
 
 class PresidioMemorySecurity:
@@ -94,6 +102,8 @@ class PresidioMemorySecurity:
             HealthcareRecognizers.get_claim_number_recognizer(),
             HealthcareRecognizers.get_pa_number_recognizer()
         ]
+        
+        recognizers = [ r for r in recognizers if r ]
         
         for recognizer in recognizers:
             self.analyzer.registry.add_recognizer(recognizer)

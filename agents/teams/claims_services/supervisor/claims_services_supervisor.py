@@ -55,15 +55,15 @@ class ClaimsServicesSupervisor:
         llm_factory: LLMProviderFactory = get_factory()
         self.llm: ChatModel = llm_factory.get_llm_provider()
 
-        # Routing prompt — called once per goal to pick the right worker.
-        # The supervisor node provides the current goal and required_workers
-        # so the LLM only confirms the best worker from that restricted list.
-        # It must never output FINISH or CONTINUE — goal advancement is
+        # Routing prompt — called once per step to confirm the assigned worker.
+        # The supervisor node provides the current step and its pre-assigned worker.
+        # The LLM only confirms the worker or returns SKIP if required data is missing.
+        # It must never output FINISH or CONTINUE — step advancement is
         # handled entirely by Python logic, not the LLM.
         self.system_prompt = """You are a routing supervisor for a claims services team.
 
-You will be given ONE specific goal and the list of workers that can handle it.
-Your ONLY job is to select the single best worker from the provided list.
+You will be given ONE specific step with a pre-assigned worker.
+Your ONLY job is to confirm that worker, or respond SKIP if required data is missing.
 
 Available workers:
 - claim_lookup: Look up full claim details by claim ID
@@ -71,8 +71,8 @@ Available workers:
 - claim_payment_info: Get payment amounts and processing info for a claim by claim ID
 
 STRICT RULES:
-1. Respond with exactly one worker name from the required_workers list for the current goal.
-2. If the goal cannot be completed because required information is missing
+1. Respond with the exact worker name assigned to the current step.
+2. If the step cannot be completed because required information is missing
    (no claim ID, no claim number), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
 4. Only use exact worker names: claim_lookup, claim_status, claim_payment_info.
@@ -81,7 +81,9 @@ Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
 
         # Planning prompt — called once at the start to decompose the query
-        # into an ordered list of goals, each mapped to exactly one worker.
+        # into an ordered list of goals and steps.
+        # Goals describe intent only — no worker assignment at goal level.
+        # Each step maps to exactly one worker.
         self.planning_prompt = """You are a planning agent for a health insurance customer service system.
 Analyze the user query and create an ordered execution plan.
 
@@ -96,14 +98,15 @@ Available workers (use EXACT names only):
 - claim_payment_info: Retrieves payment amounts and dates — requires a claim ID
 
 RULES:
-1. Each goal must have exactly ONE worker in required_workers.
-2. Use EXACT worker names: claim_lookup, claim_status, claim_payment_info.
-3. If the query requires claim lookup, make it goal_1.
-4. Only include goals supported by the available workers.
-5. Keep the plan minimal — do not add goals for information not requested.
-6. Note: claim_status uses claim NUMBER (e.g. CLM-123456); claim_lookup and
+1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
+2. Each step must have exactly ONE worker assigned. Use EXACT worker names only.
+3. A goal can have one or more steps. Steps sharing a goal_id execute in step_id order.
+4. If the query requires claim lookup, make it the first step.
+5. Only include steps supported by the available workers.
+6. Keep the plan minimal — do not add steps for information not requested.
+7. Note: claim_status uses claim NUMBER (e.g. CLM-123456); claim_lookup and
    claim_payment_info use claim ID (UUID). Include the correct identifier in
-   the goal description so the worker knows which to use.
+   the step action so the worker knows which to use.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -111,8 +114,7 @@ Return JSON only (no markdown fences, no explanation):
         {{
             "id": "goal_1",
             "description": "Short description of what to accomplish",
-            "priority": 1,
-            "required_workers": ["claim_lookup"]
+            "priority": 1
         }}
     ],
     "steps": [
@@ -207,11 +209,11 @@ Return JSON only (no markdown fences, no explanation):
             step_map = plan_result.get("step_map") if plan_result else {}
 
             # Update state
-            state["plan_id"]            = plan_id
-            state["plan"]               = plan
-            state["step_map"]           = step_map
-            state["current_goal_index"] = 0
-            state["completed_goals"]    = []
+            state["plan_id"]             = plan_id
+            state["plan"]                = plan
+            state["step_map"]            = step_map
+            state["current_step_index"]  = 0
+            state["completed_goals"]     = []
 
             logger.info(f"{self.name}: Created plan with {len(plan.get('goals', []))} goals")
 
@@ -223,32 +225,30 @@ Return JSON only (no markdown fences, no explanation):
             # Fallback plan
             state["plan"] = {
                 "goals": [{"id": "goal_1", "description": "Handle user query",
-                           "priority": 1, "required_workers": []}],
+                           "priority": 1}],
                 "steps": [{"step_id": "step_1", "goal_id": "goal_1",
                            "action": "process_query", "worker": ""}]
             }
-            state["current_goal_index"] = 0
+            state["current_step_index"] = 0
             state["completed_goals"]    = []
             state["step_map"]           = {}
             return state
 
     def supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """
-        Orchestrator node — pure Python goal advancement + one LLM call per goal.
+        Orchestrator node — iterates steps directly, one LLM call per step.
 
         Flow per invocation:
           1. Check circuit breaker.
-          2. Read current_goal_index from state.
-          3. If all goals done → FINISH.
-          4. Determine the worker for the current goal from required_workers
-             (deterministic — no LLM needed for routing if there is only one).
+          2. Read current_step_index from state.
+          3. Build sorted steps list from plan; if all steps done → FINISH.
+          4. Read step["worker"] — authoritative, no ambiguity.
           5. Call LLM only to confirm worker / detect SKIP for missing data.
-          6. Return next=<worker> or next=FINISH (never CONTINUE).
+          6. Create AgentExecution, link Step->AgentExecution, store execution_id.
+          7. Return next=<worker> or next=FINISH/CONTINUE.
 
-        Goal advancement happens in this node BEFORE returning, so the graph
-        edge from worker→supervisor simply re-enters here for the next goal.
-        The router never sees CONTINUE — it only sees a valid worker name,
-        FINISH, or SKIP (treated as advance-and-continue).
+        Step advancement happens in _advance_step (goal_advance node).
+        Goal completion is detected there as a side effect of step advancement.
         """
         VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info"}
 
@@ -276,34 +276,38 @@ Return JSON only (no markdown fences, no explanation):
             logger.warning(f"{self.name}: Circuit breaker check failed (fail-open): {e}")
 
         # ── Read plan state ──────────────────────────────────────────────────
-        plan            = state.get("plan", {})
-        plan_id         = state.get("plan_id", "")
-        goals           = plan.get("goals", [])
-        current_index   = state.get("current_goal_index", 0)
-        completed_goals = list(state.get("completed_goals", []))
-        execution_path  = list(state.get("execution_path", []))
+        plan             = state.get("plan", {})
+        plan_id          = state.get("plan_id", "")
+        all_steps        = sorted(
+            plan.get("steps", []),
+            key=lambda s: s.get("step_id", "")
+        )
+        current_step_idx = state.get("current_step_index", 0)
+        completed_goals  = list(state.get("completed_goals", []))
+        execution_path   = list(state.get("execution_path", []))
 
-        # ── All goals done ───────────────────────────────────────────────────
-        if current_index >= len(goals):
-            logger.info(f"{self.name}: All {len(goals)} goals completed → FINISH")
+        # ── All steps done ───────────────────────────────────────────────────
+        if current_step_idx >= len(all_steps):
+            logger.info(f"{self.name}: All {len(all_steps)} steps completed → FINISH")
             try:
                 self.cg_manager.complete_plan(session_id, plan_id)
             except Exception:
                 pass
             return {
                 "next": "FINISH",
-                "current_goal_index": current_index,
+                "current_step_index": current_step_idx,
                 "completed_goals": completed_goals,
-                "execution_path": execution_path + [f"{self.name} -> FINISH (all goals done)"],
+                "execution_path": execution_path + [f"{self.name} -> FINISH (all steps done)"],
             }
 
-        current_goal = goals[current_index]
-        goal_id      = current_goal.get("id", f"goal_{current_index}")
-        required     = current_goal.get("required_workers", [])
+        current_step = all_steps[current_step_idx]
+        step_id      = current_step.get("step_id", f"step_{current_step_idx}")
+        goal_id      = current_step.get("goal_id", "")
+        step_worker  = current_step.get("worker", "")
 
         logger.info(
-            f"{self.name}: Goal {current_index + 1}/{len(goals)}: "
-            f"'{current_goal.get('description', '')}' required_workers={required}"
+            f"{self.name}: Step {current_step_idx + 1}/{len(all_steps)} "
+            f"(goal={goal_id}): '{current_step.get('action', '')}' worker={step_worker}"
         )
 
         # ── Context Graph (best-effort) ──────────────────────────────────────
@@ -316,7 +320,7 @@ Return JSON only (no markdown fences, no explanation):
             execution_id         = self.cg_manager.track_agent_execution(
                 session_id=session_id,
                 agent_name=self.name,
-                agent_type="worker",   # renamed to worker via worker_name in update_execution_status
+                agent_type="supervisor",
                 status="running",
             )
         except Exception as e:
@@ -342,12 +346,32 @@ Return JSON only (no markdown fences, no explanation):
                 cls = role_map.get(msg.get("role", "system").lower(), SystemMessage)
                 routing_messages.append(cls(content=msg.get("content", "")))
 
-        # Always inject the current goal so the LLM knows exactly what to do
+        # Inject results from previously completed steps so the routing LLM
+        # can confirm the assigned worker has the data it needs (e.g. a claim
+        # number extracted from a prior claim_lookup result).
+        # tool_raw_output is the unredacted structured JSON from the MCP server —
+        # preferred over 'output' which may have PII scrubbed (e.g. claim numbers).
+        tool_results = state.get("tool_results", {})
+        if tool_results and current_step_idx > 0:
+            prior_context_parts = []
+            for completed_step in all_steps[:current_step_idx]:
+                w = completed_step.get("worker", "")
+                if w in tool_results:
+                    raw = tool_results[w].get("tool_raw_output", "")
+                    display = raw if raw else tool_results[w].get("output", "")
+                    if display:
+                        prior_context_parts.append(f"- {w}: {display}")
+            if prior_context_parts:
+                routing_messages.append(SystemMessage(content=(
+                    "Results from prior steps:\n" + "\n".join(prior_context_parts)
+                )))
+
+        # Inject the current step — worker is pre-assigned, LLM only confirms or SKIPs
         routing_messages.append(SystemMessage(content=(
-            f"CURRENT GOAL ({current_index + 1}/{len(goals)}): "
-            + f"{current_goal.get('description', '')}" + "\n"
-            + f"Required workers for this goal: {required}" + "\n"
-            + "Select ONE worker from the required_workers list, or SKIP if data is missing."
+            f"CURRENT STEP ({current_step_idx + 1}/{len(all_steps)}): "
+            f"{current_step.get('action', '')}\n"
+            f"Assigned worker: {step_worker}\n"
+            "Confirm this worker, or respond SKIP if required data is missing."
         )))
 
         # ── LLM routing call ─────────────────────────────────────────────────
@@ -362,94 +386,95 @@ Return JSON only (no markdown fences, no explanation):
             reasoning   = llm_result.get("reasoning", "")
         except Exception as e:
             logger.error(f"{self.name}: LLM routing failed: {e}")
-            # Fall back to first required worker if LLM fails
-            next_worker = required[0] if required else "SKIP"
+            # Fall back to the step-assigned worker
+            next_worker = step_worker if step_worker in VALID_WORKERS else "SKIP"
             reasoning   = f"LLM error fallback: {e}"
 
         logger.info(f"{self.name}: LLM chose '{next_worker}' — {reasoning}")
 
         # ── Validate LLM output ──────────────────────────────────────────────
-        # If LLM returned something invalid, fall back to first required worker
+        # If LLM returned something invalid, fall back to the step-assigned worker
         if next_worker not in VALID_WORKERS and next_worker != "SKIP":
             logger.warning(
                 f"{self.name}: LLM returned invalid worker '{next_worker}', "
-                f"falling back to required_workers={required}"
+                f"falling back to step worker={step_worker!r}"
             )
-            next_worker = required[0] if required else "SKIP"
+            next_worker = step_worker if step_worker in VALID_WORKERS else "SKIP"
 
-        # ── Handle SKIP — advance goal index without calling a worker ────────
+        # ── Handle SKIP — advance step without calling a worker ──────────────
         if next_worker == "SKIP":
-            logger.info(
-                f"{self.name}: Skipping goal {goal_id} ({reasoning})"
-            )
-            completed_goals.append(goal_id)
-            next_index = current_index + 1
-            execution_path.append(f"{self.name} -> SKIP goal {goal_id}")
+            logger.info(f"{self.name}: Skipping step {step_id} ({reasoning})")
+            execution_path.append(f"{self.name} -> SKIP step {step_id}")
 
+            # Link Step->AgentExecution before marking skipped, mirroring the
+            # valid-worker path. Without this the AgentExecution node is orphaned
+            # — no (Step)-[:EXECUTED_BY]->(AgentExecution) edge exists for the
+            # skipped step, breaking CG traversal and audit queries.
             try:
-                self.cg_manager.update_plan_progress(
-                    session_id=session_id, plan_id=plan_id,
-                    goal_id=goal_id, goal_result="skipped",
-                )
-            except Exception:
-                pass
+                if execution_id and plan_id:
+                    self.cg_manager.link_step_to_execution(
+                        plan_id=plan_id,
+                        step_id=step_id,
+                        execution_id=execution_id,
+                    )
+            except Exception as e:
+                logger.warning(f"{self.name}: Failed to link skipped step to execution (non-fatal): {e}")
 
-            # Close the AgentExecution that was opened for this goal
             try:
                 if execution_id:
                     self.cg_manager.update_execution_status(execution_id, "skipped")
             except Exception:
                 pass
 
-            # If more goals remain, re-enter supervisor for next goal
-            # by returning CONTINUE — but we remap it to the next goal
-            # directly here rather than looping through the graph edge.
-            # We do this by checking if next index is done.
-            if next_index >= len(goals):
+            # Check if this was the last step for its goal
+            next_step_idx = current_step_idx + 1
+            remaining_goal_steps = [
+                s for s in all_steps[next_step_idx:]
+                if s.get("goal_id") == goal_id
+            ]
+            if not remaining_goal_steps:
+                # Last step of this goal — mark goal skipped
+                completed_goals.append(goal_id)
+                try:
+                    self.cg_manager.update_plan_progress(
+                        session_id=session_id, plan_id=plan_id,
+                        goal_id=goal_id, goal_result="skipped",
+                    )
+                except Exception:
+                    pass
+
+            if next_step_idx >= len(all_steps):
                 try:
                     self.cg_manager.complete_plan(session_id, plan_id)
                 except Exception:
                     pass
                 return {
                     "next": "FINISH",
-                    "current_goal_index": next_index,
+                    "current_step_index": next_step_idx,
                     "completed_goals": completed_goals,
                     "execution_path": execution_path + [f"{self.name} -> FINISH"],
                 }
-            else:
-                # Return CONTINUE so the graph loops back to supervisor
-                # with the updated goal index
-                return {
-                    "next": "CONTINUE",
-                    "current_goal_index": next_index,
-                    "completed_goals": completed_goals,
-                    "execution_path": execution_path,
-                }
+            return {
+                "next": "CONTINUE",
+                "current_step_index": next_step_idx,
+                "completed_goals": completed_goals,
+                "execution_path": execution_path,
+            }
 
-        # ── Valid worker — link Step->AgentExecution before worker fires ──────────
-        # Uses already-resolved locals: plan_id, goal_id, plan["steps"].
+        # ── Valid worker — link Step->AgentExecution before worker fires ─────
         # Scoped by planId+stepId — no cross-session ambiguity possible.
         try:
             if execution_id and plan_id:
-                _steps       = plan.get("steps", [])
-                _lnk_step_id = next(
-                    (s.get("step_id", "") for s in _steps if s.get("goal_id") == goal_id), ""
+                self.cg_manager.link_step_to_execution(
+                    plan_id=plan_id,
+                    step_id=step_id,
+                    execution_id=execution_id,
                 )
-                if _lnk_step_id:
-                    self.cg_manager.link_step_to_execution(
-                        plan_id=plan_id,
-                        step_id=_lnk_step_id,
-                        execution_id=execution_id,
-                    )
-                else:
-                    logger.warning(
-                        f"{self.name}: No step found for goal_id={goal_id!r} in plan steps={_steps}"
-                    )
         except Exception as e:
             logger.warning(f"{self.name}: Failed to link step to execution (non-fatal): {e}")
 
         # ── Valid worker — return it for graph routing ────────────────────────
-        execution_path.append(f"{self.name} -> {next_worker}")
+        execution_path.append(f"{self.name} -> {next_worker} (step {step_id})")
 
         try:
             if execution_id:
@@ -476,36 +501,47 @@ Return JSON only (no markdown fences, no explanation):
             "current_execution_id": execution_id or "",
         }
 
-    def _advance_goal(self, state: SupervisorState) -> SupervisorState:
+    def _advance_step(self, state: SupervisorState) -> SupervisorState:
         """
-        Called by each worker edge back to supervisor.
-        Marks the just-completed goal as done and advances current_goal_index.
-        Returns updated state fields — supervisor_node picks them up next call.
+        Called after each successful worker execution (via goal_advance node).
+        Advances current_step_index. When the last step of a goal completes,
+        marks that goal complete as a side effect.
         """
-        plan            = state.get("plan", {})
-        goals           = plan.get("goals", [])
-        current_index   = state.get("current_goal_index", 0)
-        completed_goals = list(state.get("completed_goals", []))
-        session_id      = state.get("session_id", "default")
-        plan_id         = state.get("plan_id", "")
+        plan             = state.get("plan", {})
+        all_steps        = sorted(
+            plan.get("steps", []),
+            key=lambda s: s.get("step_id", "")
+        )
+        current_step_idx = state.get("current_step_index", 0)
+        completed_goals  = list(state.get("completed_goals", []))
+        session_id       = state.get("session_id", "default")
+        plan_id          = state.get("plan_id", "")
 
-        if current_index < len(goals):
-            goal_id = goals[current_index].get("id", f"goal_{current_index}")
-            completed_goals.append(goal_id)
-            try:
-                self.cg_manager.update_plan_progress(
-                    session_id=session_id, plan_id=plan_id,
-                    goal_id=goal_id, goal_result="completed",
-                )
-            except Exception:
-                pass
-            logger.info(
-                f"Goal {goal_id} completed "
-                f"({current_index + 1}/{len(goals)})"
-            )
+        if current_step_idx < len(all_steps):
+            current_step = all_steps[current_step_idx]
+            goal_id      = current_step.get("goal_id", "")
+            next_step_idx = current_step_idx + 1
+
+            # Detect if this was the last step for its goal
+            remaining_goal_steps = [
+                s for s in all_steps[next_step_idx:]
+                if s.get("goal_id") == goal_id
+            ]
+            if not remaining_goal_steps:
+                completed_goals.append(goal_id)
+                try:
+                    self.cg_manager.update_plan_progress(
+                        session_id=session_id, plan_id=plan_id,
+                        goal_id=goal_id, goal_result="completed",
+                    )
+                except Exception:
+                    pass
+                logger.info(f"Goal {goal_id} completed — all steps done")
+        else:
+            next_step_idx = current_step_idx + 1
 
         return {
-            "current_goal_index": current_index + 1,
+            "current_step_index": next_step_idx,
             "completed_goals":    completed_goals,
         }
 
@@ -531,6 +567,28 @@ Return JSON only (no markdown fences, no explanation):
             # link_step_to_execution(planId, stepId, executionId).
             _exec_id = state.get("current_execution_id", "")
             query = query + "\nexecution_id: " + _exec_id
+
+            # Append results from prior steps so the ReAct agent has upstream
+            # data available (e.g. claim number returned by claim_lookup).
+            # tool_raw_output is the unredacted structured JSON from the MCP server —
+            # preferred over 'output' which may have PII scrubbed.
+            tool_results = state.get("tool_results", {})
+            if tool_results:
+                all_steps_sorted = sorted(
+                    state.get("plan", {}).get("steps", []),
+                    key=lambda s: s.get("step_id", "")
+                )
+                current_step_idx = state.get("current_step_index", 0)
+                prior_parts = []
+                for prior_step in all_steps_sorted[:current_step_idx]:
+                    w = prior_step.get("worker", "")
+                    if w in tool_results:
+                        raw = tool_results[w].get("tool_raw_output", "")
+                        display = raw if raw else tool_results[w].get("output", "")
+                        if display:
+                            prior_parts.append(f"- {w} result: {display}")
+                if prior_parts:
+                    query += "\nPrior step results:\n" + "\n".join(prior_parts)
 
             # Execute worker
             result = worker.execute(
@@ -581,24 +639,28 @@ Return JSON only (no markdown fences, no explanation):
                 except Exception:
                     pass
 
-                # Mark the current goal as failed and cancel all remaining
-                # pending goals so no nodes are left in an orphaned state.
+                # Mark the current step's goal as failed and cancel all
+                # remaining pending goals so no nodes are left orphaned.
                 try:
                     plan          = state.get("plan", {})
-                    goals         = plan.get("goals", [])
-                    current_idx   = state.get("current_goal_index", 0)
+                    all_steps     = sorted(
+                        plan.get("steps", []),
+                        key=lambda s: s.get("step_id", "")
+                    )
+                    current_idx   = state.get("current_step_index", 0)
                     plan_id_cg    = state.get("plan_id", "")
                     session_id_cg = state.get("session_id", "default")
-                    if current_idx < len(goals):
-                        goal_id = goals[current_idx].get("id", f"goal_{current_idx}")
-                        self.cg_manager.update_plan_progress(
-                            session_id=session_id_cg,
-                            plan_id=plan_id_cg,
-                            goal_id=goal_id,
-                            goal_result="failed",
-                        )
+                    if current_idx < len(all_steps):
+                        goal_id = all_steps[current_idx].get("goal_id", "")
+                        if goal_id:
+                            self.cg_manager.update_plan_progress(
+                                session_id=session_id_cg,
+                                plan_id=plan_id_cg,
+                                goal_id=goal_id,
+                                goal_result="failed",
+                            )
                     # Cancel every goal still pending — downstream goals that
-                    # will never run because this goal failed.
+                    # will never run because this step failed.
                     self.cg_manager.cancel_remaining_goals(
                         session_id=session_id_cg,
                         plan_id=plan_id_cg,
@@ -691,7 +753,7 @@ Return JSON only (no markdown fences, no explanation):
         workflow.add_node("create_plan",   self.create_plan_node)
         workflow.add_node("supervisor",    self.supervisor_node)
         workflow.add_node("error_handler", self.error_handler_node)
-        workflow.add_node("goal_advance",  self._advance_goal)
+        workflow.add_node("goal_advance",  self._advance_step)
 
         for worker_name in self.workers.keys():
             workflow.add_node(worker_name, self.worker_node(worker_name))

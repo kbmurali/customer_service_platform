@@ -218,8 +218,8 @@ class TestClaimLookup:
 
         # Should not crash — either an error message or graceful not-found
         assert result is not None
-        assert "messages" in result
-        content = result["messages"][-1].content if result["messages"] else ""
+        assert "error" in result
+        content = result["error"] if result["error"] else ""
         assert content.strip(), "Expected non-empty response for unknown claim ID"
 
     def test_claim_lookup_tool_results(self, client_node):
@@ -245,7 +245,7 @@ class TestClaimStatus:
         """Check status of a known claim by claim number."""
         state  = _make_state(f"What is the status of claim with id {TEST_CLAIM_ID}?")
         result = client_node(state)
-        print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
+        #print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
         _assert_successful_response(result, "test_claim_status_by_number")
 
         content = result["messages"][-1].content
@@ -256,7 +256,7 @@ class TestClaimStatus:
         """Check status of a known claim by claim number."""
         state  = _make_state(f"What is the status of claim {TEST_CLAIM_NUMBER}?")
         result = client_node(state)
-        print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
+        #print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
         _assert_successful_response(result, "test_claim_status_by_number")
 
         content = result["messages"][-1].content
@@ -279,8 +279,8 @@ class TestClaimStatus:
         result = client_node(state)
 
         assert result is not None
-        assert "messages" in result
-        content = result["messages"][-1].content if result["messages"] else ""
+        assert "error" in result
+        content = result["error"] if result["error"] else ""
         assert content.strip(), "Expected non-empty response for unknown claim number"
 
     def test_claim_status_without_number(self, client_node):
@@ -304,11 +304,11 @@ class TestClaimPaymentInfo:
     def test_claim_payment_with_lookup(self, client_node):
         """Retrieve payment information for a known claim."""
         state  = _make_state(
-            f"Can you get my claim details and also find how much was paid on claim {TEST_CLAIM_ID}?"
+            f"Can you get my claim status on claim {TEST_CLAIM_ID}? Also find how much was paid on that claim ?"
         )
         #exceed_rate_limit(TEST_USER_ID, TEST_USER_ROLE, "claim_lookup" )
         result = client_node(state)
-        print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
+        #print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
         _assert_successful_response(result, "test_claim_payment_info_basic")
         
     def test_claim_payment_info_basic(self, client_node):
@@ -317,7 +317,7 @@ class TestClaimPaymentInfo:
             f"How much was paid on claim {TEST_CLAIM_ID}?"
         )
         result = client_node(state)
-        print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
+        #print(f">>>>>>>>>>>>>>>>>>>>>>>>\n\n{result}")
         _assert_successful_response(result, "test_claim_payment_info_basic")
 
     def test_claim_payment_info_execution_path(self, client_node):
@@ -336,8 +336,8 @@ class TestClaimPaymentInfo:
         result = client_node(state)
 
         assert result is not None
-        assert "messages" in result
-        content = result["messages"][-1].content if result["messages"] else ""
+        assert "error" in result
+        content = result["error"] if result["error"] else ""
         assert content.strip(), "Expected non-empty response for unknown claim ID"
 
     def test_claim_payment_info_tool_results(self, client_node):
@@ -376,10 +376,10 @@ class TestA2ARouting:
         """Successful tasks should have a2a_task_state of 'completed'."""
         state  = _make_state(f"Look up claim {TEST_CLAIM_ID}")
         result = client_node(state)
-
-        task_state = result.get("a2a_task_state")
-        assert task_state == "completed", \
-            f"Expected 'completed', got '{task_state}'"
+        #print( f">>>>>>>>>>>>\n\n{result}\n")
+        exec_path_list = result.get( 'execution_path')
+        assert "claims_services_supervisor -> FINISH (all steps done)" in exec_path_list, \
+            f"Expected 'true', got '{exec_path_list}'"
 
     def test_claim_number_vs_id_routing(self, client_node):
         """Supervisor should route claim_number queries to claim_status,

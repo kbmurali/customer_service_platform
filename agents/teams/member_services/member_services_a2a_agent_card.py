@@ -32,7 +32,7 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
 
     Args:
         base_url: The base URL where the member services agent is deployed
-                  (e.g., "https://mcp-member:8443").
+                  (e.g., "https://api-gateway:8443/a2a/member").
 
     Returns:
         A2AAgentCard with member services skills.
