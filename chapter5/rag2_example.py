@@ -1,12 +1,6 @@
 """
 Beginner-friendly RAG 2.0 (Dynamic Context Retrieval) for Health Insurance Member Support
 
-Install:
-  pip install -U langgraph langchain langchain-openai langchain-chroma chromadb pydantic
-
-Env:
-  export OPENAI_API_KEY="..."
-
 What makes this RAG 2.0?
 - The agent can retrieve AGAIN if it detects missing info (gap-check loop).
 """
