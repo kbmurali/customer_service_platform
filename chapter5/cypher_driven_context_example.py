@@ -109,19 +109,19 @@ def query_knowledge_graph(question: str) -> str:
         return f"Error executing graph query: {e}"
 
 #%%
-q = "How much total money has the family of 'Alice Smith' claimed?"
+def test_kg():
+  q = "How much total money has the family of 'Alice Smith' claimed?"
 
-print( query_knowledge_graph(q) )
-# %%
-q = "What is the total amount of all pending claims of 'Alice Smith' and her family?"
+  print( query_knowledge_graph(q) )
+  
+  q = "What is the total amount of all pending claims of 'Alice Smith' and her family?"
+  
+  print( query_knowledge_graph(q) )
+  
+  q = "Find all claims of 'Alice Smith' and her family?"
 
-print( query_knowledge_graph(q) )
-# %%
-q = "Find all claims of 'Alice Smith' and her family?"
+  print( query_knowledge_graph(q) )
+  
+  q = "Find all paid claims of 'Charlie Jones' and his family?"
 
-print( query_knowledge_graph(q) )
-# %%
-q = "Find all paid claims of 'Charlie Jones' and his family?"
-
-print( query_knowledge_graph(q) )
-# %%
+  print( query_knowledge_graph(q) )

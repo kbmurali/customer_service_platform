@@ -41,8 +41,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from dotenv import load_dotenv
-
 # LangChain core/tools
 from langchain_core.tools import tool
 

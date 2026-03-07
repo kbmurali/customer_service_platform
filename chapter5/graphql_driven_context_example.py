@@ -158,9 +158,7 @@ def query_knowledge_graph(question: str) -> str:
     }}
     }}
     
-    
-
-          
+              
     The question is:
     {question}
     
@@ -179,34 +177,32 @@ def query_knowledge_graph(question: str) -> str:
     return generated_graphql
 
 #%%
-#q = "Find all pending claims of 'Alice Smith' and her family?"
+def test_gql_kg():
+    #q = "Find all pending claims of 'Alice Smith' and her family?"
 
-#q = "What is the total amount of all claims of 'Alice Smith' and her family?"
+    #q = "What is the total amount of all claims of 'Alice Smith' and her family?"
 
-#q = "How much has the family of Charlie Jones claimed for Hypertension?"
+    #q = "How much has the family of Charlie Jones claimed for Hypertension?"
 
-q = "Find all claims of 'Alice Smith' and her family for Hypertension?"
-graphql_query = query_knowledge_graph(q)
+    q = "Find all claims of 'Alice Smith' and her family for Hypertension?"
+    graphql_query = query_knowledge_graph(q)
 
-print( graphql_query )
+    print( graphql_query )
 
-
-#%%
-"""
-Executes a GraphQL query against the database.
-Input must be a valid GraphQL query string based on the defined schema.
-"""
-try:
-    # We pass the Neo4j driver into the context so the library can use it
-    context = {"driver": driver}
-    
-    # Execute using standard GraphQL engine
-    result = graphql_sync(schema, graphql_query, context_value=context)
-    
-    if result.errors:
-        print( f"GraphQL Error: {result.errors}" )
+    """
+    Executes a GraphQL query against the database.
+    Input must be a valid GraphQL query string based on the defined schema.
+    """
+    try:
+        # We pass the Neo4j driver into the context so the library can use it
+        context = {"driver": driver}
         
-    print(  json.dumps(result.data, indent=2) )
-except Exception as e:
-    print( f"Execution Error: {str(e)}" )
-# %%
+        # Execute using standard GraphQL engine
+        result = graphql_sync(schema, graphql_query, context_value=context)
+        
+        if result.errors:
+            print( f"GraphQL Error: {result.errors}" )
+            
+        print(  json.dumps(result.data, indent=2) )
+    except Exception as e:
+        print( f"Execution Error: {str(e)}" )
