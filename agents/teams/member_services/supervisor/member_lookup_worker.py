@@ -205,7 +205,6 @@ class MemberLookupWorker:
                 # before the LLM summarises and Presidio scrubs it).  Stored in
                 # tool_results so downstream steps can access structured fields
                 # that may be redacted from the scrubbed output.
-                import json as _json
                 _raw_tool_output = ""
                 for _msg in result.get("messages", []):
                     if getattr(_msg, "type", None) == "tool" or _msg.__class__.__name__ == "ToolMessage":

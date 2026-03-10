@@ -86,7 +86,6 @@ def _make_sync_tool(async_tool: BaseTool) -> BaseTool:
     check_tool_result_for_errors() then finds it by scanning ToolMessages
     before the LLM response is treated as a success.
     """
-    import json as _json
 
     async_fn = async_tool.coroutine
 
