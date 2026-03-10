@@ -47,6 +47,7 @@ TEST_USER_ID    = os.getenv("TEST_USER_ID",    "usr-tier2-001")
 TEST_USER_ROLE  = os.getenv("TEST_USER_ROLE",  "CSR_TIER2")
 TEST_SESSION_ID = os.getenv("TEST_SESSION_ID", str( uuid.uuid1()))
 TEST_MEMBER_ID  = os.getenv("TEST_MEMBER_ID",  "27b71fd8-49b7-46dd-84e3-5ad05d0a5db7")
+TEST_MEMBER_ID2  = os.getenv("TEST_MEMBER_ID2",  "68a42d4f-9656-4f4b-bbbc-dda380dc09e1")
 
 cg_dao = ContextGraphDataAccess()
     
@@ -254,6 +255,18 @@ class TestCoverageLookup:
         state = _make_state(
             f"What is the coverage for member {TEST_MEMBER_ID}?"
         )
+        result = client_node(state)
+        #print( f">>>>>>>>>>>>>>>>>\n\n{result}" )
+        
+        _assert_successful_response(result, "test_coverage_lookup_basic")
+    
+    def test_coverage_lookup_combo(self, client_node):
+        """Look up coverage details for a known member."""
+        state = _make_state(
+            f"Check eligibility for member {TEST_MEMBER_ID} for service date 2026-02-22."
+            f"Also, What is the coverage for member {TEST_MEMBER_ID2}?."
+        )
+        #exceed_rate_limit( TEST_USER_ID, TEST_USER_ROLE, "check_eligibility" )
         result = client_node(state)
         #print( f">>>>>>>>>>>>>>>>>\n\n{result}" )
         

@@ -12,9 +12,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, RemoveMessage
 
-from agents.teams.claims_services.supervisor.claim_lookup_worker import ClaimLookupWorker
-from agents.teams.claims_services.supervisor.claim_status_worker import ClaimStatusWorker
-from agents.teams.claims_services.supervisor.claim_payment_info_worker import ClaimPaymentInfoWorker
+from agents.teams.pa_services.supervisor.pa_lookup_worker import PALookupWorker
+from agents.teams.pa_services.supervisor.pa_status_worker import PAStatusWorker
+from agents.teams.pa_services.supervisor.pa_requirements_worker import PARequirementsWorker
 from agents.security import RBACService, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
@@ -33,18 +33,18 @@ logger = logging.getLogger(__name__)
 settings: Settings = get_settings()
 
 
-class ClaimsServicesSupervisor:
+class PAServicesSupervisor:
     """
-    LangGraph-based supervisor for Claims Services team.
+    LangGraph-based supervisor for PA Services team.
     Routes queries to appropriate workers using LangGraph state machine.
     """
 
     def __init__(self):
-        self.name = "claims_services_supervisor"
+        self.name = "pa_services_supervisor"
         self.workers = {
-            "claim_lookup":       ClaimLookupWorker(),
-            "claim_status":       ClaimStatusWorker(),
-            "claim_payment_info": ClaimPaymentInfoWorker(),
+            "pa_lookup":       PALookupWorker(),
+            "pa_status":       PAStatusWorker(),
+            "pa_requirements": PARequirementsWorker(),
         }
 
         self.rbac = RBACService()
@@ -60,22 +60,22 @@ class ClaimsServicesSupervisor:
         # The LLM only confirms the worker or returns SKIP if required data is missing.
         # It must never output FINISH or CONTINUE — step advancement is
         # handled entirely by Python logic, not the LLM.
-        self.system_prompt = """You are a routing supervisor for a claims services team.
+        self.system_prompt = """You are a routing supervisor for a prior authorization services team.
 
 You will be given ONE specific step with a pre-assigned worker.
 Your ONLY job is to confirm that worker, or respond SKIP if required data is missing.
 
 Available workers:
-- claim_lookup: Look up full claim details by claim ID
-- claim_status: Check the processing status of a claim by claim number
-- claim_payment_info: Get payment amounts and processing info for a claim by claim ID
+- pa_lookup: Look up full prior authorization details by PA ID
+- pa_status: Check the current status of a prior authorization by PA ID
+- pa_requirements: Look up whether a procedure requires PA, given a procedure code and policy type
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
-   (no claim ID, no claim number), respond with "SKIP".
+   (no PA ID, no procedure code, no policy type), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: claim_lookup, claim_status, claim_payment_info.
+4. Only use exact worker names: pa_lookup, pa_status, pa_requirements.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -93,31 +93,31 @@ Relevant Knowledge Base Context:
 {semantic_context}
 
 Available workers (use EXACT names only):
-- claim_lookup: Looks up full claim details — requires a claim ID
-- claim_status: Checks claim processing status — requires a claim number (e.g. CLM-123456)
-- claim_payment_info: Retrieves payment amounts and dates — requires a claim ID
+- pa_lookup: Looks up full prior authorization details — requires a PA ID
+- pa_status: Checks the current status of a prior authorization — requires a PA ID
+- pa_requirements: Determines if a procedure requires PA — requires a procedure code (CPT code)
+  and policy type (HMO, PPO, EPO, or POS)
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
 2. Each step must have exactly ONE worker assigned. Use EXACT worker names only.
 3. A goal can have one or more steps. Steps sharing a goal_id execute in step_id order.
-4. If the query requires claim lookup, make it the first step.
+4. If the query requires a full PA lookup, make it the first step.
 5. Only include steps supported by the available workers.
 6. Keep the plan minimal — do not add steps for information not requested.
-7. Note: claim_status uses claim NUMBER (e.g. CLM-123456); claim_lookup and
-   claim_payment_info use claim ID (UUID). Include the correct identifier in
-   the step action so the worker knows which to use.
+7. Note: pa_lookup and pa_status both use PA ID (UUID); pa_requirements uses
+   procedure code + policy type. Include the correct identifiers in the step
+   action so the worker knows which to use.
 8. GOAL DECOMPOSITION — create a separate goal for each distinct user intent.
    Distinct intents are questions or requests that address different subjects or
    require different information to answer. Examples of distinct intents that
    MUST be separate goals:
-     - "What is the status of claim CLM-123?" AND "How much was paid on claim X?" → 2 goals
-     - "Look up claim X" AND "Check status of claim CLM-456" → 2 goals
+     - "Does procedure X require PA?" AND "What is the status of PA Y?" → 2 goals
+     - "Look up PA details for Z" AND "Does CPT A need PA under PPO?" → 2 goals
    A single goal is only correct when all steps serve one unified intent, e.g.:
-     - "Look up claim X and tell me how much was paid" → 1 goal, 2 steps (same subject)
-9. claim_payment_info and claim_status do not require claim_lookup first unless
-   full claim details were explicitly requested — each worker only needs its own
-   identifier (claim ID or claim number).
+     - "Look up PA Z and tell me its status" → 1 goal, 2 steps (same subject)
+9. pa_status requires only a PA ID — do not add a pa_lookup step before pa_status
+   unless full PA details were explicitly requested.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -132,8 +132,8 @@ Return JSON only (no markdown fences, no explanation):
         {{
             "step_id": "step_1",
             "goal_id": "goal_1",
-            "action": "Look up claim by ID",
-            "worker": "claim_lookup"
+            "action": "Look up PA by ID",
+            "worker": "pa_lookup"
         }}
     ]
 }}"""
@@ -213,18 +213,18 @@ Return JSON only (no markdown fences, no explanation):
                 plan=plan,
                 agent_name=self.name,
                 plan_type=state.get("plan_type", "team"),
-                team_name=state.get("team_name", "claims_services"),
+                team_name=state.get("team_name", "pa_services"),
                 central_step_id=state.get("central_step_id") or None,
             )
             plan_id  = plan_result.get("plan_id")  if plan_result else None
             step_map = plan_result.get("step_map") if plan_result else {}
 
             # Update state
-            state["plan_id"]             = plan_id
-            state["plan"]                = plan
-            state["step_map"]            = step_map
-            state["current_step_index"]  = 0
-            state["completed_goals"]     = []
+            state["plan_id"]            = plan_id
+            state["plan"]               = plan
+            state["step_map"]           = step_map
+            state["current_step_index"] = 0
+            state["completed_goals"]    = []
 
             logger.info(f"{self.name}: Created plan with {len(plan.get('goals', []))} goals")
 
@@ -261,7 +261,7 @@ Return JSON only (no markdown fences, no explanation):
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements"}
 
         user_id    = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -275,7 +275,7 @@ Return JSON only (no markdown fences, no explanation):
                 self.audit.log_action(
                     user_id=user_id,
                     action="circuit_breaker_block",
-                    resource_type="CLAIMS_SERVICES_AGENT",
+                    resource_type="PA_SERVICES_AGENT",
                     resource_id=""
                 )
                 return {
@@ -358,10 +358,10 @@ Return JSON only (no markdown fences, no explanation):
                 routing_messages.append(cls(content=msg.get("content", "")))
 
         # Inject results from previously completed steps so the routing LLM
-        # can confirm the assigned worker has the data it needs (e.g. a claim
-        # number extracted from a prior claim_lookup result).
+        # can confirm the assigned worker has the data it needs (e.g. a PA ID
+        # or procedure code extracted from a prior pa_lookup result).
         # tool_raw_output is the unredacted structured JSON from the MCP server —
-        # preferred over 'output' which may have PII scrubbed (e.g. claim numbers).
+        # preferred over 'output' which may have PII scrubbed.
         tool_results = state.get("tool_results", {})
         if tool_results and current_step_idx > 0:
             prior_context_parts = []
@@ -499,8 +499,8 @@ Return JSON only (no markdown fences, no explanation):
 
         self.audit.log_action(
             user_id=user_id,
-            action="claims_services_routing",
-            resource_type="CLAIMS_SERVICES_AGENT",
+            action="pa_services_routing",
+            resource_type="PA_SERVICES_AGENT",
             resource_id="",
         )
 
@@ -580,7 +580,8 @@ Return JSON only (no markdown fences, no explanation):
             query = query + "\nexecution_id: " + _exec_id
 
             # Append results from prior steps so the ReAct agent has upstream
-            # data available (e.g. claim number returned by claim_lookup).
+            # data available (e.g. PA details returned by pa_lookup needed by
+            # a subsequent pa_status or pa_requirements step).
             # tool_raw_output is the unredacted structured JSON from the MCP server —
             # preferred over 'output' which may have PII scrubbed.
             tool_results = state.get("tool_results", {})
@@ -723,7 +724,7 @@ Return JSON only (no markdown fences, no explanation):
         self.audit.log_action(
             user_id=state.get("user_id", "unknown"),
             action="supervisor_workflow_error",
-            resource_type="CLAIMS_SERVICES_AGENT",
+            resource_type="PA_SERVICES_AGENT",
             resource_id=""
         )
 
@@ -753,9 +754,9 @@ Return JSON only (no markdown fences, no explanation):
         Flow:
             create_plan
                 → supervisor
-                    → claim_lookup       → goal_advance → supervisor
-                    → claim_status       → goal_advance → supervisor
-                    → claim_payment_info → goal_advance → supervisor
+                    → pa_lookup       → goal_advance → supervisor
+                    → pa_status       → goal_advance → supervisor
+                    → pa_requirements → goal_advance → supervisor
                     → error_handler → END
                     → END  (when FINISH)
         """
@@ -793,11 +794,11 @@ Return JSON only (no markdown fences, no explanation):
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements"}
 
         def router(
             state: SupervisorState,
-        ) -> Literal["claim_lookup", "claim_status", "claim_payment_info",
+        ) -> Literal["pa_lookup", "pa_status", "pa_requirements",
                      "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
@@ -825,12 +826,12 @@ Return JSON only (no markdown fences, no explanation):
             "supervisor",
             router,
             {
-                "supervisor":        "supervisor",
-                "claim_lookup":      "claim_lookup",
-                "claim_status":      "claim_status",
-                "claim_payment_info": "claim_payment_info",
-                "error_handler":     "error_handler",
-                "__end__":           END,
+                "supervisor":      "supervisor",
+                "pa_lookup":       "pa_lookup",
+                "pa_status":       "pa_status",
+                "pa_requirements": "pa_requirements",
+                "error_handler":   "error_handler",
+                "__end__":         END,
             },
         )
 
@@ -839,8 +840,8 @@ Return JSON only (no markdown fences, no explanation):
 
 
 @lru_cache
-def get_claims_services_graph():
-    """Get or create claims services LangGraph."""
-    claims_services_supervisor = ClaimsServicesSupervisor()
+def get_pa_services_graph():
+    """Get or create PA services LangGraph."""
+    pa_services_supervisor = PAServicesSupervisor()
 
-    return claims_services_supervisor.create_graph()
+    return pa_services_supervisor.create_graph()

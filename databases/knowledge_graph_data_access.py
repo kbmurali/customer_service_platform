@@ -543,6 +543,46 @@ class KnowledgeGraphDataAccess:
         except Exception as e:
             logger.error(f"Error retrieving PA {pa_id}: {e}")
             return None
+        
+    def get_pa_requirements( self, procedure_code: str, policy_type: str ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Look up prior authorization requirements for a procedure under a policy type.
+        
+        This queries the member's policy to determine if a procedure requires PA,
+        based on the policy type (HMO, PPO, etc.) and procedure code.
+        
+        Args:
+            procedure_code: CPT code of the procedure
+            policy_type: Type of policy (HMO, PPO, EPO, POS)
+        
+        Returns:
+            Returns PA requirements data
+        """
+        query = """
+        MATCH (pa:PriorAuthorization {procedureCode: $procedureCode})
+        OPTIONAL MATCH (m:Member)-[:REQUESTED_PA]->(pa)
+        OPTIONAL MATCH (m)-[:HAS_POLICY]->(p:Policy {planType: $policyType})
+        RETURN pa.procedureCode AS procedureCode,
+               pa.procedureDescription AS procedureDescription,
+               pa.urgency AS urgency,
+               count(pa) AS totalRequests,
+               collect(DISTINCT pa.status) AS statuses
+        LIMIT 5
+        """
+        try:
+            result = self.conn.execute_query(query, {
+                "procedureCode": procedure_code,
+                "policyType": policy_type
+            })
+            
+            if result and len(result) > 0:
+                return result
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving PA requirements with procedure_code: {procedure_code} and policy_type: {policy_type}: {e}")
+            return None
+        
     
     def get_member_prior_authorizations(self, member_id: str, status: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
         """

@@ -20,7 +20,7 @@ from agents.core.mcp_tool_client_base import MCPToolClient
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_URL = "http://mcp-pa:8003"
+_DEFAULT_URL = "https://api-gateway:8443/mcp/pa"
 
 
 class PAServicesMCPToolClient(MCPToolClient):
@@ -29,21 +29,14 @@ class PAServicesMCPToolClient(MCPToolClient):
     def __init__(self, base_url: str = None):
         base_url = base_url or os.getenv("MCP_PA_SERVICES_HTTP_URL", _DEFAULT_URL)
         super().__init__("pa_services", base_url)
+        
+        self.register_server("pa_services")
 
-        self.register_tool(
-            name="pa_lookup_tool",
-            description="Look up prior authorization information by PA ID. Input: JSON with pa_id.",
-        )
-        self.register_tool(
-            name="pa_status_tool",
-            description="Check the status of a prior authorization. Input: JSON with pa_id.",
-        )
-        self.register_tool(
-            name="pa_requirements_tool",
-            description="Look up PA requirements for a procedure/policy. Input: JSON with procedure_code and policy_type.",
-        )
-
+        self.register_tool("pa_lookup")
+        self.register_tool("pa_status")
+        self.register_tool("pa_requirements")
+        
         logger.info(
-            "PAServicesMCPToolClient created (%s) with %d tools",
-            base_url, len(self._tools),
+            "PAServicesMCPToolClient ready (%s) — tools: %s",
+            base_url, self._registered_names,
         )

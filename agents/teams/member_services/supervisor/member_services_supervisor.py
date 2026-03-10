@@ -104,6 +104,19 @@ RULES:
 4. If the query requires member lookup, make it the first step.
 5. Only include steps supported by the available workers.
 6. Keep the plan minimal — do not add steps for information not requested.
+7. Note: member_lookup uses member ID; check_eligibility requires a service date;
+   coverage_lookup requires a procedure code. Include the correct identifiers in
+   the step action so the worker knows which to use.
+8. GOAL DECOMPOSITION — create a separate goal for each distinct user intent.
+   Distinct intents are questions or requests that address different subjects or
+   require different information to answer. Examples of distinct intents that
+   MUST be separate goals:
+     - "Is member M eligible on date D?" AND "What is coverage for procedure P?" → 2 goals
+     - "Look up member M" AND "Check eligibility for date D" → 2 goals
+   A single goal is only correct when all steps serve one unified intent, e.g.:
+     - "Look up member M and check their eligibility" → 1 goal, 2 steps (same subject)
+9. check_eligibility and coverage_lookup do not require member_lookup first unless
+   member details were explicitly requested — each worker only needs its own input.
 
 Return JSON only (no markdown fences, no explanation):
 {{
