@@ -10,7 +10,7 @@ from langgraph.prebuilt import create_react_agent
 
 from agents.teams.pa_services.pa_services_mcp_tool_client import PAServicesMCPToolClient
 
-from agents.security import RBACService, AuditLogger
+from agents.security import AuditLogger
 
 from llm_providers.llm_provider_factory import LLMProviderFactory, get_factory, ChatModel
 from agents.core.error_handling import get_error_metrics, is_retryable_error, classify_error, check_tool_result_for_errors
@@ -40,8 +40,7 @@ class PALookupWorker:
             raise RuntimeError("pa_lookup not found in PAServicesMCPToolClient")
         self.tool = tool
         self.tool_name = self.tool.name
-
-        self.rbac = RBACService()
+        
         self.audit = AuditLogger()
         self.presidio = get_presidio_security()
 
@@ -51,6 +50,7 @@ class PALookupWorker:
         prompt = (
             "You are a prior authorization information specialist for a health insurance company. "
             "Your role is to look up detailed prior authorization information by PA ID. "
+            "You MUST call the pa_lookup tool to answer — never answer from memory or context. "
             "Look up the PA using the PA ID provided in the query. "
             "You must also use user ID, user role, and session ID to provide accurate details. "
             "The query may include a line of the form 'execution_id: <value>'. "
@@ -71,12 +71,6 @@ class PALookupWorker:
 
         while retry_count <= max_retries:
             try:
-                # Check tool permission
-                if not self.rbac.check_tool_permission(user_role, self.tool_name):
-                    error_msg = "Permission denied for pa_lookup"
-                    metrics.record_error(self.name, "permission_denied", False)
-                    return {"error": error_msg, "error_type": "permission_denied"}
-
                 # Sanitize input
                 clean_query = sanitize_html(query)
 

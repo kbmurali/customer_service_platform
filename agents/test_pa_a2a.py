@@ -42,7 +42,7 @@ from agents.teams.pa_services.supervisor.tool_schemas import build_pa_schema_reg
 from agents.core.a2a_client_node import A2AClientNode
 from databases.context_graph_data_access import ContextGraphDataAccess
 
-from agents.security import RBACService, RateLimiter, RateLimitError
+from agents.security import rbac_service, rate_limiter, RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +66,6 @@ cg_dao.create_session(session_id=TEST_SESSION_ID, user_id=TEST_USER_ID)
 
 
 def exceed_rate_limit(user_id: str, user_role: str, tool_name: str):
-    rbac_service: RBACService = RBACService()
-    rate_limiter: RateLimiter = RateLimiter()
-
     current_rate_limit = rbac_service.get_tool_rate_limit(
         user_role=user_role, tool_name=tool_name
     )
@@ -333,7 +330,7 @@ class TestPARequirements:
         #exceed_rate_limit( user_id=TEST_USER_ID, user_role=TEST_USER_ROLE, tool_name="pa_requirements" )
         result = client_node(state)
         #print( f">>>>>>>>\n\n{result}\n")
-        _assert_successful_response(result, "test_pa_requirements_basic")
+        _assert_successful_response(result, "test_pa_requirements_combo")
 
         content = result["messages"][-1].content
         assert (

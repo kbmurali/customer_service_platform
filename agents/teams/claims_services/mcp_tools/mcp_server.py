@@ -31,6 +31,8 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from agents.security import rbac_service
+
 from dotenv import load_dotenv, find_dotenv
 
 from agents.tools_util import (
@@ -79,6 +81,29 @@ async def health(request: Request) -> JSONResponse:
         "version": "27.0.0",
         "transport": "streamable-http",
     })
+
+# ─────────────────────────────────────────────────────────────
+# Admin endpoint — utility to clear the cache
+# ─────────────────────────────────────────────────────────────
+
+@mcp.custom_route("/admin/rbac/clear-cache", methods=["POST"])
+async def clear_rbac_cache(request: Request) -> JSONResponse:
+    """
+    Clear the RBACService in-memory permission cache.
+
+    Call this after making direct changes to `tool_permissions` or
+    `role_permissions` in MySQL so the MCP server picks them up
+    immediately without a container restart.
+
+    Reachable only over the internal Docker overlay network:
+        docker exec $(docker ps -qf name=<container_name>) \
+            python3 -c "import urllib.request; \
+            r = urllib.request.urlopen(urllib.request.Request('http://localhost:8001/admin/rbac/clear-cache', method='POST')); \
+            print(r.read().decode())"
+    """
+    result = rbac_service.clear_cache()
+    logger.info("RBAC cache cleared via admin endpoint: %s", result)
+    return JSONResponse({"status": "ok", **result})
 
 @mcp.tool()
 @circuit_breaker

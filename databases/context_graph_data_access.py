@@ -689,10 +689,12 @@ class ContextGraphDataAccess:
         link_step_to_execution(), called from the supervisor before the
         worker fires, scoped by planId to avoid cross-session contamination.
         """
-        # Base query — creates ToolExecution node (no Session link needed;
-        # reachable via Step->AgentExecution->ToolExecution chain)
+        # Base query — creates ToolExecution node unconditionally.
+        # No Session MATCH anchor: ToolExecution is reachable via the
+        # Step->AgentExecution->ToolExecution chain. A MATCH anchor would
+        # silently suppress the CREATE (and return zero rows) if the session
+        # lookup failed for any transient reason, orphaning the node silently.
         query = """
-            MATCH (s:Session {sessionId: $sessionId})
             CREATE (t:ToolExecution {
                 toolExecutionId: randomUUID(),
                 toolName:        $toolName,
@@ -717,7 +719,6 @@ class ContextGraphDataAccess:
         query += " RETURN t.toolExecutionId AS toolExecutionId"
 
         params: Dict[str, Any] = {
-            "sessionId":      session_id,
             "toolName":       tool_name,
             "input":          json.dumps(input_data or {}),
             "output":         json.dumps(output_data or {}),

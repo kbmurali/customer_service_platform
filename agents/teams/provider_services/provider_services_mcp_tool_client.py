@@ -4,13 +4,13 @@ Provider Services MCP Tool Client (v26)
 Connects to the Provider Services FastMCP server and exposes its tools
 as LangChain Tool objects.
 
-Server default: http://mcp-provider:8004
+Server default: http://provider-services-mcp-tools:8001
 Env override:   MCP_PROVIDER_SERVICES_HTTP_URL
 
 Tools:
-    provider_search_tool — search for providers by specialty and location
-    provider_lookup_tool — look up provider information by provider ID
-    network_check_tool   — check if a provider has claim history under a policy
+    provider_lookup — look up provider information by provider ID
+    provider_search_by_specialty — search for providers by specialty and location (zip code)
+    provider_network_check  — check if a provider has claim history under a policy
 """
 
 import logging
@@ -20,7 +20,7 @@ from agents.core.mcp_tool_client_base import MCPToolClient
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_URL = "http://mcp-provider:8004"
+_DEFAULT_URL = "https://api-gateway:8443/mcp/provider"
 
 
 class ProviderServicesMCPToolClient(MCPToolClient):
@@ -29,21 +29,14 @@ class ProviderServicesMCPToolClient(MCPToolClient):
     def __init__(self, base_url: str = None):
         base_url = base_url or os.getenv("MCP_PROVIDER_SERVICES_HTTP_URL", _DEFAULT_URL)
         super().__init__("provider_services", base_url)
+        
+        self.register_server("provider_services")
 
-        self.register_tool(
-            name="provider_search_tool",
-            description="Search for providers by specialty and location. Input: JSON with specialty and zip_code.",
-        )
-        self.register_tool(
-            name="provider_lookup_tool",
-            description="Look up provider information by provider ID. Input: JSON with provider_id.",
-        )
-        self.register_tool(
-            name="network_check_tool",
-            description="Check if a provider has claim history under a policy. Input: JSON with provider_id and policy_id.",
-        )
+        self.register_tool("provider_lookup")
+        self.register_tool("provider_search_by_specialty")
+        self.register_tool("provider_network_check")
 
         logger.info(
-            "ProviderServicesMCPToolClient created (%s) with %d tools",
-            base_url, len(self._tools),
+            "ProviderServicesMCPToolClient ready (%s) — tools: %s",
+            base_url, self._registered_names,
         )

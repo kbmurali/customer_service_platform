@@ -377,6 +377,31 @@ class RBACService:
             logger.error(f"Get tool rate limit failed: {e}")
             return 30  # Default fallback
 
+    def clear_cache(self) -> Dict[str, int]:
+        """
+        Clear all in-memory permission caches.
+
+        Call this after making direct changes to the `tool_permissions` or
+        `role_permissions` tables in MySQL so the running MCP server picks
+        them up immediately without a container restart.
+
+        Returns:
+            Dict with the number of entries cleared from each cache.
+        """
+        perm_count = len(self._permission_cache)
+        tool_count = len(self._tool_permission_cache)
+        self._permission_cache.clear()
+        self._tool_permission_cache.clear()
+        logger.info(
+            "RBACService cache cleared: %d permission entries, %d tool permission entries",
+            perm_count,
+            tool_count,
+        )
+        return {
+            "permission_cache_cleared":      perm_count,
+            "tool_permission_cache_cleared": tool_count,
+        }
+
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """
         Fetch role and active status for a user.

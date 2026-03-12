@@ -4,7 +4,7 @@ Member Services MCP Tool Client
 Connects to the Member Services FastMCP server and exposes its tools
 as sync LangChain tools via langchain_mcp_adapters.
 
-Server default: http://mcp-member:8001
+Server default: http://member-services-mcp-tools:8001
 Env override:   MCP_MEMBER_SERVICES_HTTP_URL
 
 Tools registered:

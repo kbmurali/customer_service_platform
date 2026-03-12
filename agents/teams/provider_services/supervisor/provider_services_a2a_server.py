@@ -1,8 +1,8 @@
 """
-Member Services Remote Agent Server (A2A Protocol)
+Provider Services Remote Agent Server (A2A Protocol)
 =========================================================
 Receives A2A task envelopes from A2AClientNode (central supervisor),
-decrypts, executes the member services supervisor's LangGraph subgraph,
+decrypts, executes the provider services supervisor's LangGraph subgraph,
 and returns an A2A task response with artifacts.
 
 Also serves the Agent Card at /.well-known/agent.json for A2A discovery.
@@ -32,9 +32,9 @@ from agents.core.state import SupervisorState
 from agents.security import rbac_service
 
 from security.message_encryption import get_secure_message_bus, SecurityError
-from agents.teams.member_services.supervisor.member_services_supervisor import get_member_services_graph
-from agents.teams.member_services.supervisor.tool_schemas import build_schema_registry
-from agents.teams.member_services.member_services_a2a_agent_card import build_member_services_agent_card
+from agents.teams.provider_services.supervisor.provider_services_supervisor import get_provider_services_graph
+from agents.teams.provider_services.supervisor.tool_schemas import build_provider_schema_registry
+from agents.teams.provider_services.provider_services_a2a_agent_card import build_provider_services_agent_card
 from observability.prometheus_metrics import track_mcp_encryption_event
 from observability.langfuse_integration import get_langfuse_tracer
 from databases.context_graph_data_access import get_cg_data_access
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """
     Startup: eagerly initialise the graph and secure bus so that
-    asyncio.run() inside MemberServicesMCPToolClient.__init__ runs
+    asyncio.run() inside ProviderServicesMCPToolClient.__init__ runs
     BEFORE uvicorn's event loop is active.
 
     This avoids:
@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
     """
     logger.info("A2A server startup: initialising graph and secure bus...")
     _get_secure_bus()   # warms SecureMessageBus singleton
-    _get_graph()        # triggers MemberServicesSupervisor.__init__ → workers → MCP client
+    _get_graph()        # triggers ProviderServicesSupervisor.__init__ → workers → MCP client
     _get_agent_card()   # warms agent card singleton
     logger.info("A2A server startup complete — ready to accept requests.")
     yield
@@ -67,54 +67,54 @@ async def lifespan(app: FastAPI):
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(
-    title="Member Services A2A Agent",
+    title="Provider Services A2A Agent",
     version="1.0.0",
-    description="Remote A2A agent for member services with encrypted communication",
+    description="Remote A2A agent for provider services with encrypted communication",
     lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-AGENT_NAME = "member_services_supervisor_agent"
-SUPERVISOR_NAME = "member_services_supervisor"
+AGENT_NAME      = "provider_services_supervisor_agent"
+SUPERVISOR_NAME = "provider_services_supervisor"
 
 # ---------------------------------------------------------------------------
 # Lazy singletons (initialised on first request to keep startup fast)
 # ---------------------------------------------------------------------------
 _secure_bus = None
-_graph:Optional[CompiledStateGraph] = None
+_graph: Optional[CompiledStateGraph] = None
 _agent_card = None
 
 
 def _get_secure_bus():
     """Return (and cache) the SecureMessageBus singleton."""
     global _secure_bus
-    
+
     if _secure_bus is None:
-        _secure_bus = get_secure_message_bus(schema_registry=build_schema_registry())
-        
+        _secure_bus = get_secure_message_bus(schema_registry=build_provider_schema_registry())
+
     return _secure_bus
 
 
 def _get_graph() -> CompiledStateGraph:
-    """Return (and cache) the compiled member services LangGraph."""
+    """Return (and cache) the compiled provider services LangGraph."""
     global _graph
-    
+
     if _graph is None:
-        _graph = get_member_services_graph()
-        
+        _graph = get_provider_services_graph()
+
     return _graph
 
 
 def _get_agent_card():
     """Return (and cache) the Agent Card for this service."""
     global _agent_card
-    
+
     if _agent_card is None:
-        base_url = os.getenv("A2A_MEMBER_SERVICES_URL", "https://api-gateway:8443/a2a/member")
-        _agent_card = build_member_services_agent_card(base_url)
-        
+        base_url = os.getenv("A2A_PROVIDER_SERVICES_URL", "https://api-gateway:8443/a2a/provider")
+        _agent_card = build_provider_services_agent_card(base_url)
+
     return _agent_card
 
 
@@ -197,7 +197,7 @@ def _extract_from_a2a_task(task: Dict[str, Any]) -> Dict[str, Any]:
         }
     """
     message = task.get("message", {})
-    parts = message.get("parts", [])
+    parts   = message.get("parts", [])
 
     query           = ""
     user_id         = "unknown"
@@ -259,15 +259,15 @@ def _build_a2a_response(
     combined_text = "\n".join(messages) if messages else ""
 
     data_part: Dict[str, Any] = {
-        "tool_results": tool_results,
+        "tool_results":   tool_results,
         "execution_path": execution_path,
     }
-    
+
     if error_fields:
         data_part.update(error_fields)
 
     return {
-        "id": task_id,
+        "id":    task_id,
         "state": state,
         "artifacts": [
             {
@@ -327,7 +327,7 @@ async def agent_card():
 @app.post("/tasks/send")
 async def a2a_tasks_send(request: Request):
     """
-    Member Services A2A task endpoint: receive an encrypted A2A task envelope,
+    Provider Services A2A task endpoint: receive an encrypted A2A task envelope,
     decrypt → execute LangGraph subgraph → encrypt response.
 
     Implements the A2A task lifecycle:
@@ -336,11 +336,11 @@ async def a2a_tasks_send(request: Request):
     The SecureMessageBus encryption is preserved as a transport-layer
     enhancement on top of A2A's JSON-RPC messages.
     """
-    start = time.time()
+    start    = time.time()
     envelope: Dict[str, Any] = await request.json()
 
     secure_bus = _get_secure_bus()
-    graph = _get_graph()
+    graph      = _get_graph()
 
     try:
         # ── Step 1: Unwrap (verify HMAC, check replay, AES-GCM decrypt) ──
@@ -350,7 +350,7 @@ async def a2a_tasks_send(request: Request):
         task_id = a2a_task.get("id", str(uuid.uuid4()))
 
         logger.info(
-            "Member Services A2A task %s received from %s",
+            "Provider Services A2A task %s received from %s",
             task_id,
             envelope.get("from_agent", "?"),
         )
@@ -359,7 +359,7 @@ async def a2a_tasks_send(request: Request):
         extracted = _extract_from_a2a_task(a2a_task)
 
         logger.info(
-            "Member Services A2A task %s: user=%s session=%s query_len=%d",
+            "Provider Services A2A task %s: user=%s session=%s query_len=%d",
             task_id,
             extracted["user_id"],
             extracted["session_id"],
@@ -377,14 +377,14 @@ async def a2a_tasks_send(request: Request):
             # CG traceability fields — tell the team supervisor what it is
             # and which central step delegated work here via A2A.
             "plan_type":       "team",
-            "team_name":       "member_services",
+            "team_name":       "provider_services",
             "central_step_id": extracted["central_step_id"],
         }
 
         if extracted["plan"]:
             state["plan"] = extracted["plan"]
 
-        # ── Step 4: Execute the member services subgraph ──
+        # ── Step 4: Execute the provider services subgraph ──
         result = graph.invoke(state)
 
         # ── Step 5: Build A2A response with artifacts ──
@@ -416,7 +416,7 @@ async def a2a_tasks_send(request: Request):
         )
 
         # ── Step 6: Wrap response in encrypted envelope ──
-        tool_name = envelope.get("tool_name", f"{AGENT_NAME}_a2a_task")
+        tool_name         = envelope.get("tool_name", f"{AGENT_NAME}_a2a_task")
         response_envelope = secure_bus.wrap_response(
             from_agent=AGENT_NAME,
             to_agent=envelope["from_agent"],
@@ -427,7 +427,7 @@ async def a2a_tasks_send(request: Request):
 
         elapsed_ms = (time.time() - start) * 1000
         logger.info(
-            "Member Services A2A task %s completed in %.0f ms (state=%s)",
+            "Provider Services A2A task %s completed in %.0f ms (state=%s)",
             task_id,
             elapsed_ms,
             a2a_state,
@@ -474,30 +474,31 @@ async def a2a_tasks_send(request: Request):
         return JSONResponse(content=response_envelope)
 
     except Exception as exc:
-        elapsed_ms = (time.time() - start) * 1000
-        session_id = "default"
-        user_id = "unknown"
-        task_id_err = "unknown"
+        elapsed_ms    = (time.time() - start) * 1000
+        session_id    = "default"
+        user_id       = "unknown"
+        task_id_err   = "unknown"
         try:
-            task_id_err = a2a_task.get("id", "unknown")  # type: ignore[union-attr]
-            extracted_err = _extract_from_a2a_task(a2a_task)  # type: ignore[union-attr]
-            session_id = extracted_err.get("session_id", "default")
-            user_id = extracted_err.get("user_id", "unknown")
+            task_id_err   = a2a_task.get("id", "unknown")          # type: ignore[union-attr]
+            extracted_err = _extract_from_a2a_task(a2a_task)       # type: ignore[union-attr]
+            session_id    = extracted_err.get("session_id", "default")
+            user_id       = extracted_err.get("user_id", "unknown")
         except Exception:
             pass
 
         if isinstance(exc, SecurityError):
-            logger.error("Security error on Member Services A2A task %s: %s", task_id_err, exc)
+            logger.error("Security error on Provider Services A2A task %s: %s", task_id_err, exc)
             _track("security_failure")
             _trace_langfuse(session_id=session_id, user_id=user_id, status="security_error", elapsed_ms=elapsed_ms, error=str(exc))
             _track_cg(session_id=session_id, status="security_error", elapsed_ms=elapsed_ms, task_id=task_id_err, error=str(exc))
             raise HTTPException(status_code=403, detail=str(exc))
 
-        logger.error("Execution error on Member Services A2A task %s: %s", task_id_err, exc, exc_info=True)
+        logger.error("Execution error on Provider Services A2A task %s: %s", task_id_err, exc, exc_info=True)
         _track("transport_failure")
         _trace_langfuse(session_id=session_id, user_id=user_id, status="execution_error", elapsed_ms=elapsed_ms, error=str(exc))
         _track_cg(session_id=session_id, status="execution_error", elapsed_ms=elapsed_ms, task_id=task_id_err, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 # ---------------------------------------------------------------------------
 # Standalone entry-point

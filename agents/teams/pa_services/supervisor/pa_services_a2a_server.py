@@ -29,6 +29,8 @@ from langchain_core.messages import HumanMessage
 
 from agents.core.state import SupervisorState
 
+from agents.security import rbac_service
+
 from security.message_encryption import get_secure_message_bus, SecurityError
 from agents.teams.pa_services.supervisor.pa_services_supervisor import get_pa_services_graph
 from agents.teams.pa_services.supervisor.tool_schemas import build_pa_schema_registry
@@ -286,6 +288,28 @@ async def health():
     """Liveness / readiness probe."""
     return {"status": "healthy", "agent": AGENT_NAME, "protocol": "a2a"}
 
+# ─────────────────────────────────────────────────────────────
+# Admin endpoint — utility to clear the cache
+# ─────────────────────────────────────────────────────────────
+
+@app.post("/admin/rbac/clear-cache")
+async def clear_rbac_cache(request: Request) -> JSONResponse:
+    """
+    Clear the RBACService in-memory permission cache.
+
+    Call this after making direct changes to `tool_permissions` or
+    `role_permissions` in MySQL so the MCP server picks them up
+    immediately without a container restart.
+
+    Reachable only over the internal Docker overlay network:
+        docker exec $(docker ps -qf name=<container_name>) \
+            python3 -c "import urllib.request; \
+            r = urllib.request.urlopen(urllib.request.Request('http://localhost:8101/admin/rbac/clear-cache', method='POST')); \
+            print(r.read().decode())"
+    """
+    result = rbac_service.clear_cache()
+    logger.info("RBAC cache cleared via admin endpoint: %s", result)
+    return JSONResponse({"status": "ok", **result})
 
 @app.get("/.well-known/agent.json")
 async def agent_card():
@@ -374,7 +398,14 @@ async def a2a_tasks_send(request: Request):
             if field in result:
                 error_fields[field] = result[field]
 
-        a2a_state    = "failed" if result.get("error") else "completed"
+        # ── Determine A2A task state ─────────────────────────────────────────
+        # A plan is "incomplete" when at least one goal failed (e.g. a tool
+        # decorator denied the call) even if no top-level error key was set.
+        # Both conditions must map to a2a_state="failed" so the CG and the
+        # A2A response accurately reflect partial failures.
+        _plan_incomplete = result.get("plan", {}).get("status") == "incomplete"
+        _has_error       = result.get("error") not in (None, "", {}, [], 0)
+        a2a_state        = "failed" if (_has_error or _plan_incomplete) else "completed"
         a2a_response = _build_a2a_response(
             task_id=task_id,
             state=a2a_state,
@@ -402,16 +433,24 @@ async def a2a_tasks_send(request: Request):
             a2a_state,
         )
 
-        # ── Langfuse + CG: trace successful execution ──
+        # ── Langfuse + CG: trace execution outcome ──
+        # Use granular status so CG can distinguish clean success,
+        # partial failures (some goals failed / plan incomplete), and
+        # full errors — rather than collapsing everything into "success".
+        _cg_status = (
+            "partial_failure" if _plan_incomplete and not _has_error
+            else "error"      if _has_error
+            else "success"
+        )
         _trace_langfuse(
             session_id=extracted["session_id"],
             user_id=extracted["user_id"],
-            status="success",
+            status=_cg_status,
             elapsed_ms=elapsed_ms,
         )
         _track_cg(
             session_id=extracted["session_id"],
-            status="success",
+            status=_cg_status,
             elapsed_ms=elapsed_ms,
             task_id=task_id,
         )

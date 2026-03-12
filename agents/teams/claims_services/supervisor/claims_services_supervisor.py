@@ -15,7 +15,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from agents.teams.claims_services.supervisor.claim_lookup_worker import ClaimLookupWorker
 from agents.teams.claims_services.supervisor.claim_status_worker import ClaimStatusWorker
 from agents.teams.claims_services.supervisor.claim_payment_info_worker import ClaimPaymentInfoWorker
-from agents.security import RBACService, AuditLogger
+from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
 from agents.core.error_handling import get_error_metrics, create_error_record, format_error_for_user
@@ -47,7 +47,7 @@ class ClaimsServicesSupervisor:
             "claim_payment_info": ClaimPaymentInfoWorker(),
         }
 
-        self.rbac = RBACService()
+        self.rbac = rbac_service
         self.audit = AuditLogger()
         self.presidio = get_presidio_security()
         self.cg_manager = get_context_graph_manager()
@@ -330,8 +330,8 @@ Return JSON only (no markdown fences, no explanation):
             conversation_history = self.cg_manager.get_conversation_history(session_id, limit=5) or []
             execution_id         = self.cg_manager.track_agent_execution(
                 session_id=session_id,
-                agent_name=self.name,
-                agent_type="supervisor",
+                agent_name=f"{step_worker}_worker",
+                agent_type="worker",
                 status="running",
             )
         except Exception as e:

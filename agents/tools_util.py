@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 
 from databases.context_graph_data_access import get_cg_data_access
 from databases.chroma_vector_data_access import get_chroma_data_access
-from agents.security import RBACService, RateLimiter, RateLimitError
+from agents.security import rbac_service, rate_limiter, RateLimitError
 from security.approval_workflow import get_approval_workflow, CircuitBreakerError
 from security.presidio_memory_security import get_presidio_security
 from security.nh3_sanitization import sanitize_text
@@ -17,14 +17,8 @@ from observability.prometheus_metrics import rate_limit_checks, track_rate_limit
 
 logger = logging.getLogger(__name__)
 
-# Initialize RBAC service
-rbac_service = RBACService()
-
 # Initialize Presidio security
 presidio_security = get_presidio_security()
-
-# Initialize Rate Limiter (Control 6)
-rate_limiter = RateLimiter()
 
 # Initialize Chroma vector data access for semantic search
 chroma_data_access = get_chroma_data_access()

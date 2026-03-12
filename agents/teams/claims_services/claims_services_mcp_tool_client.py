@@ -4,7 +4,7 @@ Claim Services MCP Tool Client
 Connects to the Claim Services FastMCP server and exposes its tools
 as LangChain Tool objects.
 
-Server default: http://mcp-claim:8002
+Server default: http://claims-services-mcp-tools:8001
 Env override:   MCP_CLAIM_SERVICES_HTTP_URL
 
 Tools registered:

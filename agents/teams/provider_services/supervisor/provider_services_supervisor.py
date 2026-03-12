@@ -12,10 +12,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, RemoveMessage
 
-        
-from agents.teams.member_services.supervisor.member_lookup_worker import MemberLookupWorker
-from agents.teams.member_services.supervisor.check_eligibility_worker import EligibilityCheckWorker
-from agents.teams.member_services.supervisor.coverage_lookup_worker import CoverageLookupWorker
+from agents.teams.provider_services.supervisor.provider_lookup_worker import ProviderLookupWorker
+from agents.teams.provider_services.supervisor.provider_network_check_worker import ProviderNetworkCheckWorker
+from agents.teams.provider_services.supervisor.provider_search_by_specialty_worker import ProviderSearchBySpecialtyWorker
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
@@ -33,49 +32,49 @@ from config.settings import get_settings, Settings
 logger = logging.getLogger(__name__)
 settings: Settings = get_settings()
 
-class MemberServicesSupervisor:
+class ProviderServicesSupervisor:
     """
-    LangGraph-based supervisor for Member Services team.
+    LangGraph-based supervisor for Provider Services team.
     Routes queries to appropriate workers using LangGraph state machine.
     """
-    
+
     def __init__(self):
-        self.name = "member_services_supervisor"
+        self.name = "provider_services_supervisor"
         self.workers = {
-            "member_lookup": MemberLookupWorker(),
-            "check_eligibility": EligibilityCheckWorker(),
-            "coverage_lookup": CoverageLookupWorker()
+            "provider_lookup":              ProviderLookupWorker(),
+            "provider_network_check":       ProviderNetworkCheckWorker(),
+            "provider_search_by_specialty": ProviderSearchBySpecialtyWorker(),
         }
-        
+
         self.rbac = rbac_service
         self.audit = AuditLogger()
         self.presidio = get_presidio_security()
         self.cg_manager = get_context_graph_manager()
-        
+
         llm_factory: LLMProviderFactory = get_factory()
         self.llm: ChatModel = llm_factory.get_llm_provider()
-        
+
         # Routing prompt — called once per step to confirm the assigned worker.
         # The supervisor node provides the current step and its pre-assigned worker.
         # The LLM only confirms the worker or returns SKIP if required data is missing.
         # It must never output FINISH or CONTINUE — step advancement is
         # handled entirely by Python logic, not the LLM.
-        self.system_prompt = """You are a routing supervisor for a member services team.
+        self.system_prompt = """You are a routing supervisor for a provider services team.
 
 You will be given ONE specific step with a pre-assigned worker.
 Your ONLY job is to confirm that worker, or respond SKIP if required data is missing.
 
 Available workers:
-- member_lookup: Look up member information by member ID
-- check_eligibility: Check member eligibility for a given service date
-- coverage_lookup: Get detailed coverage and benefits for a procedure code
+- provider_lookup: Look up full provider details by provider ID
+- provider_network_check: Check if a provider has claim history under a policy — requires provider ID and policy ID
+- provider_search_by_specialty: Search for providers by specialty and ZIP code — requires specialty and ZIP code
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
-   (no member ID, no service date, no procedure code), respond with "SKIP".
+   (no provider ID, no policy ID, no specialty, no ZIP code), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: member_lookup, check_eligibility, coverage_lookup.
+4. Only use exact worker names: provider_lookup, provider_network_check, provider_search_by_specialty.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -93,30 +92,31 @@ Relevant Knowledge Base Context:
 {semantic_context}
 
 Available workers (use EXACT names only):
-- member_lookup: Looks up member by ID
-- check_eligibility: Checks eligibility — requires a service date
-- coverage_lookup: Gets coverage details — requires a procedure code
+- provider_lookup: Looks up full provider details — requires a provider ID
+- provider_network_check: Checks if a provider has serviced claims under a policy — requires a provider ID and a policy ID
+- provider_search_by_specialty: Searches for providers by specialty and location — requires a specialty and a ZIP code
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
 2. Each step must have exactly ONE worker assigned. Use EXACT worker names only.
 3. A goal can have one or more steps. Steps sharing a goal_id execute in step_id order.
-4. If the query requires member lookup, make it the first step.
+4. If the query requires a full provider lookup, make it the first step.
 5. Only include steps supported by the available workers.
 6. Keep the plan minimal — do not add steps for information not requested.
-7. Note: member_lookup uses member ID; check_eligibility requires a service date;
-   coverage_lookup requires a procedure code. Include the correct identifiers in
-   the step action so the worker knows which to use.
+7. Note: provider_lookup and provider_network_check use provider ID (UUID);
+   provider_network_check also requires a policy ID; provider_search_by_specialty
+   uses specialty (e.g. "Cardiology") and ZIP code. Include the correct identifiers
+   in the step action so the worker knows which to use.
 8. GOAL DECOMPOSITION — create a separate goal for each distinct user intent.
    Distinct intents are questions or requests that address different subjects or
    require different information to answer. Examples of distinct intents that
    MUST be separate goals:
-     - "Is member M eligible on date D?" AND "What is coverage for procedure P?" → 2 goals
-     - "Look up member M" AND "Check eligibility for date D" → 2 goals
+     - "Look up provider P" AND "Is provider P in-network for policy Q?" → 2 goals
+     - "Find Cardiology providers near ZIP 60601" AND "Look up provider P" → 2 goals
    A single goal is only correct when all steps serve one unified intent, e.g.:
-     - "Look up member M and check their eligibility" → 1 goal, 2 steps (same subject)
-9. check_eligibility and coverage_lookup do not require member_lookup first unless
-   member details were explicitly requested — each worker only needs its own input.
+     - "Look up provider P and check their network status under policy Q" → 1 goal, 2 steps (same subject)
+9. provider_network_check does not require provider_lookup first unless full provider
+   details were explicitly requested — it only needs provider ID and policy ID.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -131,21 +131,21 @@ Return JSON only (no markdown fences, no explanation):
         {{
             "step_id": "step_1",
             "goal_id": "goal_1",
-            "action": "Look up member by ID",
-            "worker": "member_lookup"
+            "action": "Look up provider by ID",
+            "worker": "provider_lookup"
         }}
     ]
 }}"""
-    
+
     def create_routing_chain(self):
         """Create the LangGraph routing chain."""
         prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             ("human", "{messages}")
         ])
-        
+
         return prompt | self.llm | JsonOutputParser()
-    
+
 
     def create_plan_node(self, state: SupervisorState) -> SupervisorState:
         """
@@ -154,22 +154,22 @@ Return JSON only (no markdown fences, no explanation):
         # Check if plan already exists
         if state.get("plan"):
             return state
-        
+
         tracer = get_langfuse_tracer()
         session_id = state.get("session_id", "default")
-        
+
         try:
             # Get user query
             user_query = state["messages"][-1].content if state["messages"] else "No query"
-            
+
             # Enrich planning with semantic search from Chroma vector DB
             semantic_context_json = {}
-            
+
             try:
                 chroma = get_chroma_data_access()
-                policy_context = chroma.search_policies( query=user_query, n_results=2)
+                policy_context = chroma.search_policies(query=user_query, n_results=2)
                 faq_context = chroma.search_faqs(query=user_query, n_results=2)
-                
+
                 semantic_context_json = {
                     'relevant_policies': [r['document'] for r in policy_context],
                     'relevant_faqs': [r['document'] for r in faq_context]
@@ -178,35 +178,34 @@ Return JSON only (no markdown fences, no explanation):
                 semantic_context = {}
 
             semantic_context = json.dumps(semantic_context_json, indent=2) if semantic_context_json else 'No additional context available.'
-            
+
             # Create planning prompt
             prompt = ChatPromptTemplate.from_messages([
                 ("system", "You are a planning agent. Create structured execution plans in JSON format."),
                 ("human", self.planning_prompt)
             ])
-            
 
             # Trace plan creation
             callback_handler = tracer.get_callback_handler() if tracer.enabled else None
-            
+
             # Call LLM to create plan
             inputs = {
-                "user_query" : user_query,
-                "semantic_context" : semantic_context
+                "user_query": user_query,
+                "semantic_context": semantic_context
             }
-            
+
             if callback_handler:
-                result = (prompt | self.llm).invoke( inputs, config={"callbacks": [callback_handler]})
+                result = (prompt | self.llm).invoke(inputs, config={"callbacks": [callback_handler]})
             else:
-                result = (prompt | self.llm).invoke(inputs )
-            
+                result = (prompt | self.llm).invoke(inputs)
+
             # Parse plan
             raw = result.content
-            
+
             plan_text = re.sub(r"```json|```", "", str(raw)).strip()
-            
-            plan = json.loads( plan_text )
-            
+
+            plan = json.loads(plan_text)
+
             # Store plan in CG as a team plan.
             # store_plan returns {"plan_id": ..., "step_map": {step_id: step_id}}.
             # central_step_id (from state) creates:
@@ -216,26 +215,26 @@ Return JSON only (no markdown fences, no explanation):
                 plan=plan,
                 agent_name=self.name,
                 plan_type=state.get("plan_type", "team"),
-                team_name=state.get("team_name", "member_services"),
+                team_name=state.get("team_name", "provider_services"),
                 central_step_id=state.get("central_step_id") or None,
             )
             plan_id  = plan_result.get("plan_id")  if plan_result else None
             step_map = plan_result.get("step_map") if plan_result else {}
 
             # Update state
-            state["plan_id"]             = plan_id
-            state["plan"]                = plan
-            state["step_map"]            = step_map
-            state["current_step_index"]  = 0
-            state["completed_goals"]     = []
-            
+            state["plan_id"]            = plan_id
+            state["plan"]               = plan
+            state["step_map"]           = step_map
+            state["current_step_index"] = 0
+            state["completed_goals"]    = []
+
             logger.info(f"{self.name}: Created plan with {len(plan.get('goals', []))} goals")
-            
+
             return state
-            
+
         except Exception as e:
             logger.error(f"{self.name}: Error creating plan: {e}")
-            
+
             # Fallback plan
             state["plan"] = {
                 "goals": [{"id": "goal_1", "description": "Handle user query",
@@ -247,7 +246,7 @@ Return JSON only (no markdown fences, no explanation):
             state["completed_goals"]    = []
             state["step_map"]           = {}
             return state
-        
+
     def supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """
         Orchestrator node — iterates steps directly, one LLM call per step.
@@ -264,11 +263,11 @@ Return JSON only (no markdown fences, no explanation):
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup"}
+        VALID_WORKERS = {"provider_lookup", "provider_network_check", "provider_search_by_specialty"}
 
-        user_id = state.get("user_id", "unknown")
+        user_id    = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
-        tracer = get_langfuse_tracer()
+        tracer     = get_langfuse_tracer()
 
         # ── Circuit Breaker ──────────────────────────────────────────────────
         try:
@@ -278,7 +277,7 @@ Return JSON only (no markdown fences, no explanation):
                 self.audit.log_action(
                     user_id=user_id,
                     action="circuit_breaker_block",
-                    resource_type="MEMBER_SERVICES_AGENT",
+                    resource_type="PROVIDER_SERVICES_AGENT",
                     resource_id=""
                 )
                 return {
@@ -290,15 +289,15 @@ Return JSON only (no markdown fences, no explanation):
             logger.warning(f"{self.name}: Circuit breaker check failed (fail-open): {e}")
 
         # ── Read plan state ──────────────────────────────────────────────────
-        plan              = state.get("plan", {})
-        plan_id           = state.get("plan_id", "")
-        all_steps         = sorted(
+        plan             = state.get("plan", {})
+        plan_id          = state.get("plan_id", "")
+        all_steps        = sorted(
             plan.get("steps", []),
             key=lambda s: s.get("step_id", "")
         )
-        current_step_idx  = state.get("current_step_index", 0)
-        completed_goals   = list(state.get("completed_goals", []))
-        execution_path    = list(state.get("execution_path", []))
+        current_step_idx = state.get("current_step_index", 0)
+        completed_goals  = list(state.get("completed_goals", []))
+        execution_path   = list(state.get("execution_path", []))
 
         # ── All steps done ───────────────────────────────────────────────────
         if current_step_idx >= len(all_steps):
@@ -391,7 +390,7 @@ Return JSON only (no markdown fences, no explanation):
         callback_handler = tracer.get_callback_handler() if tracer.enabled else None
         chain = self.create_routing_chain()
         try:
-            llm_result = chain.invoke(
+            llm_result  = chain.invoke(
                 {"messages": routing_messages},
                 config={"callbacks": [callback_handler]} if callback_handler else {},
             )
@@ -501,8 +500,8 @@ Return JSON only (no markdown fences, no explanation):
 
         self.audit.log_action(
             user_id=user_id,
-            action="member_services_routing",
-            resource_type="MEMBER_SERVICES_AGENT",
+            action="provider_services_routing",
+            resource_type="PROVIDER_SERVICES_AGENT",
             resource_id="",
         )
 
@@ -531,8 +530,8 @@ Return JSON only (no markdown fences, no explanation):
         plan_id          = state.get("plan_id", "")
 
         if current_step_idx < len(all_steps):
-            current_step = all_steps[current_step_idx]
-            goal_id      = current_step.get("goal_id", "")
+            current_step  = all_steps[current_step_idx]
+            goal_id       = current_step.get("goal_id", "")
             next_step_idx = current_step_idx + 1
 
             # Detect if this was the last step for its goal
@@ -561,31 +560,28 @@ Return JSON only (no markdown fences, no explanation):
     def worker_node(self, worker_name: str):
         """Create a worker node function for LangGraph with error handling."""
         def node(state: SupervisorState) -> SupervisorState:
-            worker = self.workers[worker_name]
+            worker  = self.workers[worker_name]
             metrics = get_error_metrics()
             start_time = datetime.now()
-            
+
             # Sanitize input
-            messages = state.get( 'messages' )
-            
+            messages = state.get("messages")
+
             if messages:
                 user_message: BaseMessage = messages[0]
-                query = sanitize_html( str( user_message.content ) )
+                query = sanitize_html(str(user_message.content))
             else:
                 query = "Query not specified"
-            
+
             # Inject execution_id so the ReAct agent passes it to the MCP tool,
             # completing: (AgentExecution)-[:CALLED_TOOL]->(ToolExecution)
             # EXECUTED_BY is already linked in the routing block above via
             # link_step_to_execution(planId, stepId, executionId).
             _exec_id = state.get("current_execution_id", "")
-            query = (
-                query
-                + "\nexecution_id: " + _exec_id
-            )
+            query = query + "\nexecution_id: " + _exec_id
 
             # Append results from prior steps so the ReAct agent has upstream
-            # data available (e.g. member ID returned by member_lookup).
+            # data available (e.g. provider details returned by provider_lookup).
             # tool_raw_output is the unredacted structured JSON from the MCP server —
             # preferred over 'output' which may have PII scrubbed.
             tool_results = state.get("tool_results", {})
@@ -613,17 +609,17 @@ Return JSON only (no markdown fences, no explanation):
                 user_role=state.get("user_role", "unknown"),
                 session_id=state.get("session_id", "default")
             )
-            
+
             # Calculate duration
             duration_ms = (datetime.now() - start_time).total_seconds() * 1000
-            
+
             # Check for errors
             if "error" in result:
-                error_msg = result["error"]
-                error_type = result.get("error_type", "unknown")
+                error_msg    = result["error"]
+                error_type   = result.get("error_type", "unknown")
                 is_retryable = result.get("is_retryable", False)
-                retry_count = result.get("retry_count", 0)
-                
+                retry_count  = result.get("retry_count", 0)
+
                 # Create error record
                 error_record = create_error_record(
                     worker_name=worker_name,
@@ -631,14 +627,14 @@ Return JSON only (no markdown fences, no explanation):
                     error_type=error_type,
                     is_retryable=is_retryable
                 )
-                
+
                 error_record["retry_count"] = retry_count
                 error_record["duration_ms"] = duration_ms
-                
+
                 # Update error history
                 error_history = state.get("error_history", [])
                 error_history.append(error_record)
-                
+
                 # Record error duration metric
                 metrics.record_error_duration(worker_name, error_type, duration_ms / 1000)
 
@@ -658,8 +654,8 @@ Return JSON only (no markdown fences, no explanation):
                 # Mark the current step's goal as failed and cancel all
                 # remaining pending goals so no nodes are left orphaned.
                 try:
-                    plan          = state.get("plan", {})
-                    all_steps     = sorted(
+                    plan      = state.get("plan", {})
+                    all_steps = sorted(
                         plan.get("steps", []),
                         key=lambda s: s.get("step_id", "")
                     )
@@ -690,9 +686,9 @@ Return JSON only (no markdown fences, no explanation):
                     pass
 
                 logger.error(f"Worker {worker_name} failed: {error_msg}")
-                
+
                 return {
-                    "messages": [RemoveMessage(id=msg.id) for msg in state["messages"] if msg.id ],
+                    "messages": [RemoveMessage(id=msg.id) for msg in state["messages"] if msg.id],
                     "error": error_msg,
                     "error_count": state.get("error_count", 0) + 1,
                     "error_history": error_history,
@@ -701,7 +697,7 @@ Return JSON only (no markdown fences, no explanation):
                     "execution_path": state.get("execution_path", []) + [f"{worker_name}_failed"],
                     "duration_ms": duration_ms
                 }
-            
+
             # Success path
             return {
                 "messages": [AIMessage(content=result.get("output", ""))],
@@ -713,18 +709,18 @@ Return JSON only (no markdown fences, no explanation):
                 },
                 "duration_ms": duration_ms
             }
-        
+
         return node
-    
+
     def error_handler_node(self, state: SupervisorState) -> SupervisorState:
         """Handle errors and determine if recovery is possible."""
-        error_history = state.get("error_history", [])
-        error_count = state.get("error_count", 0)
-        current_error = state.get("error" ) or "Unknown error"
+        error_history  = state.get("error_history", [])
+        error_count    = state.get("error_count", 0)
+        current_error  = state.get("error") or "Unknown error"
         is_recoverable = state.get("is_recoverable", False)
-        
+
         logger.error(f"{self.name} error handler: {error_count} errors, recoverable={is_recoverable}")
-        
+
         # Log aggregated error information
         self.audit.log_action(
             user_id=state.get("user_id", "unknown"),
@@ -732,10 +728,10 @@ Return JSON only (no markdown fences, no explanation):
             resource_type="AGENT",
             resource_id=""
         )
-        
+
         # Format user-friendly error message
         user_message = format_error_for_user(current_error)
-        
+
         # Record final error metrics
         metrics = get_error_metrics()
         for error_record in error_history:
@@ -744,14 +740,14 @@ Return JSON only (no markdown fences, no explanation):
                 error_record.get("error_type", "unknown"),
                 error_record.get("is_retryable", False)
             )
-        
+
         return {
             "messages": [SystemMessage(content=user_message)],
             "next": "FINISH",
             "error": current_error,
             "execution_path": state.get("execution_path", []) + ["error_handler"]
         }
-        
+
     def create_graph(self) -> CompiledStateGraph:
         """
         Create LangGraph state machine for the team.
@@ -759,18 +755,18 @@ Return JSON only (no markdown fences, no explanation):
         Flow:
             create_plan
                 → supervisor
-                    → member_lookup   → goal_advance → supervisor
-                    → check_eligibility → goal_advance → supervisor
-                    → coverage_lookup → goal_advance → supervisor
+                    → provider_lookup              → goal_advance → supervisor
+                    → provider_network_check       → goal_advance → supervisor
+                    → provider_search_by_specialty → goal_advance → supervisor
                     → error_handler → END
                     → END  (when FINISH)
         """
         workflow = StateGraph(SupervisorState)
 
-        workflow.add_node("create_plan",      self.create_plan_node)
-        workflow.add_node("supervisor",       self.supervisor_node)
-        workflow.add_node("error_handler",    self.error_handler_node)
-        workflow.add_node("goal_advance",     self._advance_step)
+        workflow.add_node("create_plan",   self.create_plan_node)
+        workflow.add_node("supervisor",    self.supervisor_node)
+        workflow.add_node("error_handler", self.error_handler_node)
+        workflow.add_node("goal_advance",  self._advance_step)
 
         for worker_name in self.workers.keys():
             workflow.add_node(worker_name, self.worker_node(worker_name))
@@ -799,11 +795,11 @@ Return JSON only (no markdown fences, no explanation):
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup"}
+        VALID_WORKERS = {"provider_lookup", "provider_network_check", "provider_search_by_specialty"}
 
         def router(
             state: SupervisorState,
-        ) -> Literal["member_lookup", "check_eligibility", "coverage_lookup",
+        ) -> Literal["provider_lookup", "provider_network_check", "provider_search_by_specialty",
                      "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
@@ -831,21 +827,22 @@ Return JSON only (no markdown fences, no explanation):
             "supervisor",
             router,
             {
-                "supervisor":        "supervisor",
-                "member_lookup":     "member_lookup",
-                "check_eligibility": "check_eligibility",
-                "coverage_lookup":   "coverage_lookup",
-                "error_handler":     "error_handler",
-                "__end__":           END,
+                "supervisor":                "supervisor",
+                "provider_lookup":           "provider_lookup",
+                "provider_network_check":    "provider_network_check",
+                "provider_search_by_specialty": "provider_search_by_specialty",
+                "error_handler":             "error_handler",
+                "__end__":                   END,
             },
         )
 
         workflow.set_entry_point("create_plan")
         return workflow.compile()
 
+
 @lru_cache
-def get_member_services_graph():
-    """Get or create member services LangGraph."""
-    member_services_supervisor = MemberServicesSupervisor()
-    
-    return member_services_supervisor.create_graph()
+def get_provider_services_graph():
+    """Get or create provider services LangGraph."""
+    provider_services_supervisor = ProviderServicesSupervisor()
+
+    return provider_services_supervisor.create_graph()

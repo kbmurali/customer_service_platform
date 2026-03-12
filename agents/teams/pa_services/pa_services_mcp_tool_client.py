@@ -4,7 +4,7 @@ PA Services MCP Tool Client (v26)
 Connects to the Prior Authorization Services FastMCP server and exposes
 its tools as LangChain Tool objects.
 
-Server default: http://mcp-pa:8003
+Server default: http://pa-services-mcp-tools:8001
 Env override:   MCP_PA_SERVICES_HTTP_URL
 
 Tools:

@@ -790,6 +790,60 @@ class KnowledgeGraphDataAccess:
             logger.error(f"Error searching providers: {e}")
             return []
     
+    def find_serviced_claims_by_provider_under_a_policy( self, provider_id: str, policy_id: str ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Find provider serviced claims under a specific policy.
+        
+        Since the schema does not have a separate Network node, network status
+        is inferred from existing claim relationships:
+            (Claim)-[:SERVICED_BY]->(Provider)
+            (Claim)-[:UNDER_POLICY]->(Policy)
+        
+        If a provider has serviced claims under the given policy, they are
+        considered in-network for that policy.
+        
+        Args:
+            provider_id: The provider's unique identifier
+            policy_id: The policy's unique identifier
+        
+        Returns:
+            Serviced Claims data or None if not found
+        """
+        
+        # Check if provider has serviced claims under this policy
+        # Uses existing schema relationships only:
+        #   (Claim)-[:SERVICED_BY]->(Provider)
+        #   (Claim)-[:UNDER_POLICY]->(Policy)
+        query = """
+        MATCH (c:Claim)-[:SERVICED_BY]->(prov:Provider {providerId: $providerId})
+        MATCH (c)-[:UNDER_POLICY]->(pol:Policy {policyId: $policyId})
+        RETURN prov {
+            .providerId,
+            .providerType,
+            .organizationName,
+            .firstName,
+            .lastName,
+            .specialty
+        } AS provider,
+        pol {
+            .policyId,
+            .policyNumber,
+            .planName,
+            .planType
+        } AS policy,
+        count(c) AS claimCount
+        """
+        
+        try:
+            result = self.conn.execute_query(query, {"providerId": provider_id, "policyId": policy_id})
+            if result and len(result) > 0:
+                return result
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error finding provider serviced claims under a specific policy with provider_id: {provider_id} and policy_id: {policy_id}: {e}")
+            return None
+    
     # ==================== Coverage/Eligibility Operations ====================
     
     def get_member_coverage(self, member_id: str) -> Optional[Dict[str, Any]]:
