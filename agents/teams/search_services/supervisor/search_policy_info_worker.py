@@ -1,0 +1,266 @@
+"""
+Search Services: Search Policy Info Worker Agent
+"""
+
+from typing import Dict, Any
+import logging
+import time
+
+from langgraph.prebuilt import create_react_agent
+
+from agents.teams.search_services.search_services_mcp_tool_client import SearchServicesMCPToolClient
+
+from agents.security import AuditLogger
+
+from llm_providers.llm_provider_factory import LLMProviderFactory, get_factory, ChatModel
+from agents.core.error_handling import get_error_metrics, is_retryable_error, classify_error, check_tool_result_for_errors
+from agents.core.mcp_tool_client_base import ToolExecutionError
+
+from security.presidio_memory_security import get_presidio_security
+from security.nh3_sanitization import sanitize_html
+
+from config.settings import get_settings, Settings
+
+from observability.langfuse_integration import get_langfuse_tracer
+from observability.prometheus_metrics import track_memory_security
+
+
+logger = logging.getLogger(__name__)
+
+
+class SearchPolicyInfoWorker:
+    """Worker agent for semantic policy document search operations."""
+
+    def __init__(self):
+        self.name = "search_policy_info_worker"
+
+        mcp_client = SearchServicesMCPToolClient()
+        tool = mcp_client.get_tool("search_policy_info")
+        if tool is None:
+            raise RuntimeError("search_policy_info not found in SearchServicesMCPToolClient")
+        self.tool = tool
+        self.tool_name = self.tool.name
+
+        self.audit = AuditLogger()
+        self.presidio = get_presidio_security()
+
+        llm_factory: LLMProviderFactory = get_factory()
+        llm: ChatModel = llm_factory.get_llm_provider()
+
+        prompt = (
+            "You are a policy information search specialist for a health insurance company. "
+            "Your role is to perform semantic searches over policy documents to find relevant "
+            "policy details including plan specifics, premiums, deductibles, and out-of-pocket maximums. "
+            "You MUST call the search_policy_info tool to answer — never answer from memory or training data. "
+            "Search using the natural-language query and plan type provided in the request. "
+            "Valid plan_type values are: HMO, PPO, EPO, or POS. "
+            "You must also use user ID, user role, and session ID to provide accurate details. "
+            "The query may include a line of the form 'execution_id: <value>'. "
+            "If present, extract that value and pass it as the execution_id "
+            "argument when calling the tool so the Context Graph can trace this execution."
+        )
+
+        self.agent = create_react_agent(llm, [self.tool], prompt=prompt)
+
+    def execute(self, query: str, user_id: str, user_role: str, session_id: str) -> Dict[str, Any]:
+        """Execute SearchPolicyInfoWorker task with error handling and retry logic."""
+        settings: Settings = get_settings()
+
+        tracer = get_langfuse_tracer()
+        metrics = get_error_metrics()
+        max_retries = settings.AGENT_MAX_RETRIES
+        retry_count = 0
+
+        while retry_count <= max_retries:
+            try:
+                # Sanitize input
+                clean_query = sanitize_html(query)
+
+                # Trace agent execution start
+                if tracer.enabled:
+                    tracer.trace_agent_execution(
+                        name=self.name,
+                        agent_type="worker",
+                        input_data=clean_query,
+                        output_data=None,
+                        user_id=user_id,
+                        session_id=session_id
+                    )
+
+                # Extract execution_id appended by the supervisor.
+                # Arrives as a trailing line: "\nexecution_id: <val>".
+                _exec_id = ""
+                _query_lines = clean_query.splitlines()
+                _clean_lines = []
+                for _line in _query_lines:
+                    if _line.startswith("execution_id: "):
+                        _exec_id = _line[len("execution_id: "):].strip()
+                    else:
+                        _clean_lines.append(_line)
+                _bare_query = "\n".join(_clean_lines)
+
+                # search_policy_info takes query + plan_type.
+                # Both are expected to be present in the query and extracted by the LLM.
+                contextualized_query = (
+                    f"User Role: {user_role}\n"
+                    f"User ID: {user_id}\n"
+                    f"Session ID: {session_id}\n"
+                    f"Execution ID: {_exec_id}\n"
+                    f"Query: {_bare_query}"
+                )
+
+                agent_inputs = {"messages": [("user", contextualized_query)]}
+
+                # Execute agent with LangFuse callback
+                callback_handler = tracer.get_callback_handler()
+                if callback_handler:
+                    result = self.agent.invoke(
+                        agent_inputs,
+                        config={"callbacks": [callback_handler]}
+                    )
+                else:
+                    result = self.agent.invoke(agent_inputs)
+
+                # Extract output from last message
+                output_text = result["messages"][-1].content
+
+                # Scan ToolMessages for structured error JSON before treating the
+                # output as success. MCP decorator errors (rate limit, circuit
+                # breaker, permission denied, pending approval) and runtime tool
+                # failures all return {"error": ...} JSON. The LLM receives this
+                # as the ToolMessage content and summarises it — checking the raw
+                # ToolMessage catches it before the summary hides it.
+                tool_error = check_tool_result_for_errors(result)
+                if tool_error:
+                    logger.error(
+                        f"{self.name} tool error detected: {tool_error['error']}"
+                    )
+                    metrics.record_error(
+                        self.name, tool_error["error_type"], tool_error["is_retryable"]
+                    )
+                    if not tool_error["is_retryable"] or retry_count >= max_retries:
+                        return {
+                            "error":        tool_error["error"],
+                            "error_type":   tool_error["error_type"],
+                            "is_retryable": tool_error["is_retryable"],
+                            "retry_count":  retry_count,
+                        }
+                    retry_count += 1
+                    metrics.record_retry(self.name, retry_count)
+                    backoff_delay = min(
+                        2 ** retry_count,
+                        settings.AGENT_RETRY_BACKOFF_DELAY_SECONDS
+                    )
+                    logger.info(f"Retrying {self.name} in {backoff_delay}s...")
+                    time.sleep(backoff_delay)
+                    continue
+
+                # Scrub PII/PHI from output
+                memory_start = time.time()
+                scrubbed_output, vault_id, entities_found = self.presidio.scrub_before_storage(
+                    output_text,
+                    namespace=session_id,
+                    ttl_hours=24
+                )
+                memory_latency = time.time() - memory_start
+
+                if entities_found:
+                    track_memory_security(
+                        entities_found=entities_found,
+                        latency=memory_latency
+                    )
+                    logger.info(
+                        f"[{session_id}] Memory security applied, vault_id: {vault_id}, "
+                        f"entities_scrubbed: {sum(entities_found.values()) if entities_found else 0}, "
+                        f"types: {list(entities_found.keys()) if entities_found else []}"
+                    )
+
+                # Audit action — keyed by query + plan_type, no single resource_id
+                self.audit.log_action(
+                    user_id=user_id,
+                    action=self.tool_name,
+                    resource_type="POLICY",
+                    resource_id=""
+                )
+
+                # Trace successful execution
+                if tracer.enabled:
+                    tracer.trace_agent_execution(
+                        name=self.name,
+                        agent_type="worker",
+                        input_data=clean_query,
+                        output_data=scrubbed_output,
+                        tools_used=[self.tool_name],
+                        user_id=user_id,
+                        session_id=session_id
+                    )
+
+                # Record recovery if this was a retry
+                if retry_count > 0:
+                    metrics.record_recovery(self.name, "retry_success")
+
+                # Extract raw ToolMessage content (structured JSON from MCP server,
+                # before the LLM summarises and Presidio scrubs it). Stored in
+                # tool_results so downstream steps can access structured fields
+                # (e.g. query, count, results) that may be redacted from the
+                # scrubbed output.
+                _raw_tool_output = ""
+                for _msg in result.get("messages", []):
+                    if getattr(_msg, "type", None) == "tool" or _msg.__class__.__name__ == "ToolMessage":
+                        _raw_tool_output = getattr(_msg, "content", "") or ""
+                        if isinstance(_raw_tool_output, list):
+                            _raw_tool_output = "".join(
+                                b.get("text", "") if isinstance(b, dict) else str(b)
+                                for b in _raw_tool_output
+                            )
+                        break  # Use first (and typically only) ToolMessage
+
+                return {
+                    "output": scrubbed_output,
+                    "tool_raw_output": _raw_tool_output,
+                    "vault_id": vault_id,
+                    "worker": self.name,
+                    "retry_count": retry_count
+                }
+
+            except ToolExecutionError as e:
+                logger.error(f"{self.name} tool error (attempt {retry_count + 1}/{max_retries + 1}): {e}")
+                metrics.record_error(self.name, e.error_type or "tool_error", e.is_retryable())
+                if not e.is_retryable() or retry_count >= max_retries:
+                    return {
+                        "error":        str(e),
+                        "error_type":   e.error_type or classify_error(str(e)),
+                        "is_retryable": e.is_retryable(),
+                        "retry_count":  retry_count,
+                    }
+                retry_count += 1
+                metrics.record_retry(self.name, retry_count)
+                backoff_delay = min(2 ** retry_count, settings.AGENT_RETRY_BACKOFF_DELAY_SECONDS)
+                logger.info(f"Retrying {self.name} in {backoff_delay}s...")
+                time.sleep(backoff_delay)
+                continue
+
+            except Exception as e:
+                logger.error(f"{self.name} error (attempt {retry_count + 1}/{max_retries + 1}): {e}")
+
+                error_msg = str(e)
+                is_retryable = is_retryable_error(error_msg)
+                error_type = classify_error(error_msg)
+
+                metrics.record_error(self.name, error_type, is_retryable)
+
+                if not is_retryable or retry_count >= max_retries:
+                    return {
+                        "error":        error_msg,
+                        "error_type":   error_type,
+                        "is_retryable": is_retryable,
+                        "retry_count":  retry_count
+                    }
+
+                retry_count += 1
+                metrics.record_retry(self.name, retry_count)
+                backoff_delay = min(2 ** retry_count, settings.AGENT_RETRY_BACKOFF_DELAY_SECONDS)
+                logger.info(f"Retrying {self.name} in {backoff_delay} seconds...")
+                time.sleep(backoff_delay)
+
+        return {"error": "Max retries exceeded", "error_type": "max_retries_exceeded"}

@@ -1,5 +1,5 @@
 """
-Provider Services MCP Tool Client (v26)
+Provider Services MCP Tool Client
 =========================================
 Connects to the Provider Services FastMCP server and exposes its tools
 as LangChain Tool objects.
