@@ -230,10 +230,9 @@ class TestSearchKnowledgeBase:
         )
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("search_knowledge_base" in str(step).lower() for step in path), \
-            f"Expected search_knowledge_base in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "search_knowledge_base" in result["tool_results"], \
+            f"Expected search_knowledge_base in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_search_knowledge_base_guidelines(self, client_node):
         """Search clinical guidelines specifically."""
@@ -342,10 +341,9 @@ class TestSearchMedicalCodes:
         )
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("search_medical_codes" in str(step).lower() for step in path), \
-            f"Expected search_medical_codes in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "search_medical_codes" in result["tool_results"], \
+            f"Expected search_medical_codes in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_search_medical_codes_all_code_types(self, client_node):
         """Search for the same description across all code types."""
@@ -437,10 +435,9 @@ class TestSearchPolicyInfo:
         )
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("search_policy_info" in str(step).lower() for step in path), \
-            f"Expected search_policy_info in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "search_policy_info" in result["tool_results"], \
+            f"Expected search_policy_info in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_search_policy_info_all_plan_types(self, client_node):
         """Search policy info for the same question across all plan types."""
@@ -496,10 +493,9 @@ class TestA2ARouting:
         result = client_node(state)
         _assert_successful_response(result, "test_knowledge_base_and_policy_query")
 
-        path     = result.get("execution_path", [])
-        path_str = " ".join(str(s) for s in path).lower()
-        assert "search_knowledge_base" in path_str or "search_policy_info" in path_str, \
-            f"Expected search workers in execution path, got: {path}"
+        tool_keys = list(result.get("tool_results", {}).keys())
+        assert any(k in tool_keys for k in ("search_knowledge_base", "search_policy_info")), \
+            f"Expected search workers in tool_results, got: {tool_keys}"
 
     def test_a2a_task_state_completed(self, client_node):
         """Successful tasks should have execution path ending with FINISH."""
@@ -508,9 +504,11 @@ class TestA2ARouting:
         )
         result = client_node(state)
 
-        exec_path_list = result.get("execution_path")
-        assert "search_services_supervisor -> FINISH (all steps done)" in exec_path_list, \
-            f"Expected FINISH in execution path, got '{exec_path_list}'"
+        assert result.get("error") is None, \
+            f"Expected no error on completed task, got: {result.get('error')}"
+        assert result.get("messages"), "Expected non-empty messages on completed task"
+        last_content = result["messages"][-1].content if result.get("messages") else ""
+        assert last_content.strip(), "Expected non-empty response on completed task"
 
     def test_medical_codes_vs_policy_routing(self, client_node):
         """Supervisor should route medical description queries to search_medical_codes,
@@ -521,10 +519,9 @@ class TestA2ARouting:
         result = client_node(state)
         _assert_successful_response(result, "test_medical_codes_vs_policy_routing")
 
-        path     = result.get("execution_path", [])
-        path_str = " ".join(str(s) for s in path).lower()
-        assert "search_medical_codes" in path_str, \
-            f"Expected search_medical_codes worker for medical description query, got: {path}"
+        tool_keys = list(result.get("tool_results", {}).keys())
+        assert "search_medical_codes" in tool_keys, \
+            f"Expected search_medical_codes in tool_results for medical description query, got: {tool_keys}"
 
     def test_session_isolation(self, client_node):
         """Two requests with different session IDs should not interfere."""

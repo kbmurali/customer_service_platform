@@ -123,6 +123,8 @@ class DLPScanner:
         self,
         clickhouse_host: str = "localhost",
         clickhouse_port: int = 9000,
+        clickhouse_user: str = "default",
+        clickhouse_password: str = "",
         enable_clickhouse: bool = True,
     ):
         """Initialise DLP scanner."""
@@ -136,7 +138,10 @@ class DLPScanner:
             try:
                 from clickhouse_driver import Client as ClickHouseClient
                 self._clickhouse = ClickHouseClient(
-                    host=clickhouse_host, port=clickhouse_port
+                    host=clickhouse_host,
+                    port=clickhouse_port,
+                    user=clickhouse_user,
+                    password=clickhouse_password,
                 )
                 self._init_clickhouse_table()
             except Exception as exc:
@@ -337,8 +342,33 @@ _dlp_scanner: Optional[DLPScanner] = None
 
 
 def get_dlp_scanner(**kwargs) -> DLPScanner:
-    """Get or create the global DLP scanner instance."""
+    """Get or create the global DLP scanner instance.
+
+    Reads ClickHouse connection config from environment variables so the
+    singleton connects to the correct Docker service with authentication,
+    rather than relying on the hardcoded 'localhost'/no-password defaults
+    in DLPScanner.__init__(). Callers can still override via kwargs.
+    """
     global _dlp_scanner
     if _dlp_scanner is None:
-        _dlp_scanner = DLPScanner(**kwargs)
+        import os
+        _dlp_scanner = DLPScanner(
+            clickhouse_host=kwargs.pop(
+                "clickhouse_host",
+                os.getenv("CLICKHOUSE_HOST", "localhost"),
+            ),
+            clickhouse_port=int(kwargs.pop(
+                "clickhouse_port",
+                os.getenv("CLICKHOUSE_PORT", "9000"),
+            )),
+            clickhouse_user=kwargs.pop(
+                "clickhouse_user",
+                os.getenv("CLICKHOUSE_USER", "default"),
+            ),
+            clickhouse_password=kwargs.pop(
+                "clickhouse_password",
+                os.getenv("CLICKHOUSE_PASSWORD", ""),
+            ),
+            **kwargs,
+        )
     return _dlp_scanner

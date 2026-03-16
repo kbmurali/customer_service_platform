@@ -44,7 +44,7 @@ def build_claims_services_agent_card(base_url: str) -> A2AAgentCard:
             "Health insurance claims services agent. Handles claim lookup, "
             "claim status checks, and payment information retrieval. "
             "Routes queries to specialized workers: claim_lookup, "
-            "claim_status, claim_payment_info."
+            "claim_status, claim_payment_info, update_claim_status."
         ),
         url=f"{base_url}/a2a",
         capabilities=A2ACapabilities(
@@ -93,6 +93,21 @@ def build_claims_services_agent_card(base_url: str) -> A2AAgentCard:
                 examples=[
                     "How much was paid on claim 7799c06c-0883-4dca-b1f0-bded6d1027a5?",
                     "Show payment details for claim ID abc123",
+                ],
+            ),
+            A2ASkill(
+                id="update_claim_status",
+                name="Update Claim Status",
+                description=(
+                    "Update the processing status of a claim. Requires the claim ID, "
+                    "the new target status (SUBMITTED, UNDER_REVIEW, APPROVED, DENIED), "
+                    "and a reason for the change. High-impact write operation — "
+                    "requires human approval before execution."
+                ),
+                tags=["claim", "update", "status", "write"],
+                examples=[
+                    "Approve claim 7799c06c-0883-4dca-b1f0-bded6d1027a5 because all documents are verified",
+                    "Update claim abc123 status to DENIED — duplicate submission",
                 ],
             ),
         ],

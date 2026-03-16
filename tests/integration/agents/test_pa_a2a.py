@@ -214,10 +214,9 @@ class TestPALookup:
         state  = _make_state(f"Get full details for PA {TEST_PA_ID}")
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("pa_lookup" in str(step).lower() for step in path), \
-            f"Expected pa_lookup in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "pa_lookup" in result["tool_results"], \
+            f"Expected pa_lookup in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_pa_lookup_unknown_id(self, client_node):
         """Look up a PA ID that doesn't exist — should return graceful response."""
@@ -265,10 +264,9 @@ class TestPAStatus:
         state  = _make_state(f"Check PA status for {TEST_PA_ID}")
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("pa_status" in str(step).lower() for step in path), \
-            f"Expected pa_status in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "pa_status" in result["tool_results"], \
+            f"Expected pa_status in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_pa_status_unknown_id(self, client_node):
         """Look up a PA ID that doesn't exist — should return graceful response."""
@@ -347,10 +345,9 @@ class TestPARequirements:
         )
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("pa_requirements" in str(step).lower() for step in path), \
-            f"Expected pa_requirements in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "pa_requirements" in result["tool_results"], \
+            f"Expected pa_requirements in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_pa_requirements_all_policy_types(self, client_node):
         """Check PA requirements for the same procedure across all policy types."""
@@ -400,6 +397,167 @@ class TestPARequirements:
         logger.info("Tool results keys: %s", list(result["tool_results"].keys()))
 
 
+
+# ---------------------------------------------------------------------------
+# Approve Prior Authorization Tests
+# ---------------------------------------------------------------------------
+
+class TestApprovePriorAuth:
+    """Tests for approve_prior_auth skill via A2A.
+
+    Note: approve_prior_auth takes a PA ID (UUID) and a clinical
+    justification reason. Use TEST_PA_ID for these tests.
+    HIGH-IMPACT write operation — requires human approval workflow.
+    """
+
+    def test_approve_prior_auth_basic(self, client_node):
+        """Approve a known prior authorization by PA ID with a clinical reason."""
+        state  = _make_state(
+            f"Approve prior authorization {TEST_PA_ID} — "
+            f"all required clinical documentation has been reviewed and criteria are met."
+        )
+        result = client_node(state)
+        _assert_successful_response(result, "test_approve_prior_auth_basic")
+
+        content = result["messages"][-1].content
+        assert (
+            "approv" in content.lower()
+            or "authorization" in content.lower()
+            or TEST_PA_ID in content
+        ), f"Expected approval reference in response, got: {content[:200]}"
+
+    def test_approve_prior_auth_tool_results(self, client_node):
+        """Verify tool_results are populated after approval."""
+        state  = _make_state(
+            f"Approve prior authorization {TEST_PA_ID} — "
+            f"clinical criteria confirmed by reviewing physician."
+        )
+        result = client_node(state)
+
+        assert "tool_results" in result
+        assert "approve_prior_auth" in result["tool_results"],             f"Expected approve_prior_auth in tool_results, got: {list(result['tool_results'].keys())}"
+        logger.info("Approve tool results: %s",
+                    result["tool_results"].get("approve_prior_auth", {}).get("output", "")[:150])
+
+    def test_approve_without_reason_skips(self, client_node):
+        """Approval query missing a reason — supervisor should SKIP gracefully."""
+        state  = _make_state(f"Approve prior authorization {TEST_PA_ID}")
+        result = client_node(state)
+
+        # SKIP path — no clinical reason provided.
+        # Should still return a non-empty response without crashing.
+        assert result is not None
+        assert "messages" in result
+
+    def test_approve_without_pa_id_skips(self, client_node):
+        """Approval query missing a PA ID — supervisor should SKIP gracefully."""
+        state  = _make_state(
+            "Approve the prior authorization — medical necessity criteria are met."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+
+    def test_approve_unknown_pa_id(self, client_node):
+        """Approving a zero-UUID PA ID via the write path.
+        The @require_approvals MCP decorator intercepts before the KG lookup,
+        returning a pending-approval response rather than a not-found error.
+        Assert the supervisor routed correctly and returned a non-empty response.
+        """
+        state  = _make_state(
+            "Approve prior authorization 00000000-0000-0000-0000-000000000000 — "
+            "clinical criteria met."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+        last_msg = result["messages"][-1]
+        content  = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        assert content.strip(), "Expected non-empty response for zero-UUID PA approve"
+
+
+# ---------------------------------------------------------------------------
+# Deny Prior Authorization Tests
+# ---------------------------------------------------------------------------
+
+class TestDenyPriorAuth:
+    """Tests for deny_prior_auth skill via A2A.
+
+    Note: deny_prior_auth takes a PA ID (UUID) and a clinical
+    justification reason. Use TEST_PA_ID for these tests.
+    HIGH-IMPACT write operation — requires human approval workflow.
+    """
+
+    def test_deny_prior_auth_basic(self, client_node):
+        """Deny a known prior authorization by PA ID with a clinical reason."""
+        state  = _make_state(
+            f"Deny prior authorization {TEST_PA_ID} — "
+            f"procedure does not meet medical necessity criteria per current guidelines."
+        )
+        result = client_node(state)
+        _assert_successful_response(result, "test_deny_prior_auth_basic")
+
+        content = result["messages"][-1].content
+        assert (
+            "den" in content.lower()
+            or "authorization" in content.lower()
+            or TEST_PA_ID in content
+        ), f"Expected denial reference in response, got: {content[:200]}"
+
+    def test_deny_prior_auth_tool_results(self, client_node):
+        """Verify tool_results are populated after denial."""
+        state  = _make_state(
+            f"Deny prior authorization {TEST_PA_ID} — "
+            f"requested procedure is considered experimental and not covered."
+        )
+        result = client_node(state)
+
+        assert "tool_results" in result
+        assert "deny_prior_auth" in result["tool_results"],             f"Expected deny_prior_auth in tool_results, got: {list(result['tool_results'].keys())}"
+        logger.info("Deny tool results: %s",
+                    result["tool_results"].get("deny_prior_auth", {}).get("output", "")[:150])
+
+    def test_deny_without_reason_skips(self, client_node):
+        """Denial query missing a reason — supervisor should SKIP gracefully."""
+        state  = _make_state(f"Deny prior authorization {TEST_PA_ID}")
+        result = client_node(state)
+
+        # SKIP path — no clinical reason provided.
+        # Should still return a non-empty response without crashing.
+        assert result is not None
+        assert "messages" in result
+
+    def test_deny_without_pa_id_skips(self, client_node):
+        """Denial query missing a PA ID — supervisor should SKIP gracefully."""
+        state  = _make_state(
+            "Deny the prior authorization — procedure does not meet criteria."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+
+    def test_deny_unknown_pa_id(self, client_node):
+        """Denying a zero-UUID PA ID via the write path.
+        The @require_approvals MCP decorator intercepts before the KG lookup,
+        returning a pending-approval response rather than a not-found error.
+        Assert the supervisor routed correctly and returned a non-empty response.
+        """
+        state  = _make_state(
+            "Deny prior authorization 00000000-0000-0000-0000-000000000000 — "
+            "procedure not medically necessary."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+        last_msg = result["messages"][-1]
+        content  = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        assert content.strip(), "Expected non-empty response for zero-UUID PA deny"
+
+
 # ---------------------------------------------------------------------------
 # Multi-skill / Routing Tests
 # ---------------------------------------------------------------------------
@@ -415,19 +573,20 @@ class TestA2ARouting:
         result = client_node(state)
         _assert_successful_response(result, "test_lookup_and_status_query")
 
-        path     = result.get("execution_path", [])
-        path_str = " ".join(str(s) for s in path).lower()
-        assert "pa_lookup" in path_str or "pa_status" in path_str, \
-            f"Expected PA workers in execution path, got: {path}"
+        tool_keys = list(result.get("tool_results", {}).keys())
+        assert any(k in tool_keys for k in ("pa_lookup", "pa_status")), \
+            f"Expected pa_lookup or pa_status in tool_results, got: {tool_keys}"
 
     def test_a2a_task_state_completed(self, client_node):
         """Successful tasks should have execution path ending with FINISH."""
         state  = _make_state(f"Look up prior authorization {TEST_PA_ID}")
         result = client_node(state)
 
-        exec_path_list = result.get("execution_path")
-        assert "pa_services_supervisor -> FINISH (all steps done)" in exec_path_list, \
-            f"Expected FINISH in execution path, got '{exec_path_list}'"
+        assert result.get("error") is None, \
+            f"Expected no error on completed task, got: {result.get('error')}"
+        assert result.get("messages"), "Expected non-empty messages on completed task"
+        last_content = result["messages"][-1].content if result.get("messages") else ""
+        assert last_content.strip(), "Expected non-empty response content on completed task"
 
     def test_pa_id_vs_requirements_routing(self, client_node):
         """Supervisor should route procedure/policy queries to pa_requirements,
@@ -438,10 +597,9 @@ class TestA2ARouting:
         result = client_node(state)
         _assert_successful_response(result, "test_pa_id_vs_requirements_routing")
 
-        path     = result.get("execution_path", [])
-        path_str = " ".join(str(s) for s in path).lower()
-        assert "pa_requirements" in path_str, \
-            f"Expected pa_requirements worker for procedure/policy query, got: {path}"
+        tool_keys = list(result.get("tool_results", {}).keys())
+        assert "pa_requirements" in tool_keys, \
+            f"Expected pa_requirements in tool_results for procedure/policy query, got: {tool_keys}"
 
     def test_session_isolation(self, client_node):
         """Two requests with different session IDs should not interfere."""

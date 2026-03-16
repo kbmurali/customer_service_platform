@@ -11,6 +11,8 @@ Tools registered:
     claim_lookup       — look up claim information by claim ID
     claim_status       — check the status of a claim by claim number
     claim_payment_info — get payment information for a claim
+    update_claim_status — update the status of a claim. HIGH-IMPACT: requires human approval.
+                          Valid statuses: SUBMITTED, UNDER_REVIEW, APPROVED, DENIED
 """
 
 import logging
@@ -35,6 +37,7 @@ class ClaimServicesMCPToolClient(MCPToolClient):
         self.register_tool("claim_lookup")
         self.register_tool("claim_status")
         self.register_tool("claim_payment_info")
+        self.register_tool("update_claim_status")
 
         logger.info(
             "ClaimsServicesMCPToolClient ready (%s) — tools: %s",

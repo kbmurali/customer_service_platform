@@ -15,6 +15,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from agents.teams.provider_services.supervisor.provider_lookup_worker import ProviderLookupWorker
 from agents.teams.provider_services.supervisor.provider_network_check_worker import ProviderNetworkCheckWorker
 from agents.teams.provider_services.supervisor.provider_search_by_specialty_worker import ProviderSearchBySpecialtyWorker
+from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
@@ -170,9 +171,20 @@ Return JSON only (no markdown fences, no explanation):
                 policy_context = chroma.search_policies(query=user_query, n_results=2)
                 faq_context = chroma.search_faqs(query=user_query, n_results=2)
 
+                # Compress Chroma documents before injecting into planning prompt
+                # to reduce token usage while preserving domain-critical terms.
+                _semantic_compressor = get_semantic_compressor()
+                _compressed_policies = _semantic_compressor.compress_documents(
+                    [{'content': r['document']} for r in policy_context],
+                    query=user_query,
+                )
+                _compressed_faqs = _semantic_compressor.compress_documents(
+                    [{'content': r['document']} for r in faq_context],
+                    query=user_query,
+                )
                 semantic_context_json = {
-                    'relevant_policies': [r['document'] for r in policy_context],
-                    'relevant_faqs': [r['document'] for r in faq_context]
+                    'relevant_policies': [d['content'] for d in _compressed_policies],
+                    'relevant_faqs':     [d['content'] for d in _compressed_faqs]
                 }
             except Exception:
                 semantic_context = {}
@@ -208,15 +220,15 @@ Return JSON only (no markdown fences, no explanation):
 
             # Store plan in CG as a team plan.
             # store_plan returns {"plan_id": ..., "step_map": {step_id: step_id}}.
-            # central_step_id (from state) creates:
-            #   (CentralStep)-[:DELEGATED_TO]->(TeamPlan)  [central supervisor only]
+            # The central_step_id is received from the central supervisor via A2A
+            # but DELEGATED_TO is not created — the chain is traversable via
+            # EXECUTED_BY → CALLED_AGENT → HAS_PLAN without a shortcut edge.
             plan_result = self.cg_manager.store_plan(
                 session_id=session_id,
                 plan=plan,
                 agent_name=self.name,
                 plan_type=state.get("plan_type", "team"),
                 team_name=state.get("team_name", "provider_services"),
-                central_step_id=state.get("central_step_id") or None,
             )
             plan_id  = plan_result.get("plan_id")  if plan_result else None
             step_map = plan_result.get("step_map") if plan_result else {}
@@ -350,14 +362,12 @@ Return JSON only (no markdown fences, no explanation):
             )))
 
         if conversation_history:
-            role_map = {"user": HumanMessage, "human": HumanMessage,
-                        "assistant": AIMessage, "ai": AIMessage, "system": SystemMessage}
-            routing_messages.append(SystemMessage(
-                content=f"Last {len(conversation_history)} messages from this session:"
-            ))
-            for msg in reversed(conversation_history):
-                cls = role_map.get(msg.get("role", "system").lower(), SystemMessage)
-                routing_messages.append(cls(content=msg.get("content", "")))
+            # Compress older turns via LLMLingua; keep the most recent 2 verbatim.
+            # Returns ready-to-use list[BaseMessage] — no manual role_map needed.
+            conversation_compressor = get_conversation_compressor()
+            routing_messages.extend(
+                conversation_compressor.compress_history(conversation_history)
+            )
 
         # Inject results from previously completed steps so the routing LLM
         # can confirm the assigned worker has the data it needs.

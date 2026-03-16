@@ -173,9 +173,10 @@ class TestA2AServerHealth:
         assert len(card["skills"]) > 0
 
         skill_ids = [s.get("id") for s in card.get("skills", [])]
-        assert "claim_lookup"       in skill_ids, f"claim_lookup skill missing: {skill_ids}"
-        assert "claim_status"       in skill_ids, f"claim_status skill missing: {skill_ids}"
-        assert "claim_payment_info" in skill_ids, f"claim_payment_info skill missing: {skill_ids}"
+        assert "claim_lookup"        in skill_ids, f"claim_lookup skill missing: {skill_ids}"
+        assert "claim_status"        in skill_ids, f"claim_status skill missing: {skill_ids}"
+        assert "claim_payment_info"  in skill_ids, f"claim_payment_info skill missing: {skill_ids}"
+        assert "update_claim_status" in skill_ids, f"update_claim_status skill missing: {skill_ids}"
 
         logger.info("Agent card: name=%s, skills=%s", card.get("name"), skill_ids)
 
@@ -199,14 +200,15 @@ class TestClaimLookup:
             f"Expected claim reference in response, got: {content[:200]}"
 
     def test_claim_lookup_execution_path(self, client_node):
-        """Verify execution path includes claim_lookup worker."""
+        """Verify claim_lookup worker was invoked via tool_results.
+        Team-internal execution_path entries are no longer propagated
+        to A2AClientNode callers — check tool_results keys instead."""
         state  = _make_state(f"Get full details for claim {TEST_CLAIM_ID}")
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("claim_lookup" in str(step).lower() for step in path), \
-            f"Expected claim_lookup in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "claim_lookup" in result["tool_results"], \
+            f"Expected claim_lookup in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_claim_lookup_unknown_id(self, client_node):
         """Look up a claim ID that doesn't exist — should return graceful response."""
@@ -261,14 +263,15 @@ class TestClaimStatus:
             f"Expected claim reference in status response, got: {content[:200]}"
 
     def test_claim_status_execution_path(self, client_node):
-        """Verify execution path includes claim_status worker."""
+        """Verify claim_status worker was invoked via tool_results.
+        Team-internal execution_path entries are no longer propagated
+        to A2AClientNode callers — check tool_results keys instead."""
         state  = _make_state(f"Check claim status for {TEST_CLAIM_NUMBER}")
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("claim_status" in str(step).lower() for step in path), \
-            f"Expected claim_status in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "claim_status" in result["tool_results"], \
+            f"Expected claim_status in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_claim_status_unknown_number(self, client_node):
         """Look up a claim number that doesn't exist — should return graceful response."""
@@ -318,14 +321,15 @@ class TestClaimPaymentInfo:
         _assert_successful_response(result, "test_claim_payment_info_basic")
 
     def test_claim_payment_info_execution_path(self, client_node):
-        """Verify execution path includes claim_payment_info worker."""
+        """Verify claim_payment_info worker was invoked via tool_results.
+        Team-internal execution_path entries are no longer propagated
+        to A2AClientNode callers — check tool_results keys instead."""
         state  = _make_state(f"Show payment details for claim {TEST_CLAIM_ID}")
         result = client_node(state)
 
-        assert "execution_path" in result
-        path = result["execution_path"]
-        assert any("claim_payment_info" in str(step).lower() for step in path), \
-            f"Expected claim_payment_info in execution path, got: {path}"
+        assert "tool_results" in result
+        assert "claim_payment_info" in result["tool_results"], \
+            f"Expected claim_payment_info in tool_results, got: {list(result['tool_results'].keys())}"
 
     def test_claim_payment_info_unknown_id(self, client_node):
         """Payment info for non-existent claim ID — should return graceful response."""
@@ -348,6 +352,106 @@ class TestClaimPaymentInfo:
         logger.info("Tool results keys: %s", list(result["tool_results"].keys()))
 
 
+
+# ---------------------------------------------------------------------------
+# Update Claim Status Tests
+# ---------------------------------------------------------------------------
+
+class TestUpdateClaimStatus:
+    """Tests for update_claim_status skill via A2A.
+
+    Note: update_claim_status takes a claim ID (UUID), a new status, and
+    a reason. Valid statuses: SUBMITTED, UNDER_REVIEW, APPROVED, DENIED.
+    Use TEST_CLAIM_ID for these tests.
+    HIGH-IMPACT write operation — requires human approval workflow.
+    """
+
+    def test_update_claim_status_basic(self, client_node):
+        """Update the status of a known claim with a valid status and reason."""
+        state  = _make_state(
+            f"Update claim {TEST_CLAIM_ID} status to UNDER_REVIEW — "
+            f"additional documentation has been received and is under clinical review."
+        )
+        result = client_node(state)
+        _assert_successful_response(result, "test_update_claim_status_basic")
+
+        content = result["messages"][-1].content
+        assert (
+            "under_review" in content.lower()
+            or "updated" in content.lower()
+            or "claim" in content.lower()
+            or TEST_CLAIM_ID in content
+        ), f"Expected update reference in response, got: {content[:200]}"
+
+    def test_update_claim_status_tool_results(self, client_node):
+        """Verify update_claim_status key is present in tool_results."""
+        state  = _make_state(
+            f"Change claim {TEST_CLAIM_ID} to APPROVED — "
+            f"all criteria have been met and claim is approved for payment."
+        )
+        result = client_node(state)
+
+        assert "tool_results" in result
+        assert "update_claim_status" in result["tool_results"],             f"Expected update_claim_status in tool_results, got: {list(result['tool_results'].keys())}"
+        logger.info("Update tool results: %s",
+                    result["tool_results"].get("update_claim_status", {}).get("output", "")[:150])
+
+    def test_update_claim_status_denied(self, client_node):
+        """Update a claim status to DENIED with a reason."""
+        state  = _make_state(
+            f"Deny claim {TEST_CLAIM_ID} — "
+            f"service was not medically necessary based on clinical review."
+        )
+        result = client_node(state)
+        _assert_successful_response(result, "test_update_claim_status_denied")
+
+        content = result["messages"][-1].content
+        assert (
+            "denied" in content.lower()
+            or "updated" in content.lower()
+            or "claim" in content.lower()
+        ), f"Expected denial reference in response, got: {content[:200]}"
+
+    def test_update_without_reason_skips(self, client_node):
+        """Update query missing a reason — supervisor should SKIP gracefully."""
+        state  = _make_state(f"Update claim {TEST_CLAIM_ID} status to APPROVED")
+        result = client_node(state)
+
+        # SKIP path — no reason provided.
+        # Should still return a non-empty response without crashing.
+        assert result is not None
+        assert "messages" in result
+
+    def test_update_without_claim_id_skips(self, client_node):
+        """Update query missing a claim ID — supervisor should SKIP gracefully."""
+        state  = _make_state(
+            "Update the claim status to APPROVED — all documentation received."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+
+    def test_update_unknown_claim_id(self, client_node):
+        """Updating a non-existent claim ID against the write path.
+        The @require_approvals MCP decorator intercepts the call before the KG
+        lookup, so the zero UUID returns a pending-approval response rather
+        than a not-found error. Assert the supervisor routed correctly and
+        returned a non-empty response — the actual DB outcome is irrelevant here.
+        """
+        state  = _make_state(
+            "Update claim 00000000-0000-0000-0000-000000000000 status to APPROVED — "
+            "criteria met."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+        last_msg = result["messages"][-1]
+        content  = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        assert content.strip(), "Expected non-empty response for zero-UUID claim update"
+
+
 # ---------------------------------------------------------------------------
 # Multi-skill / Routing Tests
 # ---------------------------------------------------------------------------
@@ -363,20 +467,24 @@ class TestA2ARouting:
         result = client_node(state)
         _assert_successful_response(result, "test_lookup_and_payment_query")
 
-        # Execution path should mention both workers
-        path = result.get("execution_path", [])
-        path_str = " ".join(str(s) for s in path).lower()
-        assert "claim_lookup" in path_str or "claim_payment" in path_str, \
-            f"Expected claims workers in execution path, got: {path}"
+        # Verify at least one claims worker ran via tool_results.
+        # Team-internal execution_path entries are no longer propagated.
+        tool_keys = list(result.get("tool_results", {}).keys())
+        assert any(k in tool_keys for k in ("claim_lookup", "claim_payment_info")), \
+            f"Expected claim_lookup or claim_payment_info in tool_results, got: {tool_keys}"
 
     def test_a2a_task_state_completed(self, client_node):
         """Successful tasks should have a2a_task_state of 'completed'."""
         state  = _make_state(f"Look up claim {TEST_CLAIM_ID}")
         result = client_node(state)
         #print( f">>>>>>>>>>>>\n\n{result}\n")
-        exec_path_list = result.get( 'execution_path')
-        assert "claims_services_supervisor -> FINISH (all steps done)" in exec_path_list, \
-            f"Expected 'true', got '{exec_path_list}'"
+        # Team-internal FINISH entries no longer propagate to A2AClientNode callers.
+        # Verify task completion via absence of error and non-empty response.
+        assert result.get("error") is None, \
+            f"Expected no error on completed task, got: {result.get('error')}"
+        assert result.get("messages"), "Expected non-empty messages on completed task"
+        last_content = result["messages"][-1].content if result.get("messages") else ""
+        assert last_content.strip(), "Expected non-empty response content on completed task"
 
     def test_claim_number_vs_id_routing(self, client_node):
         """Supervisor should route claim_number queries to claim_status,
@@ -387,10 +495,11 @@ class TestA2ARouting:
         result = client_node(state)
         _assert_successful_response(result, "test_claim_number_vs_id_routing")
 
-        path     = result.get("execution_path", [])
-        path_str = " ".join(str(s) for s in path).lower()
-        assert "claim_status" in path_str, \
-            f"Expected claim_status worker for claim number query, got: {path}"
+        # Verify claim_status worker ran via tool_results.
+        # Team-internal execution_path entries are no longer propagated.
+        tool_keys = list(result.get("tool_results", {}).keys())
+        assert "claim_status" in tool_keys, \
+            f"Expected claim_status in tool_results for claim number query, got: {tool_keys}"
 
     def test_session_isolation(self, client_node):
         """Two requests with different session IDs should not interfere."""

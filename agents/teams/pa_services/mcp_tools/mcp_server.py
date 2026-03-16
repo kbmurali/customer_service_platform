@@ -355,7 +355,149 @@ def pa_status(
             execution_id=execution_id or None,
         )
         return json.dumps({"error": error})
-    
+
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Update", record_name="pa", record_id_arg="pa_id")
+@require_rate_limits
+@require_permissions("PA", "UPDATE")
+def approve_prior_auth(
+    pa_id: str,
+    reason: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    execution_id: str = "",
+) -> str:
+    """
+    Approve a prior authorization request. HIGH-IMPACT: requires human approval.
+
+    Args:
+        pa_id: The prior authorization's unique identifier
+        reason: Clinical justification for approval
+        user_id: ID of the CSR making the change
+        user_role: Role of the CSR
+        session_id: Session ID for audit
+        execution_id:   AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with result or approval-pending message
+    """
+    start_time = datetime.now()
+
+    pa_id = sanitize_text(pa_id)
+    reason = sanitize_text(reason)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        success = kg_data_access.update_pa_status(pa_id, "APPROVED")
+
+        if not success:
+            error = f"PA not found or update failed: {pa_id}"
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+            track_tool_execution_in_cg(
+                session_id, "approve_prior_auth", {"pa_id": pa_id, "reason": reason},
+                status="update_failed", execution_time_ms=execution_time, error=error,
+                execution_id=execution_id or None,
+            )
+            return json.dumps({"error": error})
+
+        result = {"pa_id": pa_id, "new_status": "APPROVED", "updated": True}
+        scrubbed = scrub_output(json.dumps(result), session_id)
+        
+        # Track successful execution in Context Graph
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "approve_prior_auth", {"pa_id": pa_id, "reason": reason},
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+
+        return scrubbed
+
+    except Exception as e:
+        logger.error(f"approve_prior_auth failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "approve_prior_auth", {"pa_id": pa_id, "reason": reason},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Update", record_name="pa", record_id_arg="pa_id")
+@require_rate_limits
+@require_permissions("PA", "UPDATE")
+def deny_prior_auth(
+    pa_id: str,
+    reason: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    execution_id: str = "",
+) -> str:
+    """
+    Deny a prior authorization request. HIGH-IMPACT: requires human approval.
+
+    Args:
+        pa_id: The prior authorization's unique identifier
+        reason: Clinical justification for approval
+        user_id: ID of the CSR making the change
+        user_role: Role of the CSR
+        session_id: Session ID for audit
+        execution_id:   AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with result or denied-pending message
+    """
+    start_time = datetime.now()
+
+    pa_id = sanitize_text(pa_id)
+    reason = sanitize_text(reason)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        success = kg_data_access.update_pa_status(pa_id, "DENIED")
+
+        if not success:
+            error = f"PA not found or update failed: {pa_id}"
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+            track_tool_execution_in_cg(
+                session_id, "deny_prior_auth", {"pa_id": pa_id, "reason": reason},
+                status="update_failed", execution_time_ms=execution_time, error=error,
+                execution_id=execution_id or None,
+            )
+            return json.dumps({"error": error})
+
+        result = {"pa_id": pa_id, "new_status": "DENIED", "updated": True}
+        scrubbed = scrub_output(json.dumps(result), session_id)
+        
+        # Track successful execution in Context Graph
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "deny_prior_auth", {"pa_id": pa_id, "reason": reason},
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+
+        return scrubbed
+
+    except Exception as e:
+        logger.error(f"deny_prior_auth failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "deny_prior_auth", {"pa_id": pa_id, "reason": reason},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────

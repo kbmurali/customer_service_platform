@@ -15,6 +15,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from agents.teams.search_services.supervisor.search_knowledge_base_worker import SearchKnowledgeBaseWorker
 from agents.teams.search_services.supervisor.search_medical_codes_worker import SearchMedicalCodesWorker
 from agents.teams.search_services.supervisor.search_policy_info_worker import SearchPolicyInfoWorker
+from agents.core.context_compressor import get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
@@ -222,15 +223,15 @@ Return JSON only (no markdown fences, no explanation):
 
             # Store plan in CG as a team plan.
             # store_plan returns {"plan_id": ..., "step_map": {step_id: step_id}}.
-            # central_step_id (from state) creates:
-            #   (CentralStep)-[:DELEGATED_TO]->(TeamPlan)  [central supervisor only]
+            # The central_step_id is received from the central supervisor via A2A
+            # but DELEGATED_TO is not created — the chain is traversable via
+            # EXECUTED_BY → CALLED_AGENT → HAS_PLAN without a shortcut edge.
             plan_result = self.cg_manager.store_plan(
                 session_id=session_id,
                 plan=plan,
                 agent_name=self.name,
                 plan_type=state.get("plan_type", "team"),
                 team_name=state.get("team_name", "search_services"),
-                central_step_id=state.get("central_step_id") or None,
             )
             plan_id  = plan_result.get("plan_id")  if plan_result else None
             step_map = plan_result.get("step_map") if plan_result else {}
@@ -364,14 +365,12 @@ Return JSON only (no markdown fences, no explanation):
             )))
 
         if conversation_history:
-            role_map = {"user": HumanMessage, "human": HumanMessage,
-                        "assistant": AIMessage, "ai": AIMessage, "system": SystemMessage}
-            routing_messages.append(SystemMessage(
-                content=f"Last {len(conversation_history)} messages from this session:"
-            ))
-            for msg in reversed(conversation_history):
-                cls = role_map.get(msg.get("role", "system").lower(), SystemMessage)
-                routing_messages.append(cls(content=msg.get("content", "")))
+            # Compress older turns via LLMLingua; keep the most recent 2 verbatim.
+            # Returns ready-to-use list[BaseMessage] — no manual role_map needed.
+            conversation_compressor = get_conversation_compressor()
+            routing_messages.extend(
+                conversation_compressor.compress_history(conversation_history)
+            )
 
         # Inject results from previously completed steps so the routing LLM
         # can confirm the assigned worker has the data it needs (e.g. a CPT code

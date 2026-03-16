@@ -339,10 +339,125 @@ class ContextGraphManager:
             return False
     
 
+    def link_session_to_execution(self, session_id: str, execution_id: str) -> None:
+        """
+        Create (Session)-[:HAS_EXECUTION]->(AgentExecution).
+
+        The DAL's track_agent_execution() only creates this edge for
+        agent_type='a2a_client'. For the central supervisor planner
+        (agent_type='supervisor') the node is created standalone.
+        This method explicitly stitches it to the Session so the
+        planner AgentExecution is reachable from the Session root.
+
+        Called from central_supervisor.create_plan_node() immediately
+        after track_agent_execution returns the planning_execution_id.
+        """
+        try:
+            self.cg_data_access.conn.execute_query("""
+                MATCH (s:Session {sessionId: $sessionId})
+                MATCH (e:AgentExecution {executionId: $executionId})
+                MERGE (s)-[:HAS_EXECUTION]->(e)
+            """, {
+                "sessionId":   session_id,
+                "executionId": execution_id,
+            })
+            logger.debug(
+                "Linked Session %s -[:HAS_EXECUTION]-> AgentExecution %s",
+                session_id, execution_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "link_session_to_execution failed (non-fatal): %s", e
+            )
+
+    def link_planner_to_plan(self, execution_id: str, plan_id: str) -> None:
+        """
+        Create (AgentExecution "central_supervisor_planner")-[:HAS_PLAN]->(CentralPlan).
+
+        This mirrors how the team side works:
+            (a2a_server AgentExecution)-[:HAS_PLAN]->(TeamPlan)
+
+        The CentralPlan is therefore reachable via:
+            Session -[HAS_EXECUTION]→ planner AE -[HAS_PLAN]→ CentralPlan
+
+        The DAL's store_plan() creates the Plan node standalone — it does
+        NOT create any HAS_PLAN edge. This method creates it explicitly
+        after store_plan() returns a valid plan_id.
+
+        Called from central_supervisor.create_plan_node() immediately
+        after store_plan() returns a valid plan_id.
+
+        Note: Session-[:HAS_PLAN]→Plan is intentionally NOT created.
+        The Session has no direct HAS_PLAN edge — plans are reachable
+        only via AgentExecution nodes (planner for central, a2a_server
+        for team), keeping the graph design consistent across both levels.
+        """
+        try:
+            self.cg_data_access.conn.execute_query("""
+                MATCH (e:AgentExecution {executionId: $executionId})
+                MATCH (p:Plan {planId: $planId})
+                MERGE (e)-[:HAS_PLAN]->(p)
+            """, {
+                "executionId": execution_id,
+                "planId":      plan_id,
+            })
+            logger.debug(
+                "Linked planner AgentExecution %s -[:HAS_PLAN]-> CentralPlan %s",
+                execution_id, plan_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "link_planner_to_plan failed (non-fatal): %s", e
+            )
+
     def link_step_to_execution(self, plan_id: str, step_id: str, execution_id: str) -> None:
         """Create (Step)-[:EXECUTED_BY]->(AgentExecution) scoped by planId."""
         self.cg_data_access.link_step_to_execution(plan_id, step_id, execution_id)
 
+
+    def link_supervisor_to_a2a_client(
+        self,
+        routing_execution_id: str,
+        a2a_task_id: str,
+    ) -> None:
+        """
+        Create (routing AgentExecution)-[:CALLED_AGENT]->(a2a_client AgentExecution).
+
+        This is the missing edge that joins the central supervisor's routing
+        decision node to the A2A client dispatch node, completing the chain:
+
+            (Step)-[:EXECUTED_BY]->(routing AgentExecution)
+                -[:CALLED_AGENT]->(a2a_client AgentExecution)
+                    -[:CALLED_AGENT]->(a2a_server AgentExecution)
+                        -[:HAS_PLAN]->(TeamPlan)
+
+        The routing AgentExecution is matched by its executionId directly.
+        The a2a_client AgentExecution is matched by the shared a2a_task_id
+        stored in its metadata JSON — the same strategy used by
+        link_a2a_client_to_server.
+
+        Args:
+            routing_execution_id: AgentExecution.executionId of the central
+                                  supervisor routing node (current_execution_id).
+            a2a_task_id:          The A2A task UUID shared between the central
+                                  supervisor's agent_node and A2AClientNode.
+        """
+        try:
+            self.cg_data_access.conn.execute_query("""
+                MATCH (routing:AgentExecution {executionId: $routingId})
+                MATCH (client:AgentExecution {agentType: "a2a_client"})
+                WHERE client.metadata CONTAINS $taskId
+                MERGE (routing)-[:CALLED_AGENT]->(client)
+            """, {
+                "routingId": routing_execution_id,
+                "taskId":    a2a_task_id,
+            })
+            logger.debug(
+                "Linked routing execution %s -> a2a_client for task %s",
+                routing_execution_id, a2a_task_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to link supervisor to a2a_client (non-fatal): %s", e)
 
     def link_a2a_client_to_server(self, session_id: str, a2a_task_id: str) -> None:
         """Create (a2a_client)-[:CALLED_AGENT]->(a2a_server) via shared a2a_task_id."""
@@ -359,13 +474,13 @@ class ContextGraphManager:
         agent_name: str = "supervisor",
         plan_type: str = "central",
         team_name: str = "",
-        central_step_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Store execution plan as a proper node graph.
 
-        Creates (Session)-[:HAS_PLAN]->(Plan)-[:HAS_GOAL]->(Goal)-[:HAS_STEP]->(Step).
-        When central_step_id provided: (CentralStep)-[:DELEGATED_TO]->(TeamPlan).
+        Creates (Plan)-[:HAS_GOAL]->(Goal)-[:HAS_STEP]->(Step).
+        The Plan is linked to its owner (planner AE or a2a_server AE)
+        via link_planner_to_plan() or link_a2a_server_to_plan() respectively.
 
         Returns:
             Dict {"plan_id": str, "step_map": {step_id: step_id}} or None
@@ -377,7 +492,6 @@ class ContextGraphManager:
                 agent_name=agent_name,
                 plan_type=plan_type,
                 team_name=team_name,
-                central_step_id=central_step_id,
             )
         except Exception as e:
             logger.error(f"Error storing plan: {e}")

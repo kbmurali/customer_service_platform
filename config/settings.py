@@ -29,14 +29,14 @@ class Settings(BaseSettings):
 
     # Application
     APP_NAME: str = "Health Insurance CSIP"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "v2.7"
     ENVIRONMENT: str = "production"
     DEBUG: bool = False
     
     # API
-    API_HOST: str = "0.0.0.0"
-    API_PORT: int = 8000
-    API_PREFIX: str = "/api/v1"
+    API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
+    API_PORT: int = int( os.getenv("API_PORT", "8000") )
+    API_PREFIX: str = "/api/"
     
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-this-in-production")

@@ -1,0 +1,119 @@
+# =============================================================================
+# Dockerfile — Agentic Access HTTP API
+# =============================================================================
+# This service is the public-facing entry point for all user interactions.
+# It runs the FastAPI application defined in agents/agentic_access_http_api.py
+# and orchestrates the full security + agent pipeline:
+#
+#   Request → Security controls (NeMo, RBAC, rate limit, nh3, Presidio)
+#           → CentralSupervisor → A2A → Team Supervisors → MCP Tools
+#           → Output validation (Guardrails AI, DLP) → Response
+#
+# Port: 8000
+# =============================================================================
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# -----------------------------------------------------------------------------
+# System dependencies
+# gcc/g++ are required by several Python packages that compile C extensions
+# (e.g. tokenizers, uvloop, cryptography).
+# -----------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Python dependencies
+# Bake the spaCy model into the image so Presidio NLP is ready at startup
+# without a runtime download that would fail healthcheck timeouts.
+# -----------------------------------------------------------------------------
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_lg
+
+# -----------------------------------------------------------------------------
+# Application source — copied in dependency order so that layer caching is
+# maximised: rarely-changing infrastructure layers first, application code last.
+# -----------------------------------------------------------------------------
+
+# Config
+COPY config/ ./config/
+
+# Security — NeMo guardrails, Presidio, DLP, Guardrails AI, RBAC, approval wf
+COPY security/ ./security/
+
+# Databases — Neo4j CG/KG, MySQL, Chroma vector store
+COPY databases/ ./databases/
+
+# LLM providers
+COPY llm_providers/ ./llm_providers/
+
+# Observability — Langfuse tracing, Prometheus metrics
+COPY observability/__init__.py            ./observability/
+COPY observability/langfuse_integration.py ./observability/
+COPY observability/prometheus_metrics.py   ./observability/
+
+# Agents: core shared modules (state, error handling, context graph, A2A)
+COPY agents/__init__.py    ./agents/
+COPY agents/core/          ./agents/core/
+COPY agents/security.py    ./agents/
+
+# Agents: request processor and central supervisor
+COPY agents/request_processor.py    ./agents/
+COPY agents/central_supervisor.py   ./agents/
+
+# Agents: all five team supervisors and their A2A agent cards
+# Each team is copied in full so the central supervisor can load their
+# agent cards locally as fallbacks when remote agents are unreachable.
+COPY agents/teams/__init__.py ./agents/teams/
+
+COPY agents/teams/member_services/__init__.py                         ./agents/teams/member_services/
+COPY agents/teams/member_services/member_services_a2a_agent_card.py  ./agents/teams/member_services/
+
+COPY agents/teams/claims_services/__init__.py                         ./agents/teams/claims_services/
+COPY agents/teams/claims_services/claims_services_a2a_agent_card.py  ./agents/teams/claims_services/
+
+COPY agents/teams/pa_services/__init__.py                             ./agents/teams/pa_services/
+COPY agents/teams/pa_services/pa_services_a2a_agent_card.py          ./agents/teams/pa_services/
+
+COPY agents/teams/provider_services/__init__.py                       ./agents/teams/provider_services/
+COPY agents/teams/provider_services/provider_services_a2a_agent_card.py ./agents/teams/provider_services/
+
+COPY agents/teams/search_services/__init__.py                         ./agents/teams/search_services/
+COPY agents/teams/search_services/search_services_a2a_agent_card.py  ./agents/teams/search_services/
+
+# HTTP API entry point
+COPY agents/agentic_access_http_api.py ./agents/
+
+# -----------------------------------------------------------------------------
+# Runtime environment
+# -----------------------------------------------------------------------------
+ENV PYTHONPATH=/app
+
+# Non-root user — reduces attack surface for a public-facing HTTP service
+RUN adduser --disabled-password --gecos "" csip && \
+    chown -R csip:csip /app
+USER csip
+
+# -----------------------------------------------------------------------------
+# Port
+# 8000 is the standard FastAPI/uvicorn port for the public API tier.
+# Team A2A servers use ports 8100-8105 (internal only, not exposed here).
+# -----------------------------------------------------------------------------
+EXPOSE 8000
+
+# -----------------------------------------------------------------------------
+# Entrypoint
+# workers=1 — the CentralSupervisor and A2AClientNode singletons are not safe
+# to share across forked processes; use a single worker and scale via replicas
+# in Docker Swarm or Kubernetes instead.
+# -----------------------------------------------------------------------------
+CMD ["python", "-m", "uvicorn", \
+     "agents.agentic_access_http_api:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "1"]

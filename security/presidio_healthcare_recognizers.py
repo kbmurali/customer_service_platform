@@ -122,7 +122,9 @@ STANDARD_PII_ENTITIES: List[str] = [
     "US_DRIVER_LICENSE",
     "US_PASSPORT",
     "LOCATION",
-    "DATE_TIME",
+    # DATE_TIME removed — causes false positives on numeric IDs (e.g. CPT codes)
+    # that Presidio's DateRecognizer incorrectly matches as dates.
+    # Dates in clinical data are redacted upstream at the MCP tool layer.
     "MEDICAL_LICENSE",
     "US_BANK_NUMBER",
     "US_ITIN",
@@ -139,8 +141,15 @@ HEALTHCARE_PHI_ENTITIES: List[str] = [
     "ICD_CODE",
 ]
 
-#: Combined list of all entities.
-ALL_ENTITIES: List[str] = STANDARD_PII_ENTITIES + HEALTHCARE_PHI_ENTITIES
+#: Combined list of all entities that actually have a recognizer registered.
+# Built dynamically from STANDARD_PII_ENTITIES plus whatever healthcare
+# recognizers _build_recognizers() returns based on settings flags.
+# This prevents Presidio from warning about entity types that have no
+# corresponding recognizer — e.g. when SCRUB_OUTPUT_MEMBER_ID=False,
+# MEMBER_ID is not registered and must not appear in ALL_ENTITIES.
+ALL_ENTITIES: List[str] = STANDARD_PII_ENTITIES + [
+    r.supported_entities[0] for r in _build_recognizers()
+]
 
 
 # ============================================================================

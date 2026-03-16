@@ -346,6 +346,82 @@ def claim_payment_info(
         )
         return json.dumps({"error": error})
 
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Update", record_name="claim", record_id_arg="claim_id")
+@require_rate_limits
+@require_permissions("CLAIM", "UPDATE")
+def update_claim_status(
+    claim_id: str,
+    new_status: str,
+    reason: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    execution_id: str = "",
+) -> str:
+    """
+    Update the status of a claim. HIGH-IMPACT: requires human approval.
+
+    Valid statuses: SUBMITTED, UNDER_REVIEW, APPROVED, DENIED
+
+    Args:
+        claim_id: The claim's unique identifier
+        new_status: Target status
+        reason: Justification for the status change
+        user_id: ID of the CSR making the change
+        user_role: Role of the CSR
+        session_id: Session ID for audit
+        execution_id: AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with result
+    """
+    start_time = datetime.now()
+
+    claim_id = sanitize_text(claim_id)
+    new_status = sanitize_text(new_status)
+    reason = sanitize_text(reason)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        success = kg_data_access.update_claim_status(claim_id, new_status)
+
+        if not success:
+            error = f"Claim not found or update failed: {claim_id}"
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+            track_tool_execution_in_cg(
+                session_id, "update_claim_status", {"claim_id": claim_id, "new_status": new_status},
+                status="update_failed", execution_time_ms=execution_time, error=error,
+                execution_id=execution_id or None,
+            )
+            return json.dumps({"error": error})
+        
+        result = {"claim_id": claim_id, "new_status": new_status, "updated": True}
+        scrubbed = scrub_output(json.dumps(result), session_id)
+        
+        # Track successful execution in Context Graph
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "update_claim_status", {"claim_id": claim_id, "new_status": new_status },
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+        
+        return scrubbed
+
+    except Exception as e:
+        logger.error(f"update_claim_status failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "update_claim_status", {"claim_id": claim_id, "new_status": new_status},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────

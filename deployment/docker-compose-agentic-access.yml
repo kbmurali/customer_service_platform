@@ -1,11 +1,10 @@
 services:
-  search-services-a2a-server:
-    image: csip/search-services-a2a-server:latest
+  agentic-access-api:
+    image: csip/agentic-access-api:latest
     # No host ports — all external access goes through api-gateway on port 8443
     secrets:
       - LANGFUSE_SECRET_KEY
       - LANGFUSE_PUBLIC_KEY
-      - MCP_MASTER_SECRET
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
       - AWS_ACCESS_KEY_ID
@@ -18,13 +17,14 @@ services:
       - MCP_CLIENT_CERT
       - MCP_CLIENT_KEY
       - MCP_CA_CERT
+      - MCP_MASTER_SECRET
+      - CLICKHOUSE_PASSWORD
     entrypoint:
       - /bin/sh
       - -lc
       - |
-        export MCP_MASTER_SECRET="$$(cat /run/secrets/MCP_MASTER_SECRET)"
-        export LANGFUSE_SECRET_KEY="$$(cat /run/secrets/LANGFUSE_SECRET_KEY)" 
-        export LANGFUSE_PUBLIC_KEY="$$(cat /run/secrets/LANGFUSE_PUBLIC_KEY)" 
+        export LANGFUSE_SECRET_KEY="$$(cat /run/secrets/LANGFUSE_SECRET_KEY)"
+        export LANGFUSE_PUBLIC_KEY="$$(cat /run/secrets/LANGFUSE_PUBLIC_KEY)"
         export OPENAI_API_KEY="$$(cat /run/secrets/OPENAI_API_KEY)"
         export ANTHROPIC_API_KEY="$$(cat /run/secrets/ANTHROPIC_API_KEY)"
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/AWS_ACCESS_KEY_ID)"
@@ -34,11 +34,14 @@ services:
         export NEO4J_CG_PASSWORD="$$(cat /run/secrets/NEO4J_CG_PASSWORD)"
         export SECRET_KEY="$$(cat /run/secrets/SECRET_KEY)"
         export VAULT_ENCRYPTION_KEY="$$(cat /run/secrets/VAULT_ENCRYPTION_KEY)"
+        export MCP_MASTER_SECRET="$$(cat /run/secrets/MCP_MASTER_SECRET)"
+        export CLICKHOUSE_PASSWORD="$$(cat /run/secrets/CLICKHOUSE_PASSWORD)"
         exec python -m uvicorn \
-          agents.teams.search_services.supervisor.search_services_a2a_server:app \
+          agents.agentic_access_http_api:app \
           --host 0.0.0.0 \
-          --port 8101 \
-          --workers 1
+          --port 8000 \
+          --workers 1 \
+          --loop asyncio
     environment:
       # ── Application ──
       APP_ENV: production
@@ -48,14 +51,19 @@ services:
       AWS_REGION: "us-east-1"    # Required for bedrock; ignored by openai/anthropic
       LOG_LEVEL: INFO
       PYTHONPATH: /app
-      # ── A2A Server ──
-      A2A_AGENT_PORT: "8101"
-      A2A_SEARCH_SERVICES_URL: "https://api-gateway:8443/a2a/search"
-      # ── MCP Client (connects to search-services-mcp-tools via api-gateway) ──
-      MCP_SEARCH_SERVICES_HTTP_URL: "https://api-gateway:8443/mcp/search"
+      # ── API Server ──
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      # ── mTLS (central supervisor → remote team A2A servers) ──
       MCP_CLIENT_CERT: "/run/secrets/MCP_CLIENT_CERT"
       MCP_CLIENT_KEY: "/run/secrets/MCP_CLIENT_KEY"
       MCP_CA_CERT: "/run/secrets/MCP_CA_CERT"
+      # ── Remote team A2A URLs (all routed through api-gateway) ──
+      A2A_MEMBER_SERVICES_URL: "https://api-gateway:8443/a2a/member"
+      A2A_CLAIMS_SERVICES_URL: "https://api-gateway:8443/a2a/claims"
+      A2A_PA_SERVICES_URL: "https://api-gateway:8443/a2a/pa"
+      A2A_PROVIDER_SERVICES_URL: "https://api-gateway:8443/a2a/provider"
+      A2A_SEARCH_SERVICES_URL: "https://api-gateway:8443/a2a/search"
       # ── MySQL ──
       MYSQL_HOST: mysql
       MYSQL_PORT: "3306"
@@ -76,13 +84,19 @@ services:
       REDIS_HOST: cb-hitl-redis
       REDIS_PORT: "6379"
       REDIS_VAULT_DB: "2"
+      # ── ClickHouse (DLP scanner audit logging) ──
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "9000"
     networks:
       - health_insurance_health-insurance-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 5
+      # Generous start period — CentralSupervisor initialises A2AClientNodes,
+      # attempts live agent card fetches, loads the LLM provider, and
+      # connects to Neo4j/MySQL/Chroma all on first request.
       start_period: 180s
     deploy:
       replicas: 1
@@ -90,7 +104,10 @@ services:
         condition: on-failure
       resources:
         limits:
-          memory: 2G
+          # Higher memory ceiling than team services — this service loads
+          # NeMo Guardrails, Presidio (spaCy en_core_web_lg), Guardrails AI,
+          # and the DLP scanner all in the same process.
+          memory: 4G
 
 networks:
   health_insurance_health-insurance-network:
@@ -104,27 +121,11 @@ secrets:
     external: true
   NEO4J_CG_PASSWORD:
     external: true
-  MYSQL_ROOT_PASSWORD:
-    external: true
   MYSQL_PASSWORD:
-    external: true
-  CLICKHOUSE_PASSWORD:
-    external: true
-  MINIO_ROOT_PASSWORD:
-    external: true
-  LANGFUSE_DB_PASSWORD:
-    external: true
-  LANGFUSE_NEXTAUTH_SECRET:
-    external: true
-  LANGFUSE_SALT:
-    external: true
-  LANGFUSE_ENCRYPT_KEY:
     external: true
   LANGFUSE_SECRET_KEY:
     external: true
   LANGFUSE_PUBLIC_KEY:
-    external: true
-  GRAFANA_ADMIN_PASSWORD:
     external: true
   SECRET_KEY:
     external: true
@@ -145,4 +146,6 @@ secrets:
   MCP_CA_CERT:
     external: true
   MCP_MASTER_SECRET:
+    external: true
+  CLICKHOUSE_PASSWORD:
     external: true

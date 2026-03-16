@@ -7,7 +7,6 @@ Supported providers: openai, anthropic, bedrock (AWS Bedrock).
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -96,8 +95,6 @@ class LLMProviderFactory:
             model_name=self._settings.LLM_MODEL,
             temperature=self._settings.LLM_TEMPERATURE,
             max_tokens=self._settings.LLM_MAX_TOKENS,
-            timeout=None,
-            stop=None,
             api_key=self._settings.ANTHROPIC_API_KEY,
         )
 
@@ -110,6 +107,12 @@ class LLMProviderFactory:
         if not self._settings.AWS_SECRET_ACCESS_KEY:
             raise ValueError(
                 "AWS_SECRET_ACCESS_KEY is required when LLM_PROVIDER is 'bedrock'."
+            )
+        if not self._settings.AWS_REGION:
+            raise ValueError(
+                "AWS_REGION is required when LLM_PROVIDER is 'bedrock'. "
+                "Set it to the region where your Bedrock models are enabled "
+                "(e.g. 'us-east-1')."
             )
 
         from langchain_aws import ChatBedrockConverse  # lazy import
@@ -129,15 +132,19 @@ class LLMProviderFactory:
 # Module-level convenience accessor
 # ----------------------------------------------------------------------
 
-@lru_cache(maxsize=1)
 def get_factory() -> LLMProviderFactory:
-    """Return a cached singleton *LLMProviderFactory* instance.
+    """Return a *LLMProviderFactory* instance built from application settings.
+
+    ``get_settings()`` is already an ``@lru_cache`` singleton, so wrapping
+    this function in a second ``@lru_cache`` is redundant and makes the
+    factory impossible to reset between test runs without clearing both caches.
+    The factory is a lightweight wrapper with no expensive initialisation of
+    its own — creating it fresh each call is negligible.
 
     Usage::
 
         from llm_provider_factory import get_factory
 
-        factory = get_factory()
-        llm     = factory.get_llm_provider()
+        llm = get_factory().get_llm_provider()
     """
     return LLMProviderFactory(get_settings())

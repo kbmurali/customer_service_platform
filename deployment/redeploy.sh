@@ -2,6 +2,18 @@ docker stack rm health_insurance
 
 sleep 10
 
+# Agentic Access API Docker Image
+
+sleep 1
+
+docker rmi csip/agentic-access-api:latest
+
+sleep 1
+
+docker build -f Dockerfile.agentic_access -t csip/agentic-access-api:latest ..
+
+sleep 1
+
 # Search Services Docker Images
 
 docker rmi csip/search-services-mcp-tools:latest
@@ -145,6 +157,10 @@ docker stack deploy -c docker-compose-search-mcp-tools.yml health_insurance
 sleep 1
 
 docker stack deploy -c docker-compose-search-a2a-server.yml health_insurance
+
+sleep 10
+
+docker stack deploy -c docker-compose-agentic-access.yml health_insurance
 
 sleep 1
 

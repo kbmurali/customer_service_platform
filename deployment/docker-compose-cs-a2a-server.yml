@@ -7,6 +7,9 @@ services:
       - LANGFUSE_PUBLIC_KEY
       - MCP_MASTER_SECRET
       - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
       - MYSQL_PASSWORD
       - NEO4J_KG_PASSWORD
       - NEO4J_CG_PASSWORD
@@ -23,6 +26,9 @@ services:
         export LANGFUSE_SECRET_KEY="$$(cat /run/secrets/LANGFUSE_SECRET_KEY)" 
         export LANGFUSE_PUBLIC_KEY="$$(cat /run/secrets/LANGFUSE_PUBLIC_KEY)" 
         export OPENAI_API_KEY="$$(cat /run/secrets/OPENAI_API_KEY)"
+        export ANTHROPIC_API_KEY="$$(cat /run/secrets/ANTHROPIC_API_KEY)"
+        export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/AWS_ACCESS_KEY_ID)"
+        export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/AWS_SECRET_ACCESS_KEY)"
         export MYSQL_PASSWORD="$$(cat /run/secrets/MYSQL_PASSWORD)"
         export NEO4J_KG_PASSWORD="$$(cat /run/secrets/NEO4J_KG_PASSWORD)"
         export NEO4J_CG_PASSWORD="$$(cat /run/secrets/NEO4J_CG_PASSWORD)"
@@ -36,6 +42,10 @@ services:
     environment:
       # ── Application ──
       APP_ENV: production
+      # ── LLM Provider (switch between openai / anthropic / bedrock) ──
+      LLM_PROVIDER: "openai"
+      LLM_MODEL: "gpt-4o"
+      AWS_REGION: "us-east-1"    # Required for bedrock; ignored by openai/anthropic
       LOG_LEVEL: INFO
       PYTHONPATH: /app
       # ── A2A Server ──
@@ -117,6 +127,10 @@ secrets:
   GRAFANA_ADMIN_PASSWORD:
     external: true
   SECRET_KEY:
+    external: true
+  AWS_ACCESS_KEY_ID:
+    external: true
+  AWS_SECRET_ACCESS_KEY:
     external: true
   OPENAI_API_KEY:
     external: true

@@ -46,8 +46,10 @@ AGENT_NAME      = "member_services_supervisor_agent"
 TEST_USER_ID    = os.getenv("TEST_USER_ID",    "usr-tier2-001")
 TEST_USER_ROLE  = os.getenv("TEST_USER_ROLE",  "CSR_TIER2")
 TEST_SESSION_ID = os.getenv("TEST_SESSION_ID", str( uuid.uuid1()))
-TEST_MEMBER_ID  = os.getenv("TEST_MEMBER_ID",  "27b71fd8-49b7-46dd-84e3-5ad05d0a5db7")
-TEST_MEMBER_ID2  = os.getenv("TEST_MEMBER_ID2",  "68a42d4f-9656-4f4b-bbbc-dda380dc09e1")
+# TEST_MEMBER_ID must be a valid member UUID from the dev seed data.
+# The default below is a known seed member — override via TEST_MEMBER_ID env var.
+TEST_MEMBER_ID  = os.getenv("TEST_MEMBER_ID",  "68a42d4f-9656-4f4b-bbbc-dda380dc09e1")
+TEST_MEMBER_ID2 = os.getenv("TEST_MEMBER_ID2", "68a42d4f-9656-4f4b-bbbc-dda380dc09e1")
 
 cg_dao = ContextGraphDataAccess()
     
@@ -159,9 +161,12 @@ class TestA2AServerHealth:
         assert "skills" in card
         assert "url" in card
         assert len(card["skills"]) > 0
-        logger.info("Agent card: name=%s, skills=%s",
-                    card.get("name"),
-                    [s.get("id") for s in card.get("skills", [])])
+        skill_ids = [s.get("id") for s in card.get("skills", [])]
+        assert "member_lookup"      in skill_ids, f"member_lookup skill missing: {skill_ids}"
+        assert "eligibility_check"  in skill_ids, f"eligibility_check skill missing: {skill_ids}"
+        assert "coverage_lookup"    in skill_ids, f"coverage_lookup skill missing: {skill_ids}"
+        assert "update_member_info" in skill_ids, f"update_member_info skill missing: {skill_ids}"
+        logger.info("Agent card: name=%s, skills=%s", card.get("name"), skill_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +291,119 @@ class TestCoverageLookup:
         _assert_successful_response(result, "test_coverage_deductible_query")
 
 
+
+# ---------------------------------------------------------------------------
+# Update Member Info Tests
+# ---------------------------------------------------------------------------
+
+class TestUpdateMemberInfo:
+    """Tests for update_member_info skill via A2A.
+
+    Note: update_member_info takes a member ID (UUID), a field to update,
+    the new value, and a reason for the change.
+    Updatable fields: phone, email, address_street, address_city,
+    address_state, address_zip.
+    HIGH-IMPACT write operation — requires human approval workflow.
+    """
+
+    def test_update_phone_number(self, client_node):
+        """Update a member's phone number with a valid reason."""
+        state = _make_state(
+            f"Update phone number for member {TEST_MEMBER_ID} to 555-9876 — "
+            f"member called in to request contact information update."
+        )
+        result = client_node(state)
+        _assert_successful_response(result, "test_update_phone_number")
+
+        content = result["messages"][-1].content
+        assert (
+            "updated" in content.lower()
+            or "phone" in content.lower()
+            or "member" in content.lower()
+        ), f"Expected update reference in response, got: {content[:200]}"
+
+    def test_update_email_address(self, client_node):
+        """Update a member's email address with a valid reason."""
+        state = _make_state(
+            f"Change email for member {TEST_MEMBER_ID} to newemail@example.com — "
+            f"member reported previous email address is no longer valid."
+        )
+        result = client_node(state)
+        _assert_successful_response(result, "test_update_email_address")
+
+        content = result["messages"][-1].content
+        assert (
+            "updated" in content.lower()
+            or "email" in content.lower()
+            or "member" in content.lower()
+        ), f"Expected update reference in response, got: {content[:200]}"
+
+    def test_update_member_info_tool_results(self, client_node):
+        """Verify update_member_info key is present in tool_results."""
+        state = _make_state(
+            f"Update address_city for member {TEST_MEMBER_ID} to Springfield — "
+            f"member submitted address change form."
+        )
+        result = client_node(state)
+
+        assert "tool_results" in result
+        assert "update_member_info" in result["tool_results"],             f"Expected update_member_info in tool_results, got: {list(result['tool_results'].keys())}"
+        logger.info("Update tool results: %s",
+                    result["tool_results"].get("update_member_info", {}).get("output", "")[:150])
+
+    def test_update_without_reason_skips(self, client_node):
+        """Update query missing a reason — supervisor should SKIP gracefully."""
+        state = _make_state(
+            f"Update phone for member {TEST_MEMBER_ID} to 555-1111"
+        )
+        result = client_node(state)
+
+        # SKIP path — no reason provided.
+        # Should still return a non-empty response without crashing.
+        assert result is not None
+        assert "messages" in result
+
+    def test_update_without_member_id_skips(self, client_node):
+        """Update query missing a member ID — supervisor should SKIP gracefully."""
+        state = _make_state(
+            "Update the member's phone number to 555-1111 — member requested change."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+
+    def test_update_unknown_member_id(self, client_node):
+        """Updating a zero-UUID member ID via the write path.
+        The @require_approvals MCP decorator intercepts before the KG lookup,
+        returning a pending-approval response rather than a not-found error.
+        Assert the supervisor routed correctly and returned a non-empty response.
+        """
+        state = _make_state(
+            "Update phone for member 00000000-0000-0000-0000-000000000000 to 555-9999 — "
+            "member requested update."
+        )
+        result = client_node(state)
+
+        assert result is not None
+        assert "messages" in result
+        last_msg = result["messages"][-1]
+        content  = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        assert content.strip(), "Expected non-empty response for zero-UUID member update"
+
+    def test_update_invalid_field_handled(self, client_node):
+        """An unrecognised field name should be handled gracefully."""
+        state = _make_state(
+            f"Update ssn for member {TEST_MEMBER_ID} to 000-00-0000 — correction needed."
+        )
+        result = client_node(state)
+
+        # ssn is not in the allowed fields list — should either SKIP or
+        # return a graceful error from the MCP tool.
+        assert result is not None
+        assert "messages" in result
+
+
 # ---------------------------------------------------------------------------
 # Multi-skill / Routing Tests
 # ---------------------------------------------------------------------------
@@ -307,9 +425,13 @@ class TestA2ARouting:
         state = _make_state(f"Look up member {TEST_MEMBER_ID}")
         result = client_node(state)
         #print( f">>>>>>>>>>>>\n\n{result}\n")
-        exec_path_list = result.get( 'execution_path')
-        assert "member_services_supervisor -> FINISH (all steps done)" in exec_path_list, \
-            f"Expected 'true', got '{exec_path_list}'"
+        # Team-internal FINISH entries no longer propagate to A2AClientNode callers.
+        # Verify task completion via absence of error and non-empty response.
+        assert result.get("error") is None, \
+            f"Expected no error on completed task, got: {result.get('error')}"
+        assert result.get("messages"), "Expected non-empty messages on completed task"
+        last_content = result["messages"][-1].content if result.get("messages") else ""
+        assert last_content.strip(), "Expected non-empty response content on completed task"
 
     def test_session_isolation(self, client_node):
         """Two requests with different session IDs should not interfere."""

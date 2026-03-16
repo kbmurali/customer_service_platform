@@ -43,7 +43,7 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
             "Health insurance member services agent. Handles member lookup, "
             "eligibility verification, and coverage/benefits inquiries. "
             "Routes queries to specialized workers: member_lookup, "
-            "eligibility_check, coverage_lookup."
+            "eligibility_check, coverage_lookup, update_member_info."
         ),
         url=f"{base_url}/a2a",
         capabilities=A2ACapabilities(
@@ -81,6 +81,21 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
                 examples=[
                     "What is the coverage for member M123456?",
                     "Show deductible and copay details for M789012",
+                ],
+            ),
+            A2ASkill(
+                id="update_member_info",
+                name="Update Member Info",
+                description=(
+                    "Update a member's contact or address information. Requires the member ID, "
+                    "the field to update (phone, email, address_street, address_city, "
+                    "address_state, address_zip), the new value, and a reason for the change. "
+                    "High-impact write operation — requires human approval before execution."
+                ),
+                tags=["member", "update", "contact", "address", "write"],
+                examples=[
+                    "Update phone number for member M123456 to 555-9876 — member requested change",
+                    "Change email for member M789012 to new@example.com — returned mail",
                 ],
             ),
         ],

@@ -15,6 +15,9 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from agents.teams.pa_services.supervisor.pa_lookup_worker import PALookupWorker
 from agents.teams.pa_services.supervisor.pa_status_worker import PAStatusWorker
 from agents.teams.pa_services.supervisor.pa_requirements_worker import PARequirementsWorker
+from agents.teams.pa_services.supervisor.approve_prior_auth_worker import ApprovePriorAuthWorker
+from agents.teams.pa_services.supervisor.deny_prior_auth_worker import DenyPriorAuthWorker
+from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
@@ -42,9 +45,11 @@ class PAServicesSupervisor:
     def __init__(self):
         self.name = "pa_services_supervisor"
         self.workers = {
-            "pa_lookup":       PALookupWorker(),
-            "pa_status":       PAStatusWorker(),
-            "pa_requirements": PARequirementsWorker(),
+            "pa_lookup":           PALookupWorker(),
+            "pa_status":           PAStatusWorker(),
+            "pa_requirements":     PARequirementsWorker(),
+            "approve_prior_auth":  ApprovePriorAuthWorker(),
+            "deny_prior_auth":     DenyPriorAuthWorker(),
         }
 
         self.rbac = rbac_service
@@ -69,13 +74,15 @@ Available workers:
 - pa_lookup: Look up full prior authorization details by PA ID
 - pa_status: Check the current status of a prior authorization by PA ID
 - pa_requirements: Look up whether a procedure requires PA, given a procedure code and policy type
+- approve_prior_auth: Approve a prior authorization — requires PA ID and clinical justification reason
+- deny_prior_auth: Deny a prior authorization — requires PA ID and clinical justification reason
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
-   (no PA ID, no procedure code, no policy type), respond with "SKIP".
+   (no PA ID, no procedure code, no policy type, no reason for approve/deny), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: pa_lookup, pa_status, pa_requirements.
+4. Only use exact worker names: pa_lookup, pa_status, pa_requirements, approve_prior_auth, deny_prior_auth.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -97,6 +104,8 @@ Available workers (use EXACT names only):
 - pa_status: Checks the current status of a prior authorization — requires a PA ID
 - pa_requirements: Determines if a procedure requires PA — requires a procedure code (CPT code)
   and policy type (HMO, PPO, EPO, or POS)
+- approve_prior_auth: Approves a prior authorization — requires a PA ID and reason
+- deny_prior_auth: Denies a prior authorization — requires a PA ID and reason
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -118,6 +127,9 @@ RULES:
      - "Look up PA Z and tell me its status" → 1 goal, 2 steps (same subject)
 9. pa_status requires only a PA ID — do not add a pa_lookup step before pa_status
    unless full PA details were explicitly requested.
+10. approve_prior_auth and deny_prior_auth are write operations — only include them
+    when the user explicitly requests an approval or denial decision. Both require
+    a PA ID and a clinical justification reason.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -170,9 +182,20 @@ Return JSON only (no markdown fences, no explanation):
                 policy_context = chroma.search_policies(query=user_query, n_results=2)
                 faq_context = chroma.search_faqs(query=user_query, n_results=2)
 
+                # Compress Chroma documents before injecting into planning prompt
+                # to reduce token usage while preserving domain-critical terms.
+                _semantic_compressor = get_semantic_compressor()
+                _compressed_policies = _semantic_compressor.compress_documents(
+                    [{'content': r['document']} for r in policy_context],
+                    query=user_query,
+                )
+                _compressed_faqs = _semantic_compressor.compress_documents(
+                    [{'content': r['document']} for r in faq_context],
+                    query=user_query,
+                )
                 semantic_context_json = {
-                    'relevant_policies': [r['document'] for r in policy_context],
-                    'relevant_faqs': [r['document'] for r in faq_context]
+                    'relevant_policies': [d['content'] for d in _compressed_policies],
+                    'relevant_faqs':     [d['content'] for d in _compressed_faqs]
                 }
             except Exception:
                 semantic_context_json = {}
@@ -206,15 +229,15 @@ Return JSON only (no markdown fences, no explanation):
 
             # Store plan in CG as a team plan.
             # store_plan returns {"plan_id": ..., "step_map": {step_id: step_id}}.
-            # central_step_id (from state) creates:
-            #   (CentralStep)-[:DELEGATED_TO]->(TeamPlan)  [central supervisor only]
+            # The central_step_id is received from the central supervisor via A2A
+            # but DELEGATED_TO is not created — the chain is traversable via
+            # EXECUTED_BY → CALLED_AGENT → HAS_PLAN without a shortcut edge.
             plan_result = self.cg_manager.store_plan(
                 session_id=session_id,
                 plan=plan,
                 agent_name=self.name,
                 plan_type=state.get("plan_type", "team"),
                 team_name=state.get("team_name", "pa_services"),
-                central_step_id=state.get("central_step_id") or None,
             )
             plan_id  = plan_result.get("plan_id")  if plan_result else None
             step_map = plan_result.get("step_map") if plan_result else {}
@@ -261,7 +284,7 @@ Return JSON only (no markdown fences, no explanation):
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth"}
 
         user_id    = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -348,14 +371,12 @@ Return JSON only (no markdown fences, no explanation):
             )))
 
         if conversation_history:
-            role_map = {"user": HumanMessage, "human": HumanMessage,
-                        "assistant": AIMessage, "ai": AIMessage, "system": SystemMessage}
-            routing_messages.append(SystemMessage(
-                content=f"Last {len(conversation_history)} messages from this session:"
-            ))
-            for msg in reversed(conversation_history):
-                cls = role_map.get(msg.get("role", "system").lower(), SystemMessage)
-                routing_messages.append(cls(content=msg.get("content", "")))
+            # Compress older turns via LLMLingua; keep the most recent 2 verbatim.
+            # Returns ready-to-use list[BaseMessage] — no manual role_map needed.
+            conversation_compressor = get_conversation_compressor()
+            routing_messages.extend(
+                conversation_compressor.compress_history(conversation_history)
+            )
 
         # Inject results from previously completed steps so the routing LLM
         # can confirm the assigned worker has the data it needs (e.g. a PA ID
@@ -754,9 +775,11 @@ Return JSON only (no markdown fences, no explanation):
         Flow:
             create_plan
                 → supervisor
-                    → pa_lookup       → goal_advance → supervisor
-                    → pa_status       → goal_advance → supervisor
-                    → pa_requirements → goal_advance → supervisor
+                    → pa_lookup          → goal_advance → supervisor
+                    → pa_status          → goal_advance → supervisor
+                    → pa_requirements    → goal_advance → supervisor
+                    → approve_prior_auth → goal_advance → supervisor
+                    → deny_prior_auth    → goal_advance → supervisor
                     → error_handler → END
                     → END  (when FINISH)
         """
@@ -794,11 +817,12 @@ Return JSON only (no markdown fences, no explanation):
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["pa_lookup", "pa_status", "pa_requirements",
+                     "approve_prior_auth", "deny_prior_auth",
                      "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
@@ -826,12 +850,14 @@ Return JSON only (no markdown fences, no explanation):
             "supervisor",
             router,
             {
-                "supervisor":      "supervisor",
-                "pa_lookup":       "pa_lookup",
-                "pa_status":       "pa_status",
-                "pa_requirements": "pa_requirements",
-                "error_handler":   "error_handler",
-                "__end__":         END,
+                "supervisor":         "supervisor",
+                "pa_lookup":          "pa_lookup",
+                "pa_status":          "pa_status",
+                "pa_requirements":    "pa_requirements",
+                "approve_prior_auth": "approve_prior_auth",
+                "deny_prior_auth":    "deny_prior_auth",
+                "error_handler":      "error_handler",
+                "__end__":            END,
             },
         )
 

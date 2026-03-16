@@ -38,7 +38,6 @@ from langchain_core.messages import AIMessage
 
 from security.message_encryption import get_secure_message_bus            
 from agents.core.state import SupervisorState
-from agents.core.context_compressor import get_cross_agent_compressor
 from config.settings import get_settings
 from databases.context_graph_data_access import get_cg_data_access
 from observability.prometheus_metrics import track_mcp_encryption_event
@@ -221,7 +220,6 @@ class A2AClientNode:
         user_id: str,
         user_role: str,
         session_id: str,
-        plan: Optional[Dict[str, Any]] = None,
         central_step_id: str = "",
     ) -> Dict[str, Any]:
         """
@@ -230,13 +228,15 @@ class A2AClientNode:
         Parts emitted:
             1. {"type": "text",  "text": "<query>"}
             2. {"type": "data",  "data": {user_id, user_role, session_id}}
-            3. {"type": "data",  "data": {"plan": ...}}         (optional)
-            4. {"type": "data",  "data": {"central_step_id": ...}} (when delegating)
+            3. {"type": "data",  "data": {"central_step_id": ...}}   (when delegating)
 
-        central_step_id is the Step.stepId from the central supervisor's
-        plan that is delegating this work.  The receiving team supervisor
-        stores it to create:
-            (CentralStep)-[:DELEGATED_TO]->(TeamPlan)
+        The central supervisor's plan is intentionally NOT forwarded to team
+        supervisors — forwarding it causes the team's create_plan_node to skip
+        its own planning phase (store_plan never called, no TeamPlan created).
+
+        central_step_id is the Step.stepId from the central supervisor's plan.
+        It is sent for observability context only — the DELEGATED_TO edge is
+        not created; the chain is traversable via EXECUTED_BY→CALLED_AGENT→HAS_PLAN.
         """
         task_id = str(uuid.uuid4())
 
@@ -252,8 +252,13 @@ class A2AClientNode:
             },
         ]
 
-        if plan:
-            parts.append({"type": "data", "data": {"plan": plan}})
+        # NOTE: The central supervisor's plan is intentionally NOT forwarded
+        # to team supervisors. Each team supervisor creates its own plan from
+        # the delegation query. Forwarding the central plan causes the team's
+        # create_plan_node to detect state["plan"] as non-empty and return
+        # early, skipping store_plan() — which means the TeamPlan node is
+        # never created in the CG and plan_id is never set in state.
+        # The delegation query already contains all identifiers the team needs.
 
         if central_step_id:
             parts.append({"type": "data", "data": {"central_step_id": central_step_id}})
@@ -377,53 +382,41 @@ class A2AClientNode:
         user_id = state.get("user_id", "unknown")
         user_role = state.get("user_role", "unknown")
         session_id = state.get("session_id", "default")
-        plan = state.get("plan")
-
-        # ── Step 0: Cross-agent context compression ──
-        # Compress accumulated state before sending to the remote agent
-        # to prevent token budget exhaustion in downstream LLM calls.
-        compressed_plan = plan
-        try:
-            cross_compressor = get_cross_agent_compressor()
-            compressed_ctx = cross_compressor.compress_delegation_context(
-                plan=plan,
-                conversation_summary=str(query),  # query carries the latest context
-                prior_results=state.get("tool_results"),
-            )
-            compressed_plan = compressed_ctx.get("plan", plan)
-            logger.debug(
-                "Cross-agent compression applied for %s delegation",
-                self.agent_name,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Cross-agent compression failed (non-fatal): %s", exc
-            )
-            # Proceed with uncompressed plan
 
         # ── Step 1: Build A2A Task ──
-        # Derive the Step.stepId for the current goal so the team supervisor
+        # Derive the Step.stepId for the current step so the team supervisor
         # can link its TeamPlan back to this central step in the CG:
         #   (CentralStep)-[:DELEGATED_TO]->(TeamPlan)
+        #
+        # Fix: use current_step_index (not current_goal_index — that key never
+        # exists in SupervisorState). Then resolve the raw step_id through
+        # step_map to get the CG node ID that store_plan actually created.
         central_step_id = ""
         try:
-            _idx     = state.get("current_goal_index", 0)
-            _plan    = state.get("plan") or {}
-            _goals   = _plan.get("goals", [])
-            _steps   = _plan.get("steps", [])
-            _gid     = _goals[_idx].get("id", "") if _idx < len(_goals) else ""
-            central_step_id = next(
-                (s.get("step_id", "") for s in _steps if s.get("goal_id") == _gid), ""
-            )
+            _idx   = state.get("current_step_index", 0)   # was: current_goal_index
+            _plan  = state.get("plan") or {}
+            _steps = sorted(_plan.get("steps", []), key=lambda s: s.get("order", 1))
+            if _idx < len(_steps):
+                _raw_sid = _steps[_idx].get("step_id", "")
+                # Resolve through step_map: maps plan step_id → CG node stepId
+                central_step_id = state.get("step_map", {}).get(_raw_sid, _raw_sid)
         except Exception:
             pass  # Non-fatal — traceability degrades gracefully
+
+        logger.info(
+            "A2AClientNode: delegating to %s — "
+            "current_step_index=%s central_step_id=%r step_map=%s",
+            self.agent_name,
+            state.get("current_step_index", 0),
+            central_step_id,
+            state.get("step_map", {}),
+        )
 
         a2a_task = self._build_a2a_task(
             query=str(query),
             user_id=user_id,
             user_role=user_role,
             session_id=session_id,
-            plan=compressed_plan,
             central_step_id=central_step_id,
         )
         task_id = a2a_task["id"]
@@ -506,10 +499,23 @@ class A2AClientNode:
 
             return_state: SupervisorState = {
                 "messages": [AIMessage(content=combined_text)] if combined_text else [],
-                "tool_results": result.get("tool_results", {}),
+                # Merge tool_results from all prior steps with this step's results.
+                # Without the merge, each delegation REPLACES the previous step's
+                # tool_results — so a 3-step plan would only surface the last
+                # step's tool output in the final response.
+                "tool_results": {
+                    **state.get("tool_results", {}),   # preserve all prior steps
+                    **result.get("tool_results", {}),  # add this step's results
+                },
                 "execution_path": state.get("execution_path", [])
-                + [f"a2a_{self.agent_name}"]
-                + result.get("execution_path", []),
+                + [f"a2a_{self.agent_name}"],
+                # Team-internal execution_path entries (create_plan, worker routing
+                # steps etc.) are intentionally NOT merged here — the central
+                # execution_path should only show central-level delegation steps.
+                # Propagate task_id so _build_agent_node in central_supervisor
+                # can call link_supervisor_to_a2a_client to stitch:
+                #   (routing AgentExecution)-[:CALLED_AGENT]->(a2a_client AgentExecution)
+                "a2a_task_id": task_id,
             }
 
             # Propagate error fields

@@ -24,12 +24,25 @@ from dataclasses import dataclass as _dataclass, field as _field
 try:
     from guardrails import Guard
     from guardrails.validators import Validator, register_validator, ValidationResult
+    # PassResult / FailResult are the correct return types for custom validators
+    # in Guardrails >= 0.4.x.  Import with fallback for older versions.
+    try:
+        from guardrails.validator_base import PassResult, FailResult
+    except ImportError:
+        try:
+            from guardrails.validators import PassResult, FailResult
+        except ImportError:
+            # Older Guardrails (< 0.4) — validators return ValidationResult directly
+            PassResult = None  # type: ignore
+            FailResult = None  # type: ignore
     GUARDRAILS_AVAILABLE = True
 except ImportError:
     GUARDRAILS_AVAILABLE = False
     Guard = None  # type: ignore
     Validator = None  # type: ignore
     register_validator = None  # type: ignore
+    PassResult = None  # type: ignore
+    FailResult = None  # type: ignore
     logging.warning("guardrails-ai not available — output validation will use fallback mode")
 
     # Lightweight stand-in so the rest of the module works without guardrails
@@ -96,8 +109,15 @@ class HIPAAComplianceValidator(_ValidatorBase):
             self._analyzer = get_healthcare_analyzer()
         return self._analyzer
 
-    def validate(self, value: str, metadata: Dict[str, Any]) -> "ValidationResult":
-        """Analyse *value* for HIPAA-regulated PHI using Presidio."""
+    def validate(self, value: str, metadata: Dict[str, Any]):
+        """
+        Analyse *value* for HIPAA-regulated PHI using Presidio.
+
+        Returns PassResult / FailResult (Guardrails >= 0.4.x) when those
+        classes are available, falling back to ValidationResult for older
+        versions.  Using the wrong return type is what causes the
+        'Unexpected result type' error inside Guard internals.
+        """
         try:
             results = self.analyzer.analyze(
                 text=value,
@@ -116,7 +136,7 @@ class HIPAAComplianceValidator(_ValidatorBase):
                         "score": round(r.score, 2),
                         "start": r.start,
                         "end": r.end,
-                        "text_snippet": value[r.start:r.end][:20],  # truncated for logs
+                        "text_snippet": value[r.start:r.end][:20],
                     })
 
                 error_msg = (
@@ -129,23 +149,30 @@ class HIPAAComplianceValidator(_ValidatorBase):
 
                 redacted = self._redact_with_presidio(value, significant)
 
+                # Return FailResult (>= 0.4.x) or ValidationResult (< 0.4.x)
+                if FailResult is not None:
+                    return FailResult(
+                        error_message=error_msg,
+                        fix_value=redacted,
+                        metadata={"violations": violations},
+                    )
                 return ValidationResult(
                     outcome="fail",
-                    metadata={
-                        "error_message": error_msg,
-                        "fix_value": redacted,
-                        "violations": violations,
-                    },
+                    metadata={"error_message": error_msg, "fix_value": redacted,
+                              "violations": violations},
                     validated_chunk=redacted,
                 )
 
+            # No PHI detected — pass
+            if PassResult is not None:
+                return PassResult()
             return ValidationResult(outcome="pass")
 
         except Exception as exc:
             logger.error("HIPAA compliance check error: %s", exc, exc_info=True)
-            # Fail-open with a warning — do not block the response if Presidio
-            # itself errors (e.g. model not loaded).  The upstream Guardrails
-            # DetectPII validator provides a second layer of defence.
+            # Fail-open — do not block the response if Presidio itself errors.
+            if PassResult is not None:
+                return PassResult()
             return ValidationResult(outcome="pass")
 
     # ------------------------------------------------------------------
@@ -179,7 +206,12 @@ def _create_presidio_detect_pii(
     """
     Create a ``DetectPII`` validator backed by the shared Presidio
     ``AnalyzerEngine`` that includes healthcare-domain recognizers.
+
+    Returns ``None`` when the Guardrails hub is not installed so callers
+    can filter it out before passing to ``Guard().use_many()``.
     """
+    if not HUB_VALIDATORS_AVAILABLE or DetectPII is None:
+        return None
     analyzer = get_healthcare_analyzer()
     return DetectPII(
         pii_entities=pii_entities,
@@ -208,11 +240,32 @@ class GuardrailsOutputValidator:
         logger.info("Guardrails AI Output Validator initialised (Presidio-backed)")
 
     def _create_guards(self) -> Dict[str, Guard]:
-        """Create pre-configured guards for different agent scenarios."""
+        """
+        Create pre-configured guards for different agent scenarios.
+
+        When the Guardrails hub is not installed (HUB_VALIDATORS_AVAILABLE=False),
+        DetectPII, ToxicLanguage, and RestrictToTopic are all None.
+        Each guard is built from only the validators that are actually available,
+        falling back to HIPAAComplianceValidator (Presidio-only) at minimum.
+        Guard().use_many() requires at least one validator, so we always include
+        HIPAAComplianceValidator which has no hub dependency.
+        """
         guards: Dict[str, Guard] = {}
 
+        def _build_guard(*validators) -> Guard:
+            """Build a Guard from the subset of validators that are not None."""
+            available = [v for v in validators if v is not None]
+            if not available:
+                # Should never happen — HIPAAComplianceValidator has no hub dep
+                logger.warning("No validators available — guard will pass all output")
+                return Guard()
+            if not GUARDRAILS_AVAILABLE or Guard is None:
+                # guardrails-ai not installed at all — return a no-op sentinel
+                return None  # type: ignore
+            return Guard().use_many(*available)
+
         # ── Standard output guard (used by default) ──────────────────────
-        guards["standard"] = Guard().use_many(
+        guards["standard"] = _build_guard(
             _create_presidio_detect_pii(
                 pii_entities=[
                     "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN", "CREDIT_CARD",
@@ -220,7 +273,7 @@ class GuardrailsOutputValidator:
                 ],
                 on_fail="fix",
             ),
-            ToxicLanguage(threshold=0.7, on_fail="exception"),
+            ToxicLanguage(threshold=0.7, on_fail="exception") if HUB_VALIDATORS_AVAILABLE and ToxicLanguage else None,
             RestrictToTopic(
                 valid_topics=[
                     "health insurance", "claims", "benefits", "coverage",
@@ -229,12 +282,12 @@ class GuardrailsOutputValidator:
                     "explanation of benefits", "appeal", "grievance",
                 ],
                 on_fail="reask",
-            ),
+            ) if HUB_VALIDATORS_AVAILABLE and RestrictToTopic else None,
             HIPAAComplianceValidator(on_fail="fix"),
         )
 
         # ── Member services guard (stricter PII controls) ────────────────
-        guards["member_services"] = Guard().use_many(
+        guards["member_services"] = _build_guard(
             _create_presidio_detect_pii(
                 pii_entities=[
                     "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN", "CREDIT_CARD",
@@ -247,7 +300,7 @@ class GuardrailsOutputValidator:
         )
 
         # ── Claims guard ─────────────────────────────────────────────────
-        guards["claims"] = Guard().use_many(
+        guards["claims"] = _build_guard(
             _create_presidio_detect_pii(
                 pii_entities=[
                     "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN", "CREDIT_CARD",
@@ -259,7 +312,7 @@ class GuardrailsOutputValidator:
         )
 
         # ── Prior authorization guard ────────────────────────────────────
-        guards["prior_authorization"] = Guard().use_many(
+        guards["prior_authorization"] = _build_guard(
             _create_presidio_detect_pii(
                 pii_entities=[
                     "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN",
@@ -270,6 +323,8 @@ class GuardrailsOutputValidator:
             HIPAAComplianceValidator(on_fail="fix"),
         )
 
+        mode = "full (hub + Presidio)" if HUB_VALIDATORS_AVAILABLE else "Presidio-only (hub not installed)"
+        logger.info("Guards created in %s mode", mode)
         return guards
 
     # ------------------------------------------------------------------
@@ -293,26 +348,68 @@ class GuardrailsOutputValidator:
         guard = self.guards.get(guard_type, self.guards["standard"])
         metadata = metadata or {}
 
-        try:
-            validated = guard.validate(output, metadata=metadata)
-
+        # When guardrails-ai is not installed _build_guard returns None.
+        # Fall back to passing the output through unchanged — Presidio scrubbing
+        # upstream (Control 5) and DLP post-scan downstream still apply.
+        if guard is None:
+            logger.warning(
+                "guardrails-ai not installed — skipping Guard validation for %s",
+                guard_type,
+            )
             return {
                 "valid": True,
-                "sanitized_output": validated.validated_output,
-                "validation_passed": validated.validation_passed,
+                "sanitized_output": output,
+                "validation_passed": True,
                 "guard_type": guard_type,
                 "metadata": metadata,
             }
 
-        except Exception as exc:
-            logger.error("Output validation failed: %s", exc)
+        try:
+            # Guardrails AI changed its API across versions:
+            #   < 0.4.x : guard.validate(value) → ValidationResult
+            #   >= 0.4.x : guard.parse(value)   → CallResult / ValidationOutcome
+            # We try parse() first (newer API), fall back to validate() (older API),
+            # then extract sanitized output defensively regardless of result type
+            # so that a version mismatch never silently blocks every response.
+            if hasattr(guard, "parse"):
+                result = guard.parse(output, metadata=metadata)
+            else:
+                result = guard.validate(output, metadata=metadata)
+
+            # Extract sanitized output — attribute name varies by version
+            sanitized = (
+                getattr(result, "validated_output", None)
+                or getattr(result, "value", None)
+                or getattr(result, "fix_value", None)
+                or output        # last resort: pass original through
+            )
+            # Extract pass/fail — attribute name varies by version
+            passed = bool(
+                getattr(result, "validation_passed", None)
+                if hasattr(result, "validation_passed")
+                else getattr(result, "outcome", "pass") == "pass"
+            )
+
             return {
-                "valid": False,
+                "valid":             passed,
+                "sanitized_output":  sanitized,
+                "validation_passed": passed,
+                "guard_type":        guard_type,
+                "metadata":          metadata,
+            }
+
+        except Exception as exc:
+            # Hard failures (e.g. ToxicLanguage on_fail="exception") raise here.
+            # Classify and surface as a blocked response.
+            logger.error("Output validation failed: %s", exc)
+            reason = _classify_failure(exc)
+            return {
+                "valid":            False,
                 "sanitized_output": None,
-                "error": str(exc),
-                "reason": _classify_failure(exc),
-                "guard_type": guard_type,
-                "metadata": metadata,
+                "error":            str(exc),
+                "reason":           reason,
+                "guard_type":       guard_type,
+                "metadata":         metadata,
             }
 
 

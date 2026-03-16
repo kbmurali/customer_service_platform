@@ -472,35 +472,35 @@ INSERT INTO llm_configs (config_id, config_name, provider, model_name, api_endpo
 -- Sample Users
 -- ============================================
 -- Password: 'testuser' hashed with bcrypt
--- bcrypt hash: $2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi
+-- bcrypt hash: $2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC
 
 INSERT INTO users (user_id, username, email, password_hash, role, first_name, last_name, is_active) VALUES
     ('usr-readonly-001', 'jthompson',  'jane.thompson@healthins.example.com',
-     '$2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi',
+     '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_READONLY',   'Jane',    'Thompson',  TRUE),
 
     ('usr-tier1-001',    'mgarcia',    'maria.garcia@healthins.example.com',
-     '$2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi',
+     '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_TIER1',      'Maria',   'Garcia',    TRUE),
 
     ('usr-tier1-002',    'dkim',       'david.kim@healthins.example.com',
-     '$2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi',
+     '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_TIER1',      'David',   'Kim',       TRUE),
 
     ('usr-tier2-001',    'rpatel',     'raj.patel@healthins.example.com',
-     '$2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi',
+     '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_TIER2',      'Raj',     'Patel',     TRUE),
 
     ('usr-tier2-002',    'swilson',    'sarah.wilson@healthins.example.com',
-     '$2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi',
+     '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_TIER2',      'Sarah',   'Wilson',    TRUE),
 
     ('usr-super-001',    'jchen',      'james.chen@healthins.example.com',
-     '$2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi',
+     '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_SUPERVISOR', 'James',   'Chen',      TRUE),
 
     ('usr-super-002',    'lnguyen',    'lisa.nguyen@healthins.example.com',
-     '$2b$12$LJ3m4ys3Lk0TSwMCPNEJluQMNGxFhGGArSWKhBKFy/B3CehEMxzFi',
+     '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_SUPERVISOR', 'Lisa',    'Nguyen',    TRUE);
 
 -- ============================================

@@ -8,9 +8,11 @@ Server default: http://pa-services-mcp-tools:8001
 Env override:   MCP_PA_SERVICES_HTTP_URL
 
 Tools:
-    pa_lookup_tool       — look up prior authorization information by PA ID
-    pa_status_tool       — check the status of a prior authorization
-    pa_requirements_tool — look up PA requirements for a procedure/policy
+    pa_lookup      — look up prior authorization information by PA ID
+    pa_status       — check the status of a prior authorization
+    pa_requirements — look up PA requirements for a procedure/policy
+    approve_prior_auth — Approve a prior authorization request. HIGH-IMPACT: requires human approval
+    deny_prior_auth — Deny a prior authorization request. HIGH-IMPACT: requires human approval
 """
 
 import logging
@@ -35,6 +37,8 @@ class PAServicesMCPToolClient(MCPToolClient):
         self.register_tool("pa_lookup")
         self.register_tool("pa_status")
         self.register_tool("pa_requirements")
+        self.register_tool("approve_prior_auth")
+        self.register_tool("deny_prior_auth")
         
         logger.info(
             "PAServicesMCPToolClient ready (%s) — tools: %s",

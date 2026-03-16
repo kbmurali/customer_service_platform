@@ -319,6 +319,88 @@ def coverage_lookup(
         )
         return json.dumps({"error": error})
 
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Update", record_name="member", record_id_arg="member_id")
+@require_rate_limits
+@require_permissions("MEMBER", "UPDATE")
+def update_member_info(
+    member_id: str,
+    field: str,
+    new_value: str,
+    reason: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    execution_id: str = "",
+) -> str:
+    """
+    Update a member's information field. HIGH-IMPACT: requires human approval.
+
+    Updatable fields: phone, email, address_street, address_city, address_state,
+    address_zip
+
+    Args:
+        member_id: The member's unique identifier
+        field: The field to update
+        new_value: The new value
+        reason: Justification for the change
+        user_id: ID of the CSR making the change
+        user_role: Role of the CSR
+        session_id: Session ID for audit
+        execution_id:   AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with result or approval-pending message
+    """
+    start_time = datetime.now()
+
+    ALLOWED_FIELDS = {"phone", "email", "address_street", "address_city", "address_state", "address_zip"}
+
+    member_id = sanitize_text(member_id)
+    field = sanitize_text(field)
+    new_value = sanitize_text(new_value)
+    reason = sanitize_text(reason)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        success = kg_data_access.update_member_field(member_id, field, new_value)
+
+        if not success:
+            error = f"Member not found or update failed: {member_id}"
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+            track_tool_execution_in_cg(
+                session_id, "update_member_info", {"member_id": member_id, "field": field, "new_value": new_value, "reason": reason},
+                status="update_failed", execution_time_ms=execution_time, error=error,
+                execution_id=execution_id or None,
+            )
+            return json.dumps({"error": error})
+
+        result = {"member_id": member_id, "field": field, "updated": True}
+        scrubbed = scrub_output(json.dumps(result), session_id)
+        
+        # Track successful execution in Context Graph
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "update_member_info", {"member_id": member_id, "field": field, "new_value": new_value, "reason": reason},
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+
+        return scrubbed
+
+    except Exception as e:
+        logger.error(f"update_member_info failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "update_member_info", {"member_id": member_id, "field": field, "new_value": new_value, "reason": reason},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
 
 # ─────────────────────────────────────────────────────────────
 # Entry point

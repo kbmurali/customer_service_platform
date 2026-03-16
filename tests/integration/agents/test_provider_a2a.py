@@ -397,11 +397,11 @@ class TestA2ARouting:
         result = client_node(state)
         _assert_successful_response(result, "test_provider_id_vs_specialty_routing")
 
-        path = result.get("execution_path", [])
-        assert any("provider_lookup" in str(s) for s in path), \
-            f"Expected provider_lookup in path: {path}"
-        assert any("provider_search_by_specialty" in str(s) for s in path), \
-            f"Expected provider_search_by_specialty in path: {path}"
+        tool_keys = list(result.get("tool_results", {}).keys())
+        assert "provider_lookup" in tool_keys, \
+            f"Expected provider_lookup in tool_results, got: {tool_keys}"
+        assert "provider_search_by_specialty" in tool_keys, \
+            f"Expected provider_search_by_specialty in tool_results, got: {tool_keys}"
 
     def test_session_isolation(self, client_node):
         """Two requests with different session IDs should not interfere."""

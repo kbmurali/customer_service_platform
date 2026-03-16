@@ -551,13 +551,19 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── API Gateway (Nginx mTLS) ──────────────────────────────────────────────
-  # Single entry point for all internal MCP tool servers and future
-  # Supervisor A2A endpoints. Routes by path to internal services.
-  # Only this container exposes external ports for MCP/A2A traffic.
+  # ── API Gateway (Nginx) ──────────────────────────────────────────────────
+  # Port 443  — HTTPS only (no mTLS). Routes external user traffic to the
+  #             agentic-access-api service. JWT auth is enforced by FastAPI.
+  # Port 8443 — mTLS. Routes internal service-to-service traffic (MCP tool
+  #             calls and A2A supervisor communication). Client certificate
+  #             required for all connections.
   api-gateway:
     image: nginx:alpine
     ports:
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
       - target: 8443
         published: 8443
         protocol: tcp

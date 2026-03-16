@@ -40,6 +40,12 @@ sleep 1
 
 docker stack deploy -c docker-compose-search-a2a-server.yml health_insurance
 
+sleep 10
+
+docker stack deploy -c docker-compose-agentic-access.yml health_insurance
+
+sleep 1
+
 for i in {1..10}; do
   docker stack services health_insurance
   sleep 3

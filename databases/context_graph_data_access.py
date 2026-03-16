@@ -123,7 +123,29 @@ class ContextGraphDataAccess:
 
         Routing decisions are stored directly on the AgentExecution that produced
         them, eliminating separate Message nodes and relationships.
-        Traverses: Session->a2a_client->a2a_server->Plan->Goal->Step->AgentExecution
+
+        Uses a UNION of two mutually exclusive traversal paths:
+
+        Branch 1 — Direct A2A invocation:
+            Session -[HAS_EXECUTION]-> AE(a2a_client)
+                    -[CALLED_AGENT]->  AE(a2a_server)
+                    -[HAS_PLAN]->      TeamPlan -> Goal -> Step
+                    -[EXECUTED_BY]->   AE(worker, routingNote)
+
+        Branch 2 — Agentic flow (via central supervisor):
+            Session -[HAS_EXECUTION]-> AE(planner, agentType=supervisor)
+                    -[HAS_PLAN]->      CentralPlan -> Goal -> Step
+                    -[EXECUTED_BY]->   AE(routing)
+                    -[CALLED_AGENT]->  AE(a2a_client)
+                    -[CALLED_AGENT]->  AE(a2a_server)
+                    -[HAS_PLAN]->      TeamPlan -> Goal -> Step
+                    -[EXECUTED_BY]->   AE(worker, routingNote)
+
+        The two branches are mutually exclusive:
+          - Direct flow:   Session→AE(agentType=a2a_client)  → Branch 1 fires, Branch 2 silent
+          - Agentic flow:  Session→AE(agentType=supervisor)  → Branch 2 fires, Branch 1 silent
+        No duplicates are possible. Both single-step and multi-step sessions
+        are handled correctly in both flows.
 
         Args:
             session_id: Session ID
@@ -144,7 +166,22 @@ class ContextGraphDataAccess:
             content:   e.routingNote,
             timestamp: toString(e.endTime)
         } AS message
-        ORDER BY e.endTime DESC
+        UNION
+        MATCH (:Session {sessionId: $sessionId})-[:HAS_EXECUTION]->
+              (:AgentExecution {agentType: 'supervisor'})-[:HAS_PLAN]->
+              (:Plan)-[:HAS_GOAL]->(:Goal)-[:HAS_STEP]->(:Step)
+              -[:EXECUTED_BY]->(:AgentExecution)-[:CALLED_AGENT]->
+              (:AgentExecution)-[:CALLED_AGENT]->
+              (:AgentExecution {agentType: 'a2a_server'})-[:HAS_PLAN]->
+              (:Plan)-[:HAS_GOAL]->(:Goal)-[:HAS_STEP]->(:Step)
+              -[:EXECUTED_BY]->(e:AgentExecution)
+        WHERE e.routingNote IS NOT NULL
+        RETURN {
+            role:      'system',
+            content:   e.routingNote,
+            timestamp: toString(e.endTime)
+        } AS message
+        ORDER BY message.timestamp DESC
         LIMIT $limit
         """
         try:
@@ -165,18 +202,17 @@ class ContextGraphDataAccess:
         """
         Track agent execution.
 
-        Only a2a_client executions are linked directly to the Session via
-        HAS_EXECUTION — they are the top-level entry point for a user request.
+        In direct invocation: a2a_client is linked directly to Session via HAS_EXECUTION.
+        In agentic flow: Session-[:HAS_EXECUTION]→planner-[:HAS_PLAN]→CentralPlan is
+        the root — no Session→a2a_client HAS_EXECUTION is created.
 
-        All other agent types (supervisor, a2a_server, worker) are reachable
-        through the plan graph:
-            (Session)-[:HAS_EXECUTION]->(a2a_client)
-                -[:CALLED_AGENT]->(a2a_server)
-                    -[:HAS_PLAN]->(Plan)
-                        -[:HAS_GOAL]->(Goal)
-                            -[:HAS_STEP]->(Step)
-                                -[:EXECUTED_BY]->(supervisor AgentExecution)
-                                    -[:CALLED_TOOL]->(ToolExecution)
+        Full agentic traversal:
+            (Session)-[:HAS_EXECUTION]->(planner)-[:HAS_PLAN]->(CentralPlan)
+                -[:HAS_GOAL]->(Goal)-[:HAS_STEP]->(CentralStep)
+                    -[:EXECUTED_BY]->(routing AE)-[:CALLED_AGENT]->(a2a_client)
+                        -[:CALLED_AGENT]->(a2a_server)-[:HAS_PLAN]->(TeamPlan)
+                            -[:HAS_GOAL]->(TeamGoal)-[:HAS_STEP]->(TeamStep)
+                                -[:EXECUTED_BY]->(worker AE)-[:CALLED_TOOL]->(ToolExecution)
 
         Args:
             session_id: Session ID
@@ -189,7 +225,21 @@ class ContextGraphDataAccess:
             Execution ID if successful
         """
         if agent_type == "a2a_client":
-            # Top-level entry point — link directly to Session
+            # Always create the a2a_client AgentExecution node.
+            # Then conditionally create Session-[:HAS_EXECUTION]→a2a_client
+            # ONLY when no supervisor-type HAS_EXECUTION exists on the Session
+            # (i.e. no central_supervisor_planner has been linked yet).
+            #
+            # Agentic flow:  link_session_to_execution() in central_supervisor.py
+            #   creates Session→planner(agentType='supervisor') BEFORE the
+            #   a2a_client is registered — so the FOREACH condition is false
+            #   and no Session→a2a_client edge is created.
+            #
+            # Direct invocation: no planner exists → FOREACH condition is true
+            #   → Session→a2a_client edge created as normal.
+            #
+            # Two queries — node creation must always succeed regardless of
+            # whether the conditional edge is created.
             query = """
             MATCH (s:Session {sessionId: $sessionId})
             CREATE (e:AgentExecution {
@@ -200,7 +250,13 @@ class ContextGraphDataAccess:
                 metadata:    $metadata,
                 startTime:   datetime()
             })
-            CREATE (s)-[:HAS_EXECUTION]->(e)
+            WITH s, e
+            FOREACH (_ IN CASE
+                WHEN NOT EXISTS {
+                    (s)-[:HAS_EXECUTION]->(:AgentExecution {agentType: 'supervisor'})
+                } THEN [1] ELSE [] END |
+                CREATE (s)-[:HAS_EXECUTION]->(e)
+            )
             RETURN e.executionId AS executionId
             """
         else:
@@ -317,6 +373,7 @@ class ContextGraphDataAccess:
         } AS execution
         UNION
         MATCH (:Session {sessionId: $sessionId})-[:HAS_EXECUTION]->
+              (:AgentExecution)-[:HAS_PLAN|CALLED_AGENT*1..4]->
               (:AgentExecution {agentType: 'a2a_client'})-[:CALLED_AGENT]->(e:AgentExecution)
         RETURN e {
             .executionId, .agentName, .agentType,
@@ -324,7 +381,7 @@ class ContextGraphDataAccess:
         } AS execution
         UNION
         MATCH (:Session {sessionId: $sessionId})-[:HAS_EXECUTION]->
-              (:AgentExecution {agentType: 'a2a_client'})-[:CALLED_AGENT]->
+              (:AgentExecution)-[:HAS_PLAN|CALLED_AGENT*1..4]->
               (:AgentExecution {agentType: 'a2a_server'})-[:HAS_PLAN]->
               (:Plan)-[:HAS_GOAL]->(:Goal)-[:HAS_STEP]->(:Step)-[:EXECUTED_BY]->(e:AgentExecution)
         RETURN e {
@@ -348,7 +405,7 @@ class ContextGraphDataAccess:
                   agent_name: str,
                   plan_type: str = "central",
                   team_name: str = "",
-                  central_step_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                  ) -> Optional[Dict[str, Any]]:
         """
         Store execution plan as a proper node graph.
 
@@ -356,9 +413,6 @@ class ContextGraphDataAccess:
             (Session)-[:HAS_PLAN]->(Plan)
             (Plan)-[:HAS_GOAL]->(Goal)
             (Goal)-[:HAS_STEP]->(Step)
-
-        When central_step_id is provided (team plan from A2A delegation):
-            (CentralStep)-[:DELEGATED_TO]->(TeamPlan)
 
         Returns:
             Dict {"plan_id": str, "step_map": {step_id: step_id}} or None
@@ -391,18 +445,6 @@ class ContextGraphDataAccess:
             if not result:
                 return None
             plan_id = result[0].get("planId")
-
-            # ── Link CentralStep -> TeamPlan via DELEGATED_TO ─────────────
-            if central_step_id:
-                self.conn.execute_query("""
-                    OPTIONAL MATCH (cs:Step {stepId: $centralStepId})
-                    MATCH (p:Plan {planId: $planId})
-                    FOREACH (_ IN CASE WHEN cs IS NOT NULL THEN [1] ELSE [] END |
-                        CREATE (cs)-[:DELEGATED_TO]->(p)
-                    )
-                """, {"centralStepId": central_step_id, "planId": plan_id})
-                logger.info("Linked central step %s -[:DELEGATED_TO]-> team plan %s",
-                            central_step_id, plan_id)
 
             # ── Create Goal and Step nodes ────────────────────────────────
             steps_by_goal: Dict[str, List[Dict[str, Any]]] = {}
@@ -469,7 +511,7 @@ class ContextGraphDataAccess:
         try:
             result = self.conn.execute_query("""
                 MATCH (:Session {sessionId: $sessionId})-[:HAS_EXECUTION]->
-                      (:AgentExecution {agentType: 'a2a_client'})-[:CALLED_AGENT]->
+                      (:AgentExecution)-[:HAS_PLAN|CALLED_AGENT*1..4]->
                       (:AgentExecution {agentType: 'a2a_server'})-[:HAS_PLAN]->(p:Plan {status: 'active'})
                 OPTIONAL MATCH (p)-[:HAS_GOAL]->(g:Goal)
                 OPTIONAL MATCH (g)-[:HAS_STEP]->(st:Step)
@@ -744,14 +786,18 @@ class ContextGraphDataAccess:
         Create (a2a_client)-[:CALLED_AGENT]->(a2a_server) by matching on
         shared a2a_task_id stored in AgentExecution.metadata JSON.
 
-        client is matched via Session (only a2a_client has HAS_EXECUTION from Session).
-        server is matched directly by agentType + metadata since it has no Session link.
-        Works generically across all teams (member_services, claims, provider, etc.)
+        Both client and server are matched directly by agentType + metadata.
+        The Session is NOT used to reach the client because in the agentic flow
+        Session-[:HAS_EXECUTION]→a2a_client is intentionally NOT created
+        (the FOREACH guard in track_agent_execution prevents it when a planner
+        HAS_EXECUTION already exists). Matching via Session would find nothing.
+
+        Instead both nodes are found by their agentType and task_id substring
+        in metadata. This works correctly in both direct and agentic flows.
         """
         try:
             self.conn.execute_query("""
-                MATCH (s:Session {sessionId: $sessionId})
-                      -[:HAS_EXECUTION]->(client:AgentExecution {agentType: "a2a_client"})
+                MATCH (client:AgentExecution {agentType: "a2a_client"})
                 MATCH (server:AgentExecution {agentType: "a2a_server"})
                 WHERE client.metadata CONTAINS $taskId
                   AND server.metadata CONTAINS $taskId
@@ -913,7 +959,7 @@ class ContextGraphDataAccess:
         """
         query = """
         MATCH (:Session {sessionId: $sessionId})-[:HAS_EXECUTION]->
-              (:AgentExecution {agentType: 'a2a_client'})-[:CALLED_AGENT]->
+              (:AgentExecution)-[:HAS_PLAN|CALLED_AGENT*1..4]->
               (:AgentExecution {agentType: 'a2a_server'})-[:HAS_PLAN]->
               (:Plan)-[:HAS_GOAL]->(:Goal)-[:HAS_STEP]->(:Step)
               -[:EXECUTED_BY]->(e:AgentExecution)-[:CALLED_TOOL]->(t:ToolExecution)

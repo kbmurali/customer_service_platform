@@ -16,6 +16,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 from agents.teams.member_services.supervisor.member_lookup_worker import MemberLookupWorker
 from agents.teams.member_services.supervisor.check_eligibility_worker import EligibilityCheckWorker
 from agents.teams.member_services.supervisor.coverage_lookup_worker import CoverageLookupWorker
+from agents.teams.member_services.supervisor.update_member_info_worker import UpdateMemberInfoWorker
+from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
@@ -42,9 +44,10 @@ class MemberServicesSupervisor:
     def __init__(self):
         self.name = "member_services_supervisor"
         self.workers = {
-            "member_lookup": MemberLookupWorker(),
-            "check_eligibility": EligibilityCheckWorker(),
-            "coverage_lookup": CoverageLookupWorker()
+            "member_lookup":      MemberLookupWorker(),
+            "check_eligibility":  EligibilityCheckWorker(),
+            "coverage_lookup":    CoverageLookupWorker(),
+            "update_member_info": UpdateMemberInfoWorker(),
         }
         
         self.rbac = rbac_service
@@ -69,13 +72,14 @@ Available workers:
 - member_lookup: Look up member information by member ID
 - check_eligibility: Check member eligibility for a given service date
 - coverage_lookup: Get detailed coverage and benefits for a procedure code
+- update_member_info: Update a member information field — requires member ID, field, new value, and reason
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
-   (no member ID, no service date, no procedure code), respond with "SKIP".
+   (no member ID, no service date, no procedure code, no field or new value for update), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: member_lookup, check_eligibility, coverage_lookup.
+4. Only use exact worker names: member_lookup, check_eligibility, coverage_lookup, update_member_info.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -96,6 +100,7 @@ Available workers (use EXACT names only):
 - member_lookup: Looks up member by ID
 - check_eligibility: Checks eligibility — requires a service date
 - coverage_lookup: Gets coverage details — requires a procedure code
+- update_member_info: Updates a member information field — requires member ID, field, new value, and reason
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -117,6 +122,10 @@ RULES:
      - "Look up member M and check their eligibility" → 1 goal, 2 steps (same subject)
 9. check_eligibility and coverage_lookup do not require member_lookup first unless
    member details were explicitly requested — each worker only needs its own input.
+10. update_member_info is a write operation — only include it when the user
+    explicitly requests a member information change. It requires member ID, the
+    field to update (phone, email, address_street, address_city, address_state,
+    address_zip), the new value, and a reason.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -170,9 +179,20 @@ Return JSON only (no markdown fences, no explanation):
                 policy_context = chroma.search_policies( query=user_query, n_results=2)
                 faq_context = chroma.search_faqs(query=user_query, n_results=2)
                 
+                # Compress Chroma documents before injecting into planning prompt
+                # to reduce token usage while preserving domain-critical terms.
+                _semantic_compressor = get_semantic_compressor()
+                _compressed_policies = _semantic_compressor.compress_documents(
+                    [{'content': r['document']} for r in policy_context],
+                    query=user_query,
+                )
+                _compressed_faqs = _semantic_compressor.compress_documents(
+                    [{'content': r['document']} for r in faq_context],
+                    query=user_query,
+                )
                 semantic_context_json = {
-                    'relevant_policies': [r['document'] for r in policy_context],
-                    'relevant_faqs': [r['document'] for r in faq_context]
+                    'relevant_policies': [d['content'] for d in _compressed_policies],
+                    'relevant_faqs':     [d['content'] for d in _compressed_faqs]
                 }
             except Exception:
                 semantic_context = {}
@@ -209,15 +229,15 @@ Return JSON only (no markdown fences, no explanation):
             
             # Store plan in CG as a team plan.
             # store_plan returns {"plan_id": ..., "step_map": {step_id: step_id}}.
-            # central_step_id (from state) creates:
-            #   (CentralStep)-[:DELEGATED_TO]->(TeamPlan)  [central supervisor only]
+            # The central_step_id is received from the central supervisor via A2A
+            # but DELEGATED_TO is not created — the chain is traversable via
+            # EXECUTED_BY → CALLED_AGENT → HAS_PLAN without a shortcut edge.
             plan_result = self.cg_manager.store_plan(
                 session_id=session_id,
                 plan=plan,
                 agent_name=self.name,
                 plan_type=state.get("plan_type", "team"),
                 team_name=state.get("team_name", "member_services"),
-                central_step_id=state.get("central_step_id") or None,
             )
             plan_id  = plan_result.get("plan_id")  if plan_result else None
             step_map = plan_result.get("step_map") if plan_result else {}
@@ -264,7 +284,7 @@ Return JSON only (no markdown fences, no explanation):
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup"}
+        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info"}
 
         user_id = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -351,14 +371,12 @@ Return JSON only (no markdown fences, no explanation):
             )))
 
         if conversation_history:
-            role_map = {"user": HumanMessage, "human": HumanMessage,
-                        "assistant": AIMessage, "ai": AIMessage, "system": SystemMessage}
-            routing_messages.append(SystemMessage(
-                content=f"Last {len(conversation_history)} messages from this session:"
-            ))
-            for msg in reversed(conversation_history):
-                cls = role_map.get(msg.get("role", "system").lower(), SystemMessage)
-                routing_messages.append(cls(content=msg.get("content", "")))
+            # Compress older turns via LLMLingua; keep the most recent 2 verbatim.
+            # Returns ready-to-use list[BaseMessage] — no manual role_map needed.
+            conversation_compressor = get_conversation_compressor()
+            routing_messages.extend(
+                conversation_compressor.compress_history(conversation_history)
+            )
 
         # Inject results from previously completed steps so the routing LLM
         # can confirm the assigned worker has the data it needs.
@@ -759,9 +777,10 @@ Return JSON only (no markdown fences, no explanation):
         Flow:
             create_plan
                 → supervisor
-                    → member_lookup   → goal_advance → supervisor
-                    → check_eligibility → goal_advance → supervisor
-                    → coverage_lookup → goal_advance → supervisor
+                    → member_lookup      → goal_advance → supervisor
+                    → check_eligibility  → goal_advance → supervisor
+                    → coverage_lookup    → goal_advance → supervisor
+                    → update_member_info → goal_advance → supervisor
                     → error_handler → END
                     → END  (when FINISH)
         """
@@ -799,12 +818,12 @@ Return JSON only (no markdown fences, no explanation):
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup"}
+        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["member_lookup", "check_eligibility", "coverage_lookup",
-                     "error_handler", "supervisor", "__end__"]:
+                     "update_member_info", "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
                 return "error_handler"
@@ -831,12 +850,13 @@ Return JSON only (no markdown fences, no explanation):
             "supervisor",
             router,
             {
-                "supervisor":        "supervisor",
-                "member_lookup":     "member_lookup",
-                "check_eligibility": "check_eligibility",
-                "coverage_lookup":   "coverage_lookup",
-                "error_handler":     "error_handler",
-                "__end__":           END,
+                "supervisor":          "supervisor",
+                "member_lookup":       "member_lookup",
+                "check_eligibility":   "check_eligibility",
+                "coverage_lookup":     "coverage_lookup",
+                "update_member_info":  "update_member_info",
+                "error_handler":       "error_handler",
+                "__end__":             END,
             },
         )
 

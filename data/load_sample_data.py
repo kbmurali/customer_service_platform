@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import uuid
 
+import bcrypt
+
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -315,13 +317,17 @@ class DatabaseLoader:
         try:
             # Note: This assumes tables are already created via mysql_schema.sql
             # In production, you would run the schema file first
+            # Password hashing
+            test_password = "testuser"
+            
+            pwd_hash = bcrypt.hashpw( test_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
             
             # Load users (CSRs)
             print("Loading sample CSR users...")
             users = [
-                (str(uuid.uuid4()), 'csr1', 'password_hash_1', 'csr1@healthins.com', 'CSR_TIER1', True),
-                (str(uuid.uuid4()), 'csr2', 'password_hash_2', 'csr2@healthins.com', 'CSR_TIER2', True),
-                (str(uuid.uuid4()), 'supervisor1', 'password_hash_3', 'supervisor@healthins.com', 'CSR_SUPERVISOR', True),
+                (str(uuid.uuid4()), 'csr1', pwd_hash, 'csr1@healthins.com', 'CSR_TIER1', True),
+                (str(uuid.uuid4()), 'csr2', pwd_hash, 'csr2@healthins.com', 'CSR_TIER2', True),
+                (str(uuid.uuid4()), 'supervisor1', pwd_hash, 'supervisor@healthins.com', 'CSR_SUPERVISOR', True),
             ]
             
             for user in users:
