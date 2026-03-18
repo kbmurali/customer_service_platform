@@ -88,7 +88,7 @@ class PresidioMemorySecurity:
         # Define entities to detect
         self.pii_entities = [
             "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "SSN", "CREDIT_CARD",
-            "US_DRIVER_LICENSE", "US_PASSPORT", "LOCATION", "DATE_TIME",
+            "US_DRIVER_LICENSE", "US_PASSPORT", "LOCATION",
             "MEDICAL_LICENSE", "MEMBER_ID", "POLICY_NUMBER", "CLAIM_NUMBER", "PA_NUMBER"
         ]
         
