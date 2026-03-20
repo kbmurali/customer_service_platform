@@ -45,7 +45,11 @@ from functools import lru_cache
 from typing import Any, Dict, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.output_parsers import JsonOutputParser
+
+# Plan schema validation — catches malformed plans before CG writes
+from agents.core.plan_schema import validate_central_plan
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, StateGraph
 
@@ -230,8 +234,59 @@ Goal:        {goal_description}
 
 
 # ---------------------------------------------------------------------------
+# Prompt: Response Consolidation
+# ---------------------------------------------------------------------------
+CONSOLIDATION_SYSTEM_PROMPT = """\
+You are the central supervisor for a health insurance customer service platform.
+
+You have just completed executing a multi-step plan on behalf of a CSR.
+Each step was handled by a specialist team. You now have all the results.
+
+Your job is to synthesise these results into a single, clear, coherent response
+that directly answers the CSR's original question.
+
+=== RULES ===
+1. Answer the original question directly and completely.
+2. Integrate all relevant results into one flowing response — do not list
+   team names or step numbers. The CSR does not need to know about the
+   internal architecture.
+3. If results from different teams are related (e.g. a member's eligibility
+   affects a claim decision), explain that relationship clearly.
+4. If a step returned no useful data, omit it — do not mention it.
+5. Be concise. Use plain language appropriate for a CSR talking to a member.
+6. Do not add information that was not in the results.
+7. Do not fabricate or speculate beyond what the results contain.
+"""
+
+CONSOLIDATION_USER_PROMPT = """\
+Original question: {query}
+
+Results from each specialist team:
+{results_block}
+
+Write a single consolidated response that directly answers the original question.
+"""
+
+
+# ---------------------------------------------------------------------------
 # Central Supervisor
 # ---------------------------------------------------------------------------
+def _get_routing_prompt() -> str:
+    """Return SUPERVISOR_SYSTEM_PROMPT from LangFuse if versioning is enabled."""
+    try:
+        from config.settings import get_settings as _gs
+        _s = _gs()
+        if getattr(_s, "LANGFUSE_PROMPT_VERSIONING_ENABLED", False):
+            from observability.langfuse_integration import get_langfuse_tracer
+            _label = getattr(_s, "LANGFUSE_PROMPT_LABEL", "production")
+            return get_langfuse_tracer().get_prompt_or_default(
+                "csip-central-routing-prompt", SUPERVISOR_SYSTEM_PROMPT, label=_label
+            )
+    except Exception:
+        pass
+    return SUPERVISOR_SYSTEM_PROMPT
+
+
 class CentralSupervisor:
     """
     Orchestrates the full CSIP agent hierarchy.
@@ -318,7 +373,14 @@ class CentralSupervisor:
             card = None
             try:
                 import httpx
-                well_known_url = f"{base_url}/.well-known/agent.json"
+                # Agent card discovery uses port 443 (HTTPS, no mTLS).
+                # The Nginx config on port 443 has dedicated
+                # /a2a/<team>/.well-known/ location blocks that proxy
+                # directly to each A2A server without requiring a client
+                # certificate.  Port 8443 (mTLS) rejects dot-segment paths
+                # like /.well-known with 400 due to httptools path validation.
+                _card_base_url = base_url.replace(":8443/", ":443/")
+                well_known_url = f"{_card_base_url}/.well-known/agent.json"
                 with httpx.Client(verify=False, timeout=5.0) as client:
                     response = client.get(well_known_url)
                     response.raise_for_status()
@@ -384,7 +446,7 @@ class CentralSupervisor:
         """
         from langchain_core.output_parsers import StrOutputParser
         prompt = ChatPromptTemplate.from_messages([
-            ("system", SUPERVISOR_SYSTEM_PROMPT),
+            ("system", _get_routing_prompt()),
             ("human",  "{messages}"),
         ])
         return prompt | self._llm | StrOutputParser()
@@ -433,12 +495,43 @@ class CentralSupervisor:
                 "CentralSupervisor: skills summary compression failed (non-fatal): %s", _exc
             )
 
-        planning_prompt = PLANNING_SYSTEM_PROMPT.format(
-            agent_skills_summary=skills_summary
-        )
+        # Prompt versioning: fetch from LangFuse if enabled, else use constant
+        try:
+            from config.settings import get_settings as _gs
+            _s = _gs()
+            if getattr(_s, "LANGFUSE_PROMPT_VERSIONING_ENABLED", False):
+                tracer = get_langfuse_tracer()
+                _label = getattr(_s, "LANGFUSE_PROMPT_LABEL", "production")
+                _raw = tracer.get_prompt_or_default(
+                    "csip-central-planning-prompt", PLANNING_SYSTEM_PROMPT, label=_label
+                )
+                planning_prompt = _raw.format(agent_skills_summary=skills_summary)
+            else:
+                planning_prompt = PLANNING_SYSTEM_PROMPT.format(
+                    agent_skills_summary=skills_summary
+                )
+        except Exception as _ve:
+            logger.warning("CentralSupervisor: prompt versioning error (using default): %s", _ve)
+            planning_prompt = PLANNING_SYSTEM_PROMPT.format(
+                agent_skills_summary=skills_summary
+            )
         user_prompt = PLANNING_USER_PROMPT.format(query=query)
 
-        # Build the planning chain: llm | JsonOutputParser.
+        # thread_id = current session_id always.
+        # ContextGraphStore.get_tuple() handles all prior-session context
+        # retrieval by traversing the HAS_FOLLOW_UP chain using chainDepth
+        # and rootSessionId properties — no compound IDs needed here.
+        session_id_val = state.get("session_id", "")
+        thread_config  = RunnableConfig(
+            configurable={"thread_id": session_id_val}
+        )
+
+        # messages contains prior context restored by the checkpointer
+        # (via get_tuple batched reconstruction) merged with the current
+        # HumanMessage by the add_messages reducer before this node ran.
+        messages = state.get("messages", [])
+
+                # Build the planning chain: llm | JsonOutputParser.
         # NOTE: ChatPromptTemplate is intentionally NOT used here.
         # planning_prompt is already fully .format()-ted — all {{ }} escapes
         # have resolved into literal { } JSON braces. Passing through
@@ -474,15 +567,35 @@ class CentralSupervisor:
         except Exception as exc:
             logger.warning("CentralSupervisor: CG track planning execution (non-fatal): %s", exc)
 
+        # Build the message list for the planning LLM.
+        # Prior messages restored by the checkpointer sit in state["messages"].
+        # They are inserted between the system prompt and the current user
+        # prompt so the planner sees claim IDs, member IDs, and other entity
+        # references from previous turns and can embed them in step queries
+        # without the CSR repeating them.
+        _state_messages  = messages  # populated earlier from state["messages"]
+        _prior_msgs      = _state_messages[:-1] if len(_state_messages) > 1 else []
+        _messages_to_llm = [SystemMessage(content=planning_prompt)]
+        if _prior_msgs:
+            _messages_to_llm.extend(_prior_msgs)
+        _messages_to_llm.append(HumanMessage(content=user_prompt))
+
         plan: Optional[Dict[str, Any]] = None
         try:
             plan = planning_chain.invoke(
-                [SystemMessage(content=planning_prompt),
-                 HumanMessage(content=user_prompt)],
-                config={"callbacks": [callback_handler]} if callback_handler else {},
+                _messages_to_llm,
+                # thread_id context merged with LangFuse callbacks
+                config={**thread_config,
+                        "callbacks": [callback_handler] if callback_handler else []},
             )
+            # Validate plan schema before any CG writes
+            try:
+                validate_central_plan(plan)
+            except Exception as _val_exc:
+                logger.error("CentralSupervisor: plan schema invalid: %s", _val_exc)
+                raise ValueError(f"Plan validation failed: {_val_exc}") from _val_exc
             logger.info(
-                "CentralSupervisor: plan created — %d goals, %d steps",
+                "CentralSupervisor: plan created and validated — %d goals, %d steps",
                 len(plan.get("goals", [])),
                 len(plan.get("steps", [])),
             )
@@ -556,15 +669,15 @@ class CentralSupervisor:
             logger.warning("CentralSupervisor: CG store_plan failed (non-fatal): %s", exc)
 
         return {
-            "plan":                plan,
-            "plan_id":             plan_id,
-            "step_map":            step_map,
-            "current_step_index":  0,
-            "completed_goals":     [],
-            "execution_path":      state.get("execution_path", []) + ["create_plan"],
-            "start_time":          datetime.now(timezone.utc).isoformat(),
-            "plan_type":           "central",
-            "team_name":           "",
+            "plan":               plan,
+            "plan_id":            plan_id,
+            "step_map":           step_map,
+            "current_step_index": 0,
+            "completed_goals":    [],
+            "execution_path":     state.get("execution_path", []) + ["create_plan"],
+            "start_time":         datetime.now(timezone.utc).isoformat(),
+            "plan_type":          "central",
+            "team_name":          "",
         }
 
     # -----------------------------------------------------------------------
@@ -587,27 +700,13 @@ class CentralSupervisor:
         goals      = plan.get("goals", [])
         idx        = state.get("current_step_index", 0)
 
-        # All steps done → compose combined response and signal FINISH
+        # All steps done → route to consolidate_response_node which calls
+        # the LLM once to synthesise all tool_results into a single coherent
+        # response.  The old string-concatenation approach is removed — it
+        # produced disconnected paragraphs rather than a unified answer.
         if idx >= len(steps):
-            logger.info("CentralSupervisor: all steps complete → FINISH")
-
-            # Synthesise a combined response from all accumulated step outputs.
-            # Without this, _extract_response() in request_processor returns only
-            # the last AIMessage — which contains only the last step's answer.
-            # For multi-step plans each step's answer must be included.
-            tool_results = state.get("tool_results", {})
-            step_outputs = [
-                v.get("output", "")
-                for v in tool_results.values()
-                if isinstance(v, dict) and v.get("output", "").strip()
-            ]
-            if step_outputs:
-                combined_response = "\n\n".join(step_outputs)
-                return {
-                    "next":     "FINISH",
-                    "messages": [AIMessage(content=combined_response)],
-                }
-            return {"next": "FINISH"}
+            logger.info("CentralSupervisor: all steps complete → consolidate_response")
+            return {"next": "consolidate_response"}
 
         current_step = steps[idx]
         agent_name   = current_step.get("agent", "")
@@ -865,6 +964,111 @@ class CentralSupervisor:
         }
 
     # -----------------------------------------------------------------------
+    # Node: consolidate_response
+    # -----------------------------------------------------------------------
+    def consolidate_response_node(self, state: SupervisorState) -> SupervisorState:
+        """
+        Phase 4 — Response Consolidation.
+
+        Called after all plan goals are complete. Invokes the LLM once with
+        a synthesis prompt that carries the original user query and all
+        team results, producing a single coherent natural-language response
+        rather than the disconnected per-team paragraphs that naive
+        concatenation would produce.
+
+        Falls back to concatenation if the LLM call fails so the CSR
+        always receives something meaningful.
+        """
+        session_id   = state.get("session_id", "default")
+        messages     = state.get("messages", [])
+        tool_results = state.get("tool_results", {})
+        plan         = state.get("plan") or {}
+
+        # Extract the original user query from the first HumanMessage
+        original_query = ""
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                original_query = msg.content if hasattr(msg, "content") else str(msg)
+                break
+
+        # Build a labelled results block so the LLM knows which goal each
+        # result belongs to.  Map worker names back to their goal descriptions
+        # using the plan's steps for richer context.
+        worker_to_goal: Dict[str, str] = {}
+        for step in plan.get("steps", []):
+            worker = step.get("agent", "")
+            goal_id = step.get("goal_id", "")
+            goal = next(
+                (g for g in plan.get("goals", []) if g.get("id") == goal_id), {}
+            )
+            if worker and goal:
+                worker_to_goal[worker] = goal.get("description", worker)
+
+        results_parts = []
+        for worker_name, result in tool_results.items():
+            if not isinstance(result, dict):
+                continue
+            output = result.get("output", "").strip()
+            if not output:
+                continue
+            goal_desc = worker_to_goal.get(worker_name, worker_name)
+            results_parts.append(f"[{goal_desc}]\n{output}")
+
+        if not results_parts:
+            # No usable results — return a graceful empty response
+            logger.warning(
+                "CentralSupervisor: consolidate_response_node: no tool outputs to consolidate"
+            )
+            return {
+                "messages":       [AIMessage(content="I was unable to retrieve the information needed to answer your question.")],
+                "execution_path": state.get("execution_path", []) + ["consolidate_response"],
+                "next":           "FINISH",
+            }
+
+        results_block = "\n\n".join(results_parts)
+
+        # Build the consolidation prompt
+        consolidation_user = CONSOLIDATION_USER_PROMPT.format(
+            query=original_query,
+            results_block=results_block,
+        )
+
+        logger.info(
+            "CentralSupervisor: consolidating %d team results for session=%s",
+            len(results_parts), session_id,
+        )
+
+        tracer = get_langfuse_tracer()
+        callback_handler = tracer.get_callback_handler() if tracer.enabled else None
+
+        try:
+            from langchain_core.output_parsers import StrOutputParser
+            consolidation_chain = self._llm | StrOutputParser()
+            consolidated = consolidation_chain.invoke(
+                [
+                    SystemMessage(content=CONSOLIDATION_SYSTEM_PROMPT),
+                    HumanMessage(content=consolidation_user),
+                ],
+                config={"callbacks": [callback_handler]} if callback_handler else {},
+            )
+            logger.info(
+                "CentralSupervisor: consolidation complete for session=%s", session_id
+            )
+        except Exception as exc:
+            logger.error(
+                "CentralSupervisor: consolidation LLM failed (falling back to concatenation): %s",
+                exc,
+            )
+            # Graceful fallback — concatenate outputs so CSR still gets an answer
+            consolidated = "\n\n".join(p.split("\n", 1)[-1] for p in results_parts)
+
+        return {
+            "messages":       [AIMessage(content=consolidated)],
+            "execution_path": state.get("execution_path", []) + ["consolidate_response"],
+            "next":           "FINISH",
+        }
+
+    # -----------------------------------------------------------------------
     # Node: error_handler
     # -----------------------------------------------------------------------
     def error_handler_node(self, state: SupervisorState) -> SupervisorState:
@@ -950,6 +1154,9 @@ class CentralSupervisor:
         if next_node == "FINISH":
             return "FINISH"
 
+        if next_node == "consolidate_response":
+            return "consolidate_response"
+
         if next_node == "SKIP":
             # Treat SKIP as a no-op advance — bump the step index and re-enter supervisor
             return "goal_advance"
@@ -1000,10 +1207,11 @@ class CentralSupervisor:
         graph = StateGraph(SupervisorState)
 
         # ── Add nodes ──────────────────────────────────────────────────────
-        graph.add_node("create_plan",   self.create_plan_node)
-        graph.add_node("supervisor",    self.supervisor_node)
-        graph.add_node("goal_advance",  self.goal_advance_node)
-        graph.add_node("error_handler", self.error_handler_node)
+        graph.add_node("create_plan",          self.create_plan_node)
+        graph.add_node("supervisor",           self.supervisor_node)
+        graph.add_node("goal_advance",         self.goal_advance_node)
+        graph.add_node("consolidate_response", self.consolidate_response_node)
+        graph.add_node("error_handler",        self.error_handler_node)
 
         # One delegation node per remote agent
         for agent_name in VALID_REMOTE_AGENTS:
@@ -1013,19 +1221,21 @@ class CentralSupervisor:
         graph.set_entry_point("create_plan")
 
         # ── Fixed edges ────────────────────────────────────────────────────
-        graph.add_edge("create_plan",  "supervisor")
-        graph.add_edge("goal_advance", "supervisor")
-        graph.add_edge("error_handler", END)
+        graph.add_edge("create_plan",          "supervisor")
+        graph.add_edge("goal_advance",         "supervisor")
+        graph.add_edge("consolidate_response", END)
+        graph.add_edge("error_handler",        END)
 
-        # ── Conditional edge: supervisor → agent | goal_advance | FINISH | error ──
+        # ── Conditional edge: supervisor → agent | goal_advance | consolidate | error ──
         graph.add_conditional_edges(
             "supervisor",
             self.router,
             {
                 **{agent: agent for agent in VALID_REMOTE_AGENTS},
-                "goal_advance":  "goal_advance",
-                "error_handler": "error_handler",
-                "FINISH":        END,
+                "goal_advance":         "goal_advance",
+                "consolidate_response": "consolidate_response",
+                "error_handler":        "error_handler",
+                "FINISH":               END,
             },
         )
 
@@ -1040,7 +1250,8 @@ class CentralSupervisor:
                 },
             )
 
-        return graph.compile()
+        from agents.core.context_graph_store import get_context_graph_store
+        return graph.compile(checkpointer=get_context_graph_store())
 
 
 # ---------------------------------------------------------------------------

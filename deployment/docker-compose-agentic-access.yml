@@ -87,6 +87,7 @@ services:
       # ── ClickHouse (DLP scanner audit logging) ──
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "9000"
+      CLICKHOUSE_USER: "langfuse"
     networks:
       - health_insurance_health-insurance-network
     healthcheck:

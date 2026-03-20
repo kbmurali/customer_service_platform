@@ -17,6 +17,12 @@ rule_files:
 
 # Scrape configurations
 scrape_configs:
+  - job_name: 'csip'
+    static_configs:
+      - targets: ['agentic-access-api:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    
   # Prometheus itself
   - job_name: 'prometheus'
     static_configs:

@@ -62,6 +62,32 @@ class ContextGraphManager:
             logger.error(f"Error retrieving session context: {e}")
             return None
     
+    def link_follow_up_session(
+        self,
+        prior_session_id: str,
+        new_session_id: str,
+    ) -> bool:
+        """
+        Create a HAS_FOLLOW_UP relationship between two Session nodes.
+
+        Establishes the conversation chain:
+            Session1 -[:HAS_FOLLOW_UP]-> Session2 -[:HAS_FOLLOW_UP]-> Session3
+
+        Called from request_processor.py after create_session() when
+        prior_session_id is provided.
+        """
+        try:
+            return self.cg_data_access.link_follow_up_session(
+                prior_session_id=prior_session_id,
+                new_session_id=new_session_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Error linking follow-up session %s -> %s: %s",
+                prior_session_id, new_session_id, exc,
+            )
+            return False
+
     def get_conversation_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Get conversation history for a session.

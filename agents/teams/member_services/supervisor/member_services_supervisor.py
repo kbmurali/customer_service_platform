@@ -597,10 +597,6 @@ Return JSON only (no markdown fences, no explanation):
             # EXECUTED_BY is already linked in the routing block above via
             # link_step_to_execution(planId, stepId, executionId).
             _exec_id = state.get("current_execution_id", "")
-            query = (
-                query
-                + "\nexecution_id: " + _exec_id
-            )
 
             # Append results from prior steps so the ReAct agent has upstream
             # data available (e.g. member ID returned by member_lookup).
@@ -629,7 +625,8 @@ Return JSON only (no markdown fences, no explanation):
                 query=query,
                 user_id=state.get("user_id", "unknown"),
                 user_role=state.get("user_role", "unknown"),
-                session_id=state.get("session_id", "default")
+                session_id=state.get("session_id", "default"),
+                execution_id=_exec_id
             )
             
             # Calculate duration

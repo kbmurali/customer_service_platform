@@ -243,6 +243,52 @@ class LangFuseTracer:
         except Exception as e:
             logger.error(f"Failed to trace supervisor routing: {e}")
     
+
+    def get_prompt(self, name: str, label: str = "production") -> str:
+        """
+        Fetch a prompt string from LangFuse by name and label.
+
+        Args:
+            name:  Prompt name as registered in LangFuse
+                   (e.g. 'csip-central-planning-prompt').
+            label: Version label, defaults to 'production'.
+
+        Returns:
+            The prompt text string.
+
+        Raises:
+            Exception if LangFuse is unavailable or the prompt does not exist.
+        """
+        if not self.enabled or self.langfuse is None:
+            raise RuntimeError("LangFuse not enabled — cannot fetch prompt")
+        prompt_obj = self.langfuse.get_prompt(name, label=label)
+        return prompt_obj.prompt
+
+    def get_prompt_or_default(self, name: str, default: str, label: str = "production") -> str:
+        """
+        Fetch a prompt from LangFuse, returning *default* on any failure.
+
+        This is the safe variant for production use: if LangFuse is
+        unreachable, the hardcoded constant is used so the system remains
+        fully operational without tracing.
+
+        Args:
+            name:    Prompt name in LangFuse.
+            default: Fallback string (the hardcoded constant).
+            label:   Version label, defaults to 'production'.
+
+        Returns:
+            The LangFuse prompt text, or *default* if unavailable.
+        """
+        try:
+            return self.get_prompt(name, label=label)
+        except Exception as exc:
+            logger.debug(
+                "LangFuseTracer.get_prompt_or_default: using default for '%s' (%s)",
+                name, exc,
+            )
+            return default
+
     def flush(self):
         """Flush pending traces to LangFuse."""
         if self.enabled and self.langfuse:

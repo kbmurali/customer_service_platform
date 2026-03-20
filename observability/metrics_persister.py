@@ -6,11 +6,18 @@ Periodically reads Prometheus metrics and persists them to Redis for API access
 
 import time
 import logging
+import threading
 import redis
 from prometheus_client import REGISTRY
 from typing import Dict, Any
-import schedule
 import os
+
+# Evaluation pipeline (soft import — missing deps don't crash the persister)
+try:
+    from observability.evaluation_pipeline import run_evaluation_cycle
+    _EVAL_PIPELINE_AVAILABLE = True
+except Exception:
+    _EVAL_PIPELINE_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,6 +69,9 @@ class MetricsPersister:
             
             # Store aggregated totals for common queries
             self._store_aggregated_metrics()
+            self.update_user_token_tallies()
+            if _EVAL_PIPELINE_AVAILABLE:
+                run_evaluation_cycle(redis_client=self.redis_client)
             
             logger.info(f"Persisted {len(metrics_data)} metrics to Redis")
             
@@ -103,6 +113,47 @@ class MetricsPersister:
         except Exception as e:
             logger.error(f"Failed to store aggregated metrics: {e}")
     
+
+    def update_user_token_tallies(self):
+        """
+        Update per-user token usage counters in Redis for budget enforcement.
+
+        Reads session-level token totals from the aggregated metrics already
+        stored in Redis by collect_and_persist(), and writes per-user rolling
+        totals.  Called on the same 30-second schedule as collect_and_persist().
+
+        Note: This method provides soft enforcement with a ~30s grace window.
+        For hard per-request enforcement, the token count must be recorded
+        synchronously inside the RequestProcessor after each LLM call.
+        """
+        try:
+            budget_controller = None
+            try:
+                from agents.core.budget_controller import get_budget_controller
+                budget_controller = get_budget_controller()
+            except Exception:
+                pass
+
+            if budget_controller is None:
+                return  # Budget enforcement disabled
+
+            # Read all session token totals stored by collect_and_persist
+            # Format: metrics:token_usage_total:{user_id} -> count
+            user_token_keys = self.redis_client.keys("metrics:token_usage_total:*")
+            for key in user_token_keys:
+                try:
+                    parts = key.split(":")
+                    if len(parts) >= 4:
+                        user_id = parts[3]
+                        tokens  = int(self.redis_client.get(key) or 0)
+                        if tokens > 0:
+                            budget_controller.record_usage(user_id, tokens)
+                except Exception as inner:
+                    logger.debug("update_user_token_tallies: key=%s error=%s", key, inner)
+
+        except Exception as exc:
+            logger.error("Failed to update user token tallies: %s", exc)
+
     def get_metric(self, metric_name: str, labels: Dict[str, str] = None) -> float:
         """Get a specific metric value from Redis"""
         try:
@@ -136,40 +187,39 @@ class MetricsPersister:
             return {}
 
 
-def run_persister():
-    """Run the metrics persister service"""
-    logger.info("========================================")
-    logger.info("Metrics Persistence Service Starting")
-    logger.info("========================================")
-    
-    # Get Redis configuration from environment
+def start_background_pusher(interval_seconds: int = 30) -> None:
+    """
+    Start the MetricsPersister push loop in a daemon thread.
+
+    Call this once from each service's lifespan startup (Agentic Access API
+    and all five A2A servers).  Each process has its own isolated Prometheus
+    registry; this thread pushes that process's counters and histograms to
+    Redis DB 3 every 30 seconds so the central /metrics endpoint on the
+    Agentic Access API can aggregate and serve them all to Prometheus.
+
+    The thread is a daemon so it terminates automatically when the process
+    exits — no cleanup is required in the lifespan teardown.
+    """
     redis_host = os.getenv("REDIS_HOST", "redis")
     redis_port = int(os.getenv("REDIS_PORT", "6379"))
-    redis_db = int(os.getenv("REDIS_METRICS_DB", "3"))
-    
-    # Initialize persister
+    redis_db   = int(os.getenv("REDIS_METRICS_DB", "3"))
+
     persister = MetricsPersister(redis_host, redis_port, redis_db)
-    
-    # Schedule periodic persistence (every 30 seconds)
-    schedule.every(30).seconds.do(persister.collect_and_persist)
-    
-    logger.info("Metrics persister scheduled to run every 30 seconds")
-    
-    # Run immediately on startup
-    persister.collect_and_persist()
-    
-    # Run scheduler
-    while True:
-        try:
-            schedule.run_pending()
-            time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Metrics persister stopped by user")
-            break
-        except Exception as e:
-            logger.error(f"Error in metrics persister: {e}")
-            time.sleep(5)
+
+    def _loop():
+        # Push immediately on startup so metrics are visible before
+        # the first scrape interval elapses.
+        persister.collect_and_persist()
+        while True:
+            time.sleep(interval_seconds)
+            persister.collect_and_persist()
+
+    thread = threading.Thread(target=_loop, daemon=True, name="metrics-pusher")
+    thread.start()
+    logger.info(
+        "Metrics background pusher started (interval=%ds redis=%s:%s db=%s)",
+        interval_seconds, redis_host, redis_port, redis_db,
+    )
 
 
-if __name__ == "__main__":
-    run_persister()
+

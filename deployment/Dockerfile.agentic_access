@@ -24,6 +24,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
@@ -34,6 +35,22 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     python -m spacy download en_core_web_lg
+
+# ── Guardrails Hub validators ──────────────────────────────────────────────
+ENV GUARDRAILS_NO_METRICS=true \
+    HOME=/root
+
+ARG GUARDRAILS_TOKEN
+ENV HF_HOME=/app/.cache/huggingface
+
+RUN guardrails configure --token "$GUARDRAILS_TOKEN" --disable-metrics --disable-remote-inferencing && \
+    guardrails hub install hub://guardrails/detect_pii --quiet && \
+    guardrails hub install hub://guardrails/toxic_language --quiet && \
+    guardrails hub install hub://tryolabs/restricttotopic --quiet && \
+    python -c "from transformers import pipeline; pipeline('zero-shot-classification', model='facebook/bart-large-mnli')" && \
+    chmod 755 /root && \
+    chmod -R a+rX /root && \
+    chmod -R a+rX /app/.cache
 
 # -----------------------------------------------------------------------------
 # Application source — copied in dependency order so that layer caching is
@@ -56,6 +73,8 @@ COPY llm_providers/ ./llm_providers/
 COPY observability/__init__.py            ./observability/
 COPY observability/langfuse_integration.py ./observability/
 COPY observability/prometheus_metrics.py   ./observability/
+COPY observability/metrics_persister.py ./observability/
+COPY observability/evaluation_pipeline.py ./observability/
 
 # Agents: core shared modules (state, error handling, context graph, A2A)
 COPY agents/__init__.py    ./agents/

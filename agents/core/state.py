@@ -69,6 +69,13 @@ class SupervisorState(AgentState, total=False):
     # Empty string for the central supervisor itself.
     central_step_id: str
 
+    # ── Session continuity ───────────────────────────────────────────────
+    # prior_session_id: optional session_id from a previous login session.
+    # When provided, the team supervisor fetches conversation history from
+    # this session rather than the current one, enabling cross-session
+    # context continuity without any additional infrastructure.
+    prior_session_id: Optional[str]          # Cross-session continuity
+
     # ── Error handling ────────────────────────────────────────────────────
     error: Optional[str]                 # Current error message
     error_count: int                     # Total errors in this workflow

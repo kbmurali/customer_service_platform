@@ -43,7 +43,7 @@ except ImportError:
     register_validator = None  # type: ignore
     PassResult = None  # type: ignore
     FailResult = None  # type: ignore
-    logging.warning("guardrails-ai not available — output validation will use fallback mode")
+    logging.getLogger(__name__).info("guardrails-ai not available — output validation will use fallback mode")
 
     # Lightweight stand-in so the rest of the module works without guardrails
     @_dataclass
@@ -61,7 +61,7 @@ except (ImportError, AttributeError):
     DetectPII = None  # type: ignore
     ToxicLanguage = None  # type: ignore
     RestrictToTopic = None  # type: ignore
-    logging.warning("Guardrails hub validators not installed — using Presidio-only validation")
+    logging.getLogger(__name__).info("Guardrails hub validators not installed — using Presidio-only validation")
 
 from security.presidio_healthcare_recognizers import (
     get_healthcare_analyzer,
@@ -192,7 +192,7 @@ if GUARDRAILS_AVAILABLE and register_validator is not None:
         if "hipaa_compliance_presidio" not in validators_registry:
             validators_registry["hipaa_compliance_presidio"] = HIPAAComplianceValidator
     except Exception as _reg_exc:
-        logging.warning("Could not register HIPAAComplianceValidator: %s", _reg_exc)
+        logging.getLogger(__name__).warning("Could not register HIPAAComplianceValidator: %s", _reg_exc)
 
 
 # ============================================================================
@@ -247,8 +247,14 @@ class GuardrailsOutputValidator:
         DetectPII, ToxicLanguage, and RestrictToTopic are all None.
         Each guard is built from only the validators that are actually available,
         falling back to HIPAAComplianceValidator (Presidio-only) at minimum.
-        Guard().use_many() requires at least one validator, so we always include
-        HIPAAComplianceValidator which has no hub dependency.
+
+        A single DetectPII instance is shared across all guards to avoid
+        spawning multiple Presidio AnalyzerEngines (each loads en_core_web_lg).
+        Custom entity types that have no registered Presidio recognizer
+        (MEMBER_ID, POLICY_NUMBER, CLAIM_NUMBER, PA_NUMBER) are intentionally
+        excluded from DetectPII — they are handled exclusively by
+        HIPAAComplianceValidator which uses the shared healthcare analyzer
+        singleton that includes the NPINumberRecognizer.
         """
         guards: Dict[str, Guard] = {}
 
@@ -264,62 +270,51 @@ class GuardrailsOutputValidator:
                 return None  # type: ignore
             return Guard().use_many(*available)
 
+        # ── Shared validators — instantiated once ────────────────────────
+        # DetectPII is created once and reused across all four guard profiles
+        # to avoid loading en_core_web_lg multiple times. Only entities with
+        # registered Presidio recognizers are included here.
+        _shared_detect_pii = _create_presidio_detect_pii(
+            pii_entities=[
+                "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN", "CREDIT_CARD",
+                "US_DRIVER_LICENSE", "US_PASSPORT", "MEDICAL_LICENSE",
+            ],
+            on_fail="fix",
+        )
+        _toxic    = ToxicLanguage(threshold=0.7, on_fail="exception") if HUB_VALIDATORS_AVAILABLE and ToxicLanguage else None
+        _restrict = RestrictToTopic(
+            valid_topics=[
+                "health insurance", "claims", "benefits", "coverage",
+                "prior authorization", "providers", "eligibility",
+                "deductible", "copay", "coinsurance", "premium",
+                "explanation of benefits", "appeal", "grievance",
+            ],
+            on_fail="reask",
+        ) if HUB_VALIDATORS_AVAILABLE and RestrictToTopic else None
+
         # ── Standard output guard (used by default) ──────────────────────
         guards["standard"] = _build_guard(
-            _create_presidio_detect_pii(
-                pii_entities=[
-                    "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN", "CREDIT_CARD",
-                    "MEMBER_ID", "POLICY_NUMBER", "CLAIM_NUMBER", "PA_NUMBER",
-                ],
-                on_fail="fix",
-            ),
-            ToxicLanguage(threshold=0.7, on_fail="exception") if HUB_VALIDATORS_AVAILABLE and ToxicLanguage else None,
-            RestrictToTopic(
-                valid_topics=[
-                    "health insurance", "claims", "benefits", "coverage",
-                    "prior authorization", "providers", "eligibility",
-                    "deductible", "copay", "coinsurance", "premium",
-                    "explanation of benefits", "appeal", "grievance",
-                ],
-                on_fail="reask",
-            ) if HUB_VALIDATORS_AVAILABLE and RestrictToTopic else None,
+            _shared_detect_pii,
+            _toxic,
+            _restrict,
             HIPAAComplianceValidator(on_fail="fix"),
         )
 
         # ── Member services guard (stricter PII controls) ────────────────
         guards["member_services"] = _build_guard(
-            _create_presidio_detect_pii(
-                pii_entities=[
-                    "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN", "CREDIT_CARD",
-                    "US_DRIVER_LICENSE", "US_PASSPORT", "LOCATION",
-                    "MEMBER_ID", "POLICY_NUMBER",
-                ],
-                on_fail="fix",
-            ),
+            _shared_detect_pii,
             HIPAAComplianceValidator(on_fail="fix"),
         )
 
         # ── Claims guard ─────────────────────────────────────────────────
         guards["claims"] = _build_guard(
-            _create_presidio_detect_pii(
-                pii_entities=[
-                    "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN", "CREDIT_CARD",
-                    "CLAIM_NUMBER", "MEMBER_ID",
-                ],
-                on_fail="fix",
-            ),
+            _shared_detect_pii,
             HIPAAComplianceValidator(on_fail="fix"),
         )
 
         # ── Prior authorization guard ────────────────────────────────────
         guards["prior_authorization"] = _build_guard(
-            _create_presidio_detect_pii(
-                pii_entities=[
-                    "EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN",
-                    "MEDICAL_LICENSE", "PA_NUMBER", "MEMBER_ID",
-                ],
-                on_fail="fix",
-            ),
+            _shared_detect_pii,
             HIPAAComplianceValidator(on_fail="fix"),
         )
 

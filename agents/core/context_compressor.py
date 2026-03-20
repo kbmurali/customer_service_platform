@@ -177,7 +177,6 @@ class LLMLinguaEngine:
             self._compressor = PromptCompressor(
                 model_name=self.config.MODEL_NAME,
                 device_map=self.config.DEVICE_MAP,
-                use_llmlingua2=True,       # Use LLMLingua-2 for better quality
             )
             self._available = True
             logger.info(
@@ -235,8 +234,8 @@ class LLMLinguaEngine:
 
         tokens_after = count_tokens(compressed)
         reduction = (1 - tokens_after / max(tokens_before, 1)) * 100
-        logger.debug(
-            "Compression: %d → %d tokens (%.1f%% reduction)",
+        logger.info(
+            "LLMLinguaEngine.compress: %d → %d tokens (%.1f%% reduction)",
             tokens_before, tokens_after, reduction,
         )
         return compressed
@@ -307,8 +306,9 @@ class LLMLinguaEngine:
         if not compressed.endswith("."):
             compressed += "."
 
-        logger.debug(
-            "Extractive fallback: %d → %d sentences", len(sentences), len(kept),
+        logger.info(
+            "LLMLinguaEngine._extractive_fallback: %d sentences → %d sentences",
+            len(sentences), len(kept),
         )
         return compressed
 
@@ -409,6 +409,13 @@ class ConversationHistoryCompressor:
             msg_class = role_map.get(role, HumanMessage)
             result.append(msg_class(content=content))
 
+        total_before = sum(count_tokens(m.get("content", "")) for m in messages)
+        total_after  = sum(count_tokens(m.content) for m in result if hasattr(m, "content"))
+        logger.info(
+            "ConversationHistoryCompressor.compress_history: %d → %d tokens "
+            "(%d msgs in, %d msgs out)",
+            total_before, total_after, len(messages), len(result),
+        )
         return result
 
     def _compress_older_messages(self, messages: List[Dict[str, Any]]) -> str:
@@ -513,10 +520,18 @@ class SemanticContextCompressor:
 
     def compress_text(self, text: str) -> str:
         """Compress a single text string (convenience method)."""
-        return self._engine.compress(
+        tokens_before = count_tokens(text)
+        compressed    = self._engine.compress(
             text,
             rate=self.config.SEMANTIC_RATE,
         )
+        tokens_after = count_tokens(compressed)
+        logger.info(
+            "SemanticContextCompressor.compress_text: %d → %d tokens (%.1f%% reduction)",
+            tokens_before, tokens_after,
+            (1 - tokens_after / max(tokens_before, 1)) * 100,
+        )
+        return compressed
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +590,18 @@ class CrossAgentCompressor:
                 prior_results,
             )
 
+        _before = (
+            count_tokens(str(plan or "")) +
+            count_tokens(conversation_summary) +
+            count_tokens(str(prior_results or ""))
+        )
+        _after = count_tokens(str(compressed))
+        logger.info(
+            "CrossAgentCompressor.compress_delegation_context: "
+            "%d → %d tokens (%.1f%% reduction)",
+            _before, _after,
+            (1 - _after / max(_before, 1)) * 100,
+        )
         return compressed
 
     def _compress_plan(self, plan: Dict[str, Any]) -> Dict[str, Any]:

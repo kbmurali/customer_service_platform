@@ -25,6 +25,7 @@ pinecone-client==6.0.0
 
 # Token Compression
 llmlingua==0.2.2
+transformers==4.35.2
 
 # MySQL
 pymysql==1.1.1

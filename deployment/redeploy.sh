@@ -1,3 +1,5 @@
+source .env
+
 docker stack rm health_insurance
 
 sleep 10
@@ -10,7 +12,7 @@ docker rmi csip/agentic-access-api:latest
 
 sleep 1
 
-docker build -f Dockerfile.agentic_access -t csip/agentic-access-api:latest ..
+docker build --build-arg GUARDRAILS_TOKEN -f Dockerfile.agentic_access -t csip/agentic-access-api:latest ..
 
 sleep 1
 
@@ -165,6 +167,7 @@ docker stack deploy -c docker-compose-agentic-access.yml health_insurance
 sleep 1
 
 for i in {1..10}; do
+  clear
   docker stack services health_insurance
   sleep 3
 done

@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 
 import nh3
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
 
 from agents.central_supervisor import get_central_supervisor_graph
 from agents.core.context_graph import get_context_graph_manager
@@ -52,12 +53,14 @@ from observability.prometheus_metrics import (
     output_validation_latency,
     request_processing_latency,
     requests_blocked,
+    successful_resolutions,
     track_audit_log,
     track_authorization_denial,
     track_input_validation,
     track_memory_security,
     track_output_validation,
     track_rate_limit_exceeded,
+    user_queries,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,6 +115,7 @@ def process_user_request(
     user_role: str,
     session_id: str,
     member_id: Optional[str] = None,
+    prior_session_id: Optional[str] = None,
 ) -> ProcessResult:
     """
     Process a user request through the full security and agent pipeline.
@@ -126,6 +130,12 @@ def process_user_request(
     Returns:
         ProcessResult with the validated response and execution metadata.
     """
+    # Count every inbound query regardless of outcome
+    user_queries.labels(
+        user_role=user_role or "unknown",
+        query_type="agent_query",
+    ).inc()
+
     audit_logger.log_action(
         user_id=user_id,
         action="REQUEST_RECEIVED",
@@ -246,6 +256,31 @@ def process_user_request(
                 ))
 
             # ----------------------------------------------------------------
+            # 3.5 TOKEN BUDGET ENFORCEMENT
+            # ----------------------------------------------------------------
+            try:
+                from agents.core.budget_controller import get_budget_controller, BudgetExceededError
+                _budget_ctrl = get_budget_controller()
+                if _budget_ctrl is not None:
+                    _budget_ctrl.check_budget(user_id=user_id, user_role=user_role or "")
+                    logger.info("[%s] Control 3.5 passed (budget ok)", session_id)
+            except BudgetExceededError as _be:
+                logger.warning("[%s] Control 3.5: budget exceeded — %s", session_id, _be)
+                return ProcessResult(response=_block(
+                    user_id=user_id,
+                    session_id=session_id,
+                    action="TOKEN_BUDGET_EXCEEDED",
+                    control="token_budget",
+                    reason=str(_be),
+                    response="Your daily token usage limit has been reached. Please try again tomorrow or contact your administrator.",
+                    log_level="warning",
+                    extra={"used": _be.used, "limit": _be.limit},
+                ))
+            except Exception as _be:
+                # Budget enforcement errors are non-fatal — log and continue
+                logger.warning("[%s] Control 3.5: budget check error (non-fatal): %s", session_id, _be)
+
+            # ----------------------------------------------------------------
             # 4. INPUT SANITIZATION  (nh3 HTML stripping)
             # ----------------------------------------------------------------
             logger.info("[%s] Control 4: input sanitization", session_id)
@@ -304,6 +339,7 @@ def process_user_request(
                 "error_count":        0,
                 "error_history":      [],
                 "retry_count":        0,
+                "prior_session_id":   prior_session_id or "",
             }
 
             # ── Create Session node in the Context Graph ──────────────────
@@ -325,8 +361,31 @@ def process_user_request(
                     session_id, _cg_exc,
                 )
 
-            graph  = get_central_supervisor_graph()
-            result = graph.invoke(initial_state)
+            # Link the new session to the prior session so the CG captures
+            # the conversation chain:
+            #   Session1 -[:HAS_FOLLOW_UP]-> Session2 -[:HAS_FOLLOW_UP]-> Session3
+            if prior_session_id:
+                try:
+                    get_context_graph_manager().link_follow_up_session(
+                        prior_session_id=prior_session_id,
+                        new_session_id=session_id,
+                    )
+                except Exception as _link_exc:
+                    logger.warning(
+                        "[%s] CG link_follow_up_session failed (non-fatal): %s",
+                        session_id, _link_exc,
+                    )
+
+            graph = get_central_supervisor_graph()
+
+            # thread_id = current session_id always.
+            # ContextGraphStore.get_tuple() reconstructs prior conversation
+            # history by traversing the HAS_FOLLOW_UP chain via chainDepth
+            # and rootSessionId properties — no compound IDs needed.
+            _graph_config = RunnableConfig(
+                configurable={"thread_id": session_id}
+            )
+            result = graph.invoke(initial_state, config=_graph_config)
 
             # Extract the final agent response from the last AIMessage
             raw_response = _extract_response(result)
@@ -403,6 +462,8 @@ def process_user_request(
                 latency=time.time() - t0,
             )
 
+            # ----------------------------------------------------------------
+            successful_resolutions.labels(query_type="agent_query").inc()
             logger.info("[%s] Request complete", session_id)
             return ProcessResult(
                 response=final_response,

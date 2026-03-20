@@ -55,14 +55,14 @@ class SearchMedicalCodesWorker:
             "Search using the natural-language description and code type provided in the request. "
             "Valid code_type values are: 'procedure', 'diagnosis', or 'both'. "
             "You must also use user ID, user role, and session ID to provide accurate details. "
-            "The query may include a line of the form 'execution_id: <value>'. "
-            "If present, extract that value and pass it as the execution_id "
-            "argument when calling the tool so the Context Graph can trace this execution."
+            "The context includes an 'Execution ID' value. "
+            "Pass it as the execution_id argument when calling the tool "
+            "so the Context Graph can trace this execution."
         )
 
         self.agent = create_react_agent(llm, [self.tool], prompt=prompt)
 
-    def execute(self, query: str, user_id: str, user_role: str, session_id: str) -> Dict[str, Any]:
+    def execute(self, query: str, user_id: str, user_role: str, session_id: str, execution_id: str = "") -> Dict[str, Any]:
         """Execute SearchMedicalCodesWorker task with error handling and retry logic."""
         settings: Settings = get_settings()
 
@@ -87,17 +87,6 @@ class SearchMedicalCodesWorker:
                         session_id=session_id
                     )
 
-                # Extract execution_id appended by the supervisor.
-                # Arrives as a trailing line: "\nexecution_id: <val>".
-                _exec_id = ""
-                _query_lines = clean_query.splitlines()
-                _clean_lines = []
-                for _line in _query_lines:
-                    if _line.startswith("execution_id: "):
-                        _exec_id = _line[len("execution_id: "):].strip()
-                    else:
-                        _clean_lines.append(_line)
-                _bare_query = "\n".join(_clean_lines)
 
                 # search_medical_codes takes query + code_type.
                 # Both are expected to be present in the query and extracted by the LLM.
@@ -105,8 +94,8 @@ class SearchMedicalCodesWorker:
                     f"User Role: {user_role}\n"
                     f"User ID: {user_id}\n"
                     f"Session ID: {session_id}\n"
-                    f"Execution ID: {_exec_id}\n"
-                    f"Query: {_bare_query}"
+                    f"Execution ID: {execution_id}\n"
+                    f"Query: {clean_query}"
                 )
 
                 agent_inputs = {"messages": [("user", contextualized_query)]}

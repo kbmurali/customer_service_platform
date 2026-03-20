@@ -250,3 +250,34 @@ def get_mcp_agent_config(agent_name: str) -> dict:
         agent_cfg["client_cert"] = None
     
     return agent_cfg
+    # ── Token Budget Enforcement ──────────────────────────────────────────
+    # Set to True to enforce per-user daily token spend limits.
+    # Requires the token_budget_limits MySQL table to be seeded.
+    TOKEN_BUDGET_ENFORCEMENT_ENABLED: bool = (
+        os.getenv("TOKEN_BUDGET_ENFORCEMENT_ENABLED", "false").strip().lower() == "true"
+    )
+    TOKEN_BUDGET_DEFAULT_DAILY_LIMIT: int = int(
+        os.getenv("TOKEN_BUDGET_DEFAULT_DAILY_LIMIT", "100000")
+    )
+
+    # ── LLM Provider Failover ─────────────────────────────────────────────
+    # Comma-separated priority list, e.g. "openai,anthropic,bedrock".
+    # The factory tries each in order at startup; the circuit breaker
+    # switches at runtime when a provider's failure rate exceeds the
+    # threshold.  Defaults to single-provider (no failover).
+    LLM_PROVIDER_FAILBACK_CHAIN: str = os.getenv("LLM_PROVIDER_FALLBACK_CHAIN", "")
+    LLM_CB_FAILURE_THRESHOLD: int = int(os.getenv("LLM_CB_FAILURE_THRESHOLD", "5"))
+    LLM_CB_OPEN_DURATION_SECONDS: int = int(os.getenv("LLM_CB_OPEN_DURATION_SECONDS", "120"))
+
+    # ── Prompt Versioning ────────────────────────────────────────────────
+    # When True, prompts are fetched from LangFuse at runtime.
+    # When False (default), hardcoded constants are used.
+    LANGFUSE_PROMPT_VERSIONING_ENABLED: bool = (
+        os.getenv("LANGFUSE_PROMPT_VERSIONING_ENABLED", "false").strip().lower() == "true"
+    )
+    LANGFUSE_PROMPT_LABEL: str = os.getenv("LANGFUSE_PROMPT_LABEL", "production")
+
+    # ── Tool Output Injection Mitigation ─────────────────────────────────
+    TOOL_OUTPUT_INJECTION_SCAN_ENABLED: bool = (
+        os.getenv("TOOL_OUTPUT_INJECTION_SCAN_ENABLED", "true").strip().lower() == "true"
+    )

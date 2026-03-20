@@ -30,6 +30,8 @@ COPY llm_providers/ ./llm_providers/
 COPY observability/__init__.py ./observability/
 COPY observability/langfuse_integration.py ./observability/
 COPY observability/prometheus_metrics.py ./observability/
+COPY observability/metrics_persister.py ./observability/
+COPY observability/evaluation_pipeline.py ./observability/
 
 # Copy agents/core (state, error_handling, context_graph, etc.)
 COPY agents/__init__.py ./agents/

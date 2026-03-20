@@ -298,6 +298,71 @@ CREATE TABLE IF NOT EXISTS langfuse_traces (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+-- =============================================================================
+-- PRODUCTION ENGINEERING TABLES
+-- Added to support: feedback capture, DPO dataset, token budget enforcement
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- agent_feedback
+-- Stores CSR quality ratings submitted via POST /api/feedback.
+-- Each row links a session to a LangFuse trace and carries a rating
+-- plus an optional free-text correction.
+--
+-- rating values:
+--   'correct'   — response was accurate and complete
+--   'incorrect' — response was wrong
+--   'partial'   — response was partially correct or incomplete
+--
+-- This table is the source for:
+--   - evaluation_pipeline.get_positive_feedback_rate()
+--   - DPO training dataset construction (correct vs incorrect pairs)
+--   - LangFuse score() calls that link ratings to trace records
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_feedback (
+    feedback_id   VARCHAR(36)                            NOT NULL,
+    session_id    VARCHAR(36)                            NOT NULL,
+    trace_id      VARCHAR(36)                            NOT NULL DEFAULT '',
+    rating        ENUM('correct','incorrect','partial')  NOT NULL,
+    correction    TEXT                                   DEFAULT NULL,
+    user_id       VARCHAR(64)                            NOT NULL DEFAULT '',
+    created_at    DATETIME                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_agent_feedback PRIMARY KEY (feedback_id),
+    INDEX idx_fb_session (session_id),
+    INDEX idx_fb_rating  (rating),
+    INDEX idx_fb_user    (user_id),
+    INDEX idx_fb_created (created_at),
+    INDEX idx_fb_trace   (trace_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='CSR quality ratings for agent responses — feeds evaluation pipeline and DPO dataset';
+
+-- -----------------------------------------------------------------------------
+-- token_budget_limits
+-- Per-role daily token spend limits enforced by TokenBudgetController
+-- (Control 3.5 in the RequestProcessor).
+--
+-- The controller reads this table to determine the daily limit for each
+-- user_role value.  It falls back to TOKEN_BUDGET_DEFAULT_DAILY_LIMIT
+-- from settings if a role is not present in this table.
+--
+-- daily_limit is in tokens (not cost).  At gpt-4o-mini pricing (~$0.15/1M
+-- input tokens) a limit of 100,000 tokens corresponds to approximately
+-- $0.015 per user per day.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS token_budget_limits (
+    role_name    VARCHAR(64) NOT NULL,
+    daily_limit  INT         NOT NULL DEFAULT 100000,
+    updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP
+                             ON UPDATE CURRENT_TIMESTAMP,
+    updated_by   VARCHAR(64) DEFAULT NULL,   -- user_id who last changed the limit
+    notes        VARCHAR(255) DEFAULT NULL,
+    CONSTRAINT pk_token_budget PRIMARY KEY (role_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Daily token spend limits per role — read by TokenBudgetController at Control 3.5';
+
+
+
 -- ============================================================
 -- SEED DATA
 -- ============================================================
@@ -434,6 +499,20 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     (UUID(), 'CSR_TIER2', 'approve_prior_auth',       TRUE,  10),
     (UUID(), 'CSR_TIER2', 'deny_prior_auth',          TRUE,  10),
     (UUID(), 'CSR_TIER2', 'update_member_info',       TRUE,  10),
+
+    -- -----------------------------------------------------------------------------
+    -- Token budget limits — one row per role
+    -- Adjust daily_limit values to match your operational cost targets.
+    -- Rules of thumb at gpt-4o-mini pricing:
+    --   100,000 tokens  ≈ $0.015/user/day
+    --   500,000 tokens  ≈ $0.075/user/day
+    --   1,000,000 tokens ≈ $0.150/user/day
+    -- -----------------------------------------------------------------------------
+    INSERT IGNORE INTO token_budget_limits (role_name, daily_limit, notes) VALUES
+        ('CSR_READONLY',        100000,  'Standard read-only CSR — approx 40-50 queries/day'),
+        ('CSR_TIER1',           150000,  'Read/Limited Writes'),
+        ('CSR_TIER2',           200000,  'Read/write CSR — more complex multi-step queries'),
+        ('CSR_SUPERVISOR',      200000,  'Supervisor — oversight queries + escalation handling');
 
     -- -------------------------------------------------------
     -- CSR_SUPERVISOR: All tools + highest rate limits

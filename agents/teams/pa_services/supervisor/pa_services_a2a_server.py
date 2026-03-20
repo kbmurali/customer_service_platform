@@ -36,6 +36,7 @@ from agents.teams.pa_services.supervisor.pa_services_supervisor import get_pa_se
 from agents.teams.pa_services.supervisor.tool_schemas import build_pa_schema_registry
 from agents.teams.pa_services.pa_services_a2a_agent_card import build_pa_services_agent_card
 from observability.prometheus_metrics import track_mcp_encryption_event
+from observability.metrics_persister import start_background_pusher
 from observability.langfuse_integration import get_langfuse_tracer
 from databases.context_graph_data_access import get_cg_data_access
 
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
     _get_secure_bus()   # warms SecureMessageBus singleton
     _get_graph()        # triggers PAServicesSupervisor.__init__ → workers → MCP client
     _get_agent_card()   # warms agent card singleton
+    start_background_pusher()
     logger.info("A2A server startup complete — ready to accept requests.")
     yield
     # Nothing to clean up on shutdown

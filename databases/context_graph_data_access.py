@@ -115,44 +115,60 @@ class ContextGraphDataAccess:
             logger.error(f"Error closing session {session_id}: {e}")
             return False
     
-    # ==================== Conversation History ====================
+    def link_follow_up_session(
+        self,
+        prior_session_id: str,
+        new_session_id: str,
+    ) -> bool:
+        """
+        Create a HAS_FOLLOW_UP relationship between two Session nodes.
+
+        Establishes the conversation chain:
+            Session1 -[:HAS_FOLLOW_UP]-> Session2 -[:HAS_FOLLOW_UP]-> Session3
+
+        Also sets two navigation properties on the new session node:
+            chainDepth    — zero-indexed depth in the chain (Session1=0, Session2=1, ...)
+            rootSessionId — UUID of the chain root, enabling O(1) root lookup
+
+        These properties enable efficient batched retrieval of conversation
+        history without full graph traversal.
+
+        Args:
+            prior_session_id: Session ID of the session being followed up
+            new_session_id:   Session ID of the new follow-up session
+
+        Returns:
+            True if the relationship was created successfully
+        """
+        cypher = """
+        MATCH (s1:Session {sessionId: $priorSessionId})
+        MATCH (s2:Session {sessionId: $newSessionId})
+        MERGE (s1)-[:HAS_FOLLOW_UP]->(s2)
+        SET s2.chainDepth    = coalesce(s1.chainDepth, 0) + 1,
+            s2.rootSessionId = coalesce(s1.rootSessionId, s1.sessionId)
+        RETURN s2.sessionId AS sessionId
+        """
+        try:
+            result = self.conn.execute_query(
+                cypher,
+                {
+                    "priorSessionId": prior_session_id,
+                    "newSessionId":   new_session_id,
+                },
+            )
+            return len(result) > 0
+        except Exception as exc:
+            logger.error(
+                "Error linking follow-up session %s -> %s: %s",
+                prior_session_id, new_session_id, exc,
+            )
+            return False
 
     def get_conversation_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Retrieve routing history for a session from AgentExecution.routingNote.
 
-        Routing decisions are stored directly on the AgentExecution that produced
-        them, eliminating separate Message nodes and relationships.
-
-        Uses a UNION of two mutually exclusive traversal paths:
-
-        Branch 1 — Direct A2A invocation:
-            Session -[HAS_EXECUTION]-> AE(a2a_client)
-                    -[CALLED_AGENT]->  AE(a2a_server)
-                    -[HAS_PLAN]->      TeamPlan -> Goal -> Step
-                    -[EXECUTED_BY]->   AE(worker, routingNote)
-
-        Branch 2 — Agentic flow (via central supervisor):
-            Session -[HAS_EXECUTION]-> AE(planner, agentType=supervisor)
-                    -[HAS_PLAN]->      CentralPlan -> Goal -> Step
-                    -[EXECUTED_BY]->   AE(routing)
-                    -[CALLED_AGENT]->  AE(a2a_client)
-                    -[CALLED_AGENT]->  AE(a2a_server)
-                    -[HAS_PLAN]->      TeamPlan -> Goal -> Step
-                    -[EXECUTED_BY]->   AE(worker, routingNote)
-
-        The two branches are mutually exclusive:
-          - Direct flow:   Session→AE(agentType=a2a_client)  → Branch 1 fires, Branch 2 silent
-          - Agentic flow:  Session→AE(agentType=supervisor)  → Branch 2 fires, Branch 1 silent
-        No duplicates are possible. Both single-step and multi-step sessions
-        are handled correctly in both flows.
-
-        Args:
-            session_id: Session ID
-            limit:      Maximum number of entries to return
-
-        Returns:
-            List of dicts with keys: role, content, timestamp
+        Returns list of dicts with keys: role, content, timestamp
         """
         query = """
         MATCH (:Session {sessionId: $sessionId})-[:HAS_EXECUTION]->
@@ -191,7 +207,7 @@ class ContextGraphDataAccess:
             logger.error(f"Error retrieving conversation history for session {session_id}: {e}")
             return []
 
-    # ==================== Agent Execution Operations ====================
+        # ==================== Agent Execution Operations ====================
     
     def track_agent_execution(self,
                              session_id: str,

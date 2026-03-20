@@ -25,7 +25,11 @@ import redis
 
 from config.settings import get_settings, Settings
 
-from security.presidio_healthcare_recognizers import get_healthcare_recognizers
+from security.presidio_healthcare_recognizers import (
+    get_healthcare_recognizers,
+    get_healthcare_analyzer,
+    ALL_ENTITIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,23 +78,27 @@ class PresidioMemorySecurity:
     
     def __init__(self, redis_client: Optional[redis.Redis] = None):
         """Initialize Presidio engines and custom recognizers."""
-        self.analyzer = AnalyzerEngine()
+        # Reuse the shared AnalyzerEngine singleton from presidio_healthcare_recognizers
+        # which already has all custom healthcare recognizers registered.
+        # This avoids loading en_core_web_lg twice per request and eliminates
+        # warnings about entities with no registered recognizer.
+        self.analyzer = get_healthcare_analyzer()
         self.anonymizer = AnonymizerEngine()
         
-        # Add custom healthcare recognizers
-        self._add_custom_recognizers()
+        # Custom recognizers already registered in the shared analyzer — skip
+        # self._add_custom_recognizers()
         
         # Initialize vault for reversible anonymization
         self.redis_client = redis_client or self._get_redis_client()
         self.encryption_key = self._get_encryption_key()
         self.cipher = Fernet(self.encryption_key)
         
-        # Define entities to detect
-        self.pii_entities = [
-            "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "SSN", "CREDIT_CARD",
-            "US_DRIVER_LICENSE", "US_PASSPORT", "LOCATION",
-            "MEDICAL_LICENSE", "MEMBER_ID", "POLICY_NUMBER", "CLAIM_NUMBER", "PA_NUMBER"
-        ]
+        # Use the canonical entity list from presidio_healthcare_recognizers.
+        # ALL_ENTITIES is built dynamically — it contains only STANDARD_PII_ENTITIES
+        # plus whichever healthcare entities have a registered recognizer based on
+        # the SCRUB_OUTPUT_* settings flags. This eliminates Presidio warnings about
+        # entity types that have no corresponding recognizer in the registry.
+        self.pii_entities = list(ALL_ENTITIES)
         
         logger.info("Presidio Memory Security initialized")
     
@@ -192,7 +200,7 @@ class PresidioMemorySecurity:
         """Define how each entity type should be anonymized."""
         return {
             "PERSON": OperatorConfig("hash", {"hash_type": "sha256"}),
-            "SSN": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 11, "from_end": False}),
+            "US_SSN": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 11, "from_end": False}),
             "MEMBER_ID": OperatorConfig("encrypt", {"key": vault_id[:32]}),
             "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "<EMAIL>"}),
             "PHONE_NUMBER": OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 7, "from_end": True}),

@@ -508,7 +508,7 @@ def track_input_validation(
                 user_role=user_role
             ).inc()
     
-    if latency:
+    if latency is not None:
         input_validation_latency.observe(latency)
 
 
@@ -534,7 +534,7 @@ def track_memory_security(
                 phi_type=entity_type
             ).inc(count)
     
-    if latency:
+    if latency is not None:
         memory_security_latency.observe(latency)
 
 
@@ -577,7 +577,7 @@ def track_output_validation(
                 detection_method=result.get("detection_method", "unknown")
             ).inc()
     
-    if latency:
+    if latency is not None:
         output_validation_latency.observe(latency)
 
 
@@ -734,7 +734,7 @@ def track_audit_log(
         status=status
     ).inc()
     
-    if latency:
+    if latency is not None:
         audit_log_write_latency.observe(latency)
 
 
