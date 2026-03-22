@@ -14,6 +14,7 @@ Control 4: Memory & Context Security
 import hashlib
 import json
 import logging
+import re
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timezone
 from cryptography.fernet import Fernet
@@ -32,6 +33,53 @@ from security.presidio_healthcare_recognizers import (
 )
 
 logger = logging.getLogger(__name__)
+
+# UUID pattern — used to identify UUID spans in text so that Presidio
+# results overlapping with UUIDs can be filtered out. Presidio's NLP model
+# (en_core_web_lg) detects UUID segments like "c149" as LOCATION entities.
+# The allow_list approach doesn't work because allow_list matches the exact
+# entity text ("c149") against full UUIDs — they never match. Instead, we
+# post-filter: after analyze() returns, remove any result whose character
+# span overlaps with a UUID position in the text.
+_UUID_RE = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+
+
+def _filter_uuid_overlaps(results, text: str):
+    """
+    Remove Presidio analyzer results whose spans overlap with UUID positions.
+
+    Presidio's en_core_web_lg model detects hex segments inside UUIDs as
+    LOCATION or PERSON entities (e.g. "c149" in 6fffc059-c149-4c0f-...).
+    This corrupts system identifiers in tool output. Post-filtering is
+    necessary because Presidio's allow_list only matches exact entity text
+    against the list — it cannot match a substring ("c149") against a full
+    UUID string.
+
+    Args:
+        results: List of RecognizerResult from analyzer.analyze()
+        text: The original text that was analyzed
+
+    Returns:
+        Filtered list with UUID-overlapping results removed
+    """
+    uuid_spans = [(m.start(), m.end()) for m in _UUID_RE.finditer(text)]
+    if not uuid_spans:
+        return results
+
+    filtered = []
+    for r in results:
+        overlaps = any(
+            r.start < uuid_end and r.end > uuid_start
+            for uuid_start, uuid_end in uuid_spans
+        )
+        if not overlaps:
+            filtered.append(r)
+        else:
+            logger.debug(
+                "Filtered out %s entity '%s' at [%d:%d] — overlaps with UUID",
+                r.entity_type, text[r.start:r.end], r.start, r.end,
+            )
+    return filtered
 
 settings: Settings = get_settings()
 
@@ -157,12 +205,13 @@ class PresidioMemorySecurity:
             - vault_id: Unique identifier for vault entry
             - entities_found: Dict mapping entity_type to count
         """
-        # Analyze for PII/PHI
+        # Analyze for PII/PHI, then filter out false positives on UUID spans
         results = self.analyzer.analyze(
             text=text,
             language='en',
-            entities=self.pii_entities
+            entities=self.pii_entities,
         )
+        results = _filter_uuid_overlaps(results, text)
         
         # Count entities by type
         entities_found = {}
@@ -268,8 +317,9 @@ class PresidioMemorySecurity:
         results = self.analyzer.analyze(
             text=text,
             language='en',
-            entities=self.pii_entities
+            entities=self.pii_entities,
         )
+        results = _filter_uuid_overlaps(results, text)
         
         entities = [
             {
@@ -353,8 +403,9 @@ class PresidioMemorySecurity:
         results = self.analyzer.analyze(
             text=text,
             language='en',
-            entities=self.pii_entities
+            entities=self.pii_entities,
         )
+        results = _filter_uuid_overlaps(results, text)
         
         if not results:
             return text

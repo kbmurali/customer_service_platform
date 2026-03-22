@@ -38,6 +38,7 @@ class ClaimServicesMCPToolClient(MCPToolClient):
         self.register_tool("claim_status")
         self.register_tool("claim_payment_info")
         self.register_tool("update_claim_status")
+        self.register_tool("member_claims")
 
         logger.info(
             "ClaimsServicesMCPToolClient ready (%s) — tools: %s",

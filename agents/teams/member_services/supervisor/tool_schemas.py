@@ -127,6 +127,51 @@ UPDATE_MEMBER_INFO_RESPONSE = {
     },
 }
 
+MEMBER_POLICY_LOOKUP_REQUEST = {
+    "type": "object",
+    "properties": {
+        "member_id": {"type": "string", "pattern": "^M\\d{4,10}$"},
+        "user_id": {"type": "string", "minLength": 1},
+        "user_role": {
+            "type": "string",
+            "enum": ["CSR_TIER1", "CSR_TIER2", "CSR_SUPERVISOR", "CSR_READONLY"],
+        },
+    },
+    "required": ["member_id", "user_id"],
+    "additionalProperties": False,
+}
+
+MEMBER_POLICY_LOOKUP_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "member_id": {"type": "string"},
+        "first_name": {"type": "string"},
+        "last_name": {"type": "string"},
+        "date_of_birth": {"type": "string"},
+        "email": {"type": "string"},
+        "phone": {"type": "string"},
+        "status": {"type": "string"},
+        "enrollment_date": {"type": "string"},
+        "policy": {
+            "type": ["object", "null"],
+            "properties": {
+                "policy_id": {"type": "string"},
+                "policy_number": {"type": "string"},
+                "policy_type": {"type": "string"},
+                "plan_name": {"type": "string"},
+                "plan_type": {"type": "string"},
+                "effective_date": {"type": "string"},
+                "expiration_date": {"type": ["string", "null"]},
+                "status": {"type": "string"},
+                "premium": {"type": ["number", "string", "null"]},
+                "deductible": {"type": ["number", "string", "null"]},
+                "out_of_pocket_max": {"type": ["number", "string", "null"]},
+            },
+        },
+        "error": {"type": "string"},
+    },
+}
+
 
 # ============================================================================
 # SCHEMA REGISTRY – maps "tool_name:direction" → JSON Schema
@@ -142,10 +187,12 @@ def build_schema_registry() -> dict:
         # Member services
         "member_lookup:request": MEMBER_LOOKUP_REQUEST,
         "member_lookup:response": MEMBER_LOOKUP_RESPONSE,
-        "eligibility_check:request": ELIGIBILITY_CHECK_REQUEST,
-        "eligibility_check:response": ELIGIBILITY_CHECK_RESPONSE,
+        "check_eligibility:request": ELIGIBILITY_CHECK_REQUEST,
+        "check_eligibility:response": ELIGIBILITY_CHECK_RESPONSE,
         "coverage_lookup:request": COVERAGE_LOOKUP_REQUEST,
         "coverage_lookup:response": COVERAGE_LOOKUP_RESPONSE,
         "update_member_info:request": UPDATE_MEMBER_INFO_REQUEST,
         "update_member_info:response": UPDATE_MEMBER_INFO_RESPONSE,
+        "member_policy_lookup:request": MEMBER_POLICY_LOOKUP_REQUEST,
+        "member_policy_lookup:response": MEMBER_POLICY_LOOKUP_RESPONSE,
     }

@@ -1,5 +1,10 @@
 """
-Member Services: Update Member Info Worker Agent
+PA Services: Member Prior Authorizations Worker Agent
+
+Retrieves all prior authorizations for a given member ID using the
+member_prior_authorizations MCP tool. This enables the CSR to ask
+"What prior authorizations does member M-12345 have?" without knowing
+individual PA IDs.
 """
 
 from typing import Dict, Any
@@ -8,7 +13,7 @@ import time
 
 from langgraph.prebuilt import create_react_agent
 
-from agents.teams.member_services.member_services_mcp_tool_client import MemberServicesMCPToolClient
+from agents.teams.pa_services.pa_services_mcp_tool_client import PAServicesMCPToolClient
 
 from agents.security import AuditLogger
 
@@ -27,27 +32,29 @@ from observability.prometheus_metrics import track_memory_security
 
 logger = logging.getLogger(__name__)
 
-class UpdateMemberInfoWorker:
-    """Worker agent for member information update operations."""
+WORKER_PROMPT = (
+    "You are a prior authorization specialist for a health insurance company. "
+    "Your role is to retrieve all prior authorizations filed for a specific member. "
+    "You MUST call the member_prior_authorizations tool to answer — never answer from memory or context. "
+    "Look up the prior authorizations using the member ID provided in the query. "
+    "If the user asks about a specific status (e.g. pending, approved), pass it as the status argument. "
+    "You must also use user ID, user role, and session ID to provide accurate details. "
+    "The context includes an 'Execution ID' value. "
+    "Pass it as the execution_id argument when calling the tool "
+    "so the Context Graph can trace this execution."
+)
+
+
+class MemberPriorAuthWorker:
+    """Worker agent for retrieving prior authorizations by member ID."""
 
     def __init__(self):
-        self.name = "update_member_info_worker"
+        self.name = "member_prior_auth_worker"
 
-        mcp_client = MemberServicesMCPToolClient()
-        tool = mcp_client.get_tool("update_member_info")
+        mcp_client = PAServicesMCPToolClient()
+        tool = mcp_client.get_tool("member_prior_authorizations")
         if tool is None:
-            raise RuntimeError("update_member_info not found in MemberServicesMCPToolClient")
-        # Override the tool description fetched from the MCP server.
-        # The FastMCP server's docstring may still list only the original 6
-        # fields, and the ReAct agent's LLM follows the tool description over
-        # the system prompt when they conflict. This ensures consistency.
-        tool.description = (
-            "Update a member's information field. Requires: member_id, field, "
-            "new_value, reason, user_id, user_role, session_id, execution_id. "
-            "Updatable fields: phone, email, address_street, address_city, "
-            "address_state, address_zip, enrollmentDate, status. "
-            "HIGH-IMPACT: requires human approval for non-supervisor roles."
-        )
+            raise RuntimeError("member_prior_authorizations not found in PAServicesMCPToolClient")
         self.tool = tool
         self.tool_name = self.tool.name
 
@@ -57,21 +64,10 @@ class UpdateMemberInfoWorker:
         llm_factory: LLMProviderFactory = get_factory()
         llm: ChatModel = llm_factory.get_llm_provider()
 
-        prompt = (
-                    "You are a member information update specialist for a health insurance company. "
-                    "You MUST call the update_member_info tool to perform the update — never answer from memory or context. "
-                    "You must extract from the query: the member ID, the field to update, the new value, and the reason for the change. "
-                    "Updatable fields: phone, email, address_street, address_city, address_state, address_zip, enrollmentDate, status. "
-                    "You must also use user ID, user role, and session ID when calling the tool. "
-                    "The context includes an 'Execution ID' value. "
-                    "Pass it as the execution_id argument when calling the tool "
-                    "so the Context Graph can trace this execution."
-        )
-
-        self.agent = create_react_agent(llm, [self.tool], prompt=prompt)
+        self.agent = create_react_agent(llm, [self.tool], prompt=WORKER_PROMPT)
 
     def execute(self, query: str, user_id: str, user_role: str, session_id: str, execution_id: str = "") -> Dict[str, Any]:
-        """Execute UpdateMemberInfoWorker task with error handling and retry logic."""
+        """Execute MemberPriorAuthWorker task with error handling and retry logic."""
         settings: Settings = get_settings()
 
         tracer = get_langfuse_tracer()
@@ -81,21 +77,17 @@ class UpdateMemberInfoWorker:
 
         while retry_count <= max_retries:
             try:
-                # Sanitize input
                 clean_query = sanitize_html(query)
 
-                # Trace agent execution start
                 if tracer.enabled:
                     tracer.trace_agent_execution(
                         name=self.name,
                         agent_type="worker",
                         input_data=clean_query,
-                        output_data=None,  # Will update on success
+                        output_data=None,
                         user_id=user_id,
                         session_id=session_id
                     )
-
-                # Prepend context to user message
 
                 contextualized_query = (
                     f"User Role: {user_role}\n"
@@ -107,7 +99,6 @@ class UpdateMemberInfoWorker:
 
                 agent_inputs = {"messages": [("user", contextualized_query)]}
 
-                # Execute agent with LangFuse callback
                 callback_handler = tracer.get_callback_handler()
                 if callback_handler:
                     result = self.agent.invoke(
@@ -117,15 +108,8 @@ class UpdateMemberInfoWorker:
                 else:
                     result = self.agent.invoke(agent_inputs)
 
-                # Extract output from last message
                 output_text = result["messages"][-1].content
 
-                # Scan ToolMessages for structured error JSON before treating the
-                # output as success. MCP decorator errors (rate limit, circuit
-                # breaker, permission denied, pending approval) and runtime tool
-                # failures all return {"error": ...} JSON. The LLM receives this
-                # as the ToolMessage content and summarises it — checking the raw
-                # ToolMessage catches it before the summary hides it.
                 tool_error = check_tool_result_for_errors(result)
                 if tool_error:
                     logger.error(
@@ -151,7 +135,6 @@ class UpdateMemberInfoWorker:
                     time.sleep(backoff_delay)
                     continue
 
-                # Scrub PII/PHI from output
                 memory_start = time.time()
                 scrubbed_output, vault_id, entities_found = self.presidio.scrub_before_storage(
                     output_text,
@@ -166,21 +149,13 @@ class UpdateMemberInfoWorker:
                         latency=memory_latency
                     )
 
-                    logger.info(
-                        f"[{session_id}] Memory security applied, vault_id: {vault_id}, "
-                        f"entities_scrubbed: {sum(entities_found.values()) if entities_found else 0}, "
-                        f"types: {list(entities_found.keys()) if entities_found else []}"
-                    )
-
-                # Audit action
                 self.audit.log_action(
                     user_id=user_id,
                     action=self.tool_name,
-                    resource_type="MEMBER",
+                    resource_type="PA",
                     resource_id=""
                 )
 
-                # Trace successful execution
                 if tracer.enabled:
                     tracer.trace_agent_execution(
                         name=self.name,
@@ -192,14 +167,9 @@ class UpdateMemberInfoWorker:
                         session_id=session_id
                     )
 
-                # Record recovery if this was a retry
                 if retry_count > 0:
                     metrics.record_recovery(self.name, "retry_success")
 
-                # Extract raw ToolMessage content (structured JSON from MCP server,
-                # before the LLM summarises and Presidio scrubs it).  Stored in
-                # tool_results so downstream steps can access structured fields
-                # that may be redacted from the scrubbed output.
                 _raw_tool_output = ""
                 for _msg in result.get("messages", []):
                     if getattr(_msg, "type", None) == "tool" or _msg.__class__.__name__ == "ToolMessage":
@@ -220,18 +190,14 @@ class UpdateMemberInfoWorker:
                 }
 
             except ToolExecutionError as e:
-                # Structured error from the MCP tool wrapper — the tool
-                # returned an error payload (rate limit, permission denied,
-                # circuit breaker, etc.). Use its structured fields directly
-                # rather than re-classifying from a string.
                 logger.error(f"{self.name} tool error (attempt {retry_count + 1}/{max_retries + 1}): {e}")
                 metrics.record_error(self.name, e.error_type or "tool_error", e.is_retryable())
                 if not e.is_retryable() or retry_count >= max_retries:
                     return {
-                        "error":       str(e),
-                        "error_type":  e.error_type or classify_error(str(e)),
+                        "error":        str(e),
+                        "error_type":   e.error_type or classify_error(str(e)),
                         "is_retryable": e.is_retryable(),
-                        "retry_count": retry_count,
+                        "retry_count":  retry_count,
                     }
                 retry_count += 1
                 metrics.record_retry(self.name, retry_count)
@@ -242,33 +208,21 @@ class UpdateMemberInfoWorker:
 
             except Exception as e:
                 logger.error(f"{self.name} error (attempt {retry_count + 1}/{max_retries + 1}): {e}")
-
                 error_msg = str(e)
                 is_retryable = is_retryable_error(error_msg)
                 error_type = classify_error(error_msg)
-
-                # Record error metrics
                 metrics.record_error(self.name, error_type, is_retryable)
-
-                # If not retryable or max retries exceeded, return error
                 if not is_retryable or retry_count >= max_retries:
                     return {
-                        "error": error_msg,
-                        "error_type": error_type,
+                        "error":        error_msg,
+                        "error_type":   error_type,
                         "is_retryable": is_retryable,
-                        "retry_count": retry_count
+                        "retry_count":  retry_count
                     }
-
-                # Retry with exponential backoff
                 retry_count += 1
                 metrics.record_retry(self.name, retry_count)
-
-                default_backoff_delay = settings.AGENT_RETRY_BACKOFF_DELAY_SECONDS
-                backoff_delay = min(2 ** retry_count, default_backoff_delay)
-
+                backoff_delay = min(2 ** retry_count, settings.AGENT_RETRY_BACKOFF_DELAY_SECONDS)
                 logger.info(f"Retrying {self.name} in {backoff_delay} seconds...")
-
                 time.sleep(backoff_delay)
 
-        # Should not reach here
         return {"error": "Max retries exceeded", "error_type": "max_retries_exceeded"}

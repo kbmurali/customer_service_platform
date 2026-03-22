@@ -46,6 +46,12 @@ docker stack deploy -c docker-compose-agentic-access.yml health_insurance
 
 sleep 1
 
+# CSIP Web Application Docker Swarm Deploy
+
+docker stack deploy -c docker-compose-webapp.yml health_insurance
+
+sleep 1
+
 for i in {1..10}; do
   clear
   docker stack services health_insurance

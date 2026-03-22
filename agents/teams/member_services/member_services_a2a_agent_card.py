@@ -41,9 +41,10 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
         name="member_services_team",
         description=(
             "Health insurance member services agent. Handles member lookup, "
-            "eligibility verification, and coverage/benefits inquiries. "
+            "eligibility verification, coverage/benefits inquiries, and "
+            "member policy lookup. "
             "Routes queries to specialized workers: member_lookup, "
-            "eligibility_check, coverage_lookup, update_member_info."
+            "check_eligibility, coverage_lookup, update_member_info, member_policy_lookup."
         ),
         url=f"{base_url}/a2a",
         capabilities=A2ACapabilities(
@@ -64,7 +65,7 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
                 ],
             ),
             A2ASkill(
-                id="eligibility_check",
+                id="check_eligibility",
                 name="Eligibility Check",
                 description="Verify member eligibility and active coverage status for a given service date.",
                 tags=["eligibility", "verification", "coverage"],
@@ -87,15 +88,33 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
                 id="update_member_info",
                 name="Update Member Info",
                 description=(
-                    "Update a member's contact or address information. Requires the member ID, "
+                    "Update a member's information. Requires the member ID, "
                     "the field to update (phone, email, address_street, address_city, "
-                    "address_state, address_zip), the new value, and a reason for the change. "
+                    "address_state, address_zip, enrollmentDate, status), the new value, and a reason for the change. "
                     "High-impact write operation — requires human approval before execution."
                 ),
-                tags=["member", "update", "contact", "address", "write"],
+                tags=["member", "update", "contact", "address", "enrollment", "status", "write"],
                 examples=[
                     "Update phone number for member M123456 to 555-9876 — member requested change",
                     "Change email for member M789012 to new@example.com — returned mail",
+                    "Update enrollmentDate for member M345678 to 2025-10-01 — AEP re-enrollment",
+                    "Change status for member M456789 to ACTIVE — eligibility confirmed",
+                ],
+            ),
+            A2ASkill(
+                id="member_policy_lookup",
+                name="Member Policy Lookup",
+                description=(
+                    "Look up member information together with their associated insurance policy. "
+                    "Returns member demographics and full policy details including policyId, "
+                    "policyNumber, planName, planType, effectiveDate, expirationDate, status, "
+                    "premium, deductible, and outOfPocketMax."
+                ),
+                tags=["member", "policy", "lookup", "plan", "insurance"],
+                examples=[
+                    "What policy does member M123456 have?",
+                    "Show me the insurance plan for member M789012",
+                    "Look up the policy details for member M345678",
                 ],
             ),
         ],

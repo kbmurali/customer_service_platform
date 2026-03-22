@@ -44,7 +44,7 @@ def build_claims_services_agent_card(base_url: str) -> A2AAgentCard:
             "Health insurance claims services agent. Handles claim lookup, "
             "claim status checks, and payment information retrieval. "
             "Routes queries to specialized workers: claim_lookup, "
-            "claim_status, claim_payment_info, update_claim_status."
+            "claim_status, claim_payment_info, update_claim_status, member_claims."
         ),
         url=f"{base_url}/a2a",
         capabilities=A2ACapabilities(
@@ -108,6 +108,22 @@ def build_claims_services_agent_card(base_url: str) -> A2AAgentCard:
                 examples=[
                     "Approve claim 7799c06c-0883-4dca-b1f0-bded6d1027a5 because all documents are verified",
                     "Update claim abc123 status to DENIED — duplicate submission",
+                ],
+            ),
+            A2ASkill(
+                id="member_claims",
+                name="Member Claims",
+                description=(
+                    "Retrieve all claims filed by a specific member. Requires a "
+                    "member ID (e.g. M-12345). Returns a list of claims with "
+                    "claim number, service date, status, amounts, and processing date. "
+                    "Optionally filter by claim status."
+                ),
+                tags=["claim", "member", "lookup", "list"],
+                examples=[
+                    "What claims does member M-12345 have?",
+                    "Show me all claims for member M-67890",
+                    "List pending claims for member M-11111",
                 ],
             ),
         ],

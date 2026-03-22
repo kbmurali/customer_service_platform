@@ -73,6 +73,15 @@ class Settings(BaseSettings):
     CHROMA_HOST: str = os.getenv("CHROMA_HOST", "chroma")
     CHROMA_PORT: int = int(os.getenv("CHROMA_PORT", "8000"))
     CHROMA_PERSIST_DIRECTORY: str = "/data/chroma"
+
+    # ── Experience Store (Feedback Learning) ──────────────────────────
+    EXPERIENCE_STORE_ENABLED: bool = os.getenv("EXPERIENCE_STORE_ENABLED", "true").lower() == "true"
+    EXPERIENCE_TOP_K: int = int(os.getenv("EXPERIENCE_TOP_K", "3"))
+    EXPERIENCE_MIN_RATING: str = os.getenv("EXPERIENCE_MIN_RATING", "correct")
+    EXPERIENCE_EXTRACTION_INTERVAL_MINUTES: int = int(os.getenv("EXPERIENCE_EXTRACTION_INTERVAL_MINUTES", "10"))
+    EXPERIENCE_COLLECTION_NAME: str = os.getenv("EXPERIENCE_COLLECTION_NAME", "successful_experiences")
+    FEEDBACK_PATTERN_ANALYSIS_INTERVAL_HOURS: int = int(os.getenv("FEEDBACK_PATTERN_ANALYSIS_INTERVAL_HOURS", "24"))
+    EXPERIENCE_COLD_START_SEED: bool = os.getenv("EXPERIENCE_COLD_START_SEED", "true").lower() == "true"
     
     # CB-HITL Redis
     REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")

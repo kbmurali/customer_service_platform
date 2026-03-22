@@ -126,7 +126,11 @@ class LangFuseTracer:
             input_data: Input to the agent
             output_data: Output from the agent
             tools_used: List of tools used by the agent
-            metadata: Additional metadata
+            metadata: Additional metadata.  Callers may include an
+                      ``experience_count`` key (int) to record how many
+                      past successful experiences were injected into the
+                      planning prompt.  A value of 0 means the experience
+                      store was empty or disabled for this call.
             user_id: User ID
             session_id: Session ID
         """

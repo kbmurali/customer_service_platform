@@ -122,6 +122,35 @@ UPDATE_CLAIM_STATUS_RESPONSE = {
     },
 }
 
+MEMBER_CLAIMS_REQUEST = {
+    "type": "object",
+    "properties": {
+        "member_id": {"type": "string"},
+        "status": {"type": "string"},
+        "user_id": {"type": "string", "minLength": 1},
+        "user_role": {
+            "type": "string",
+            "enum": ["CSR_TIER1", "CSR_TIER2", "CSR_SUPERVISOR", "CSR_READONLY"],
+        },
+    },
+    "required": ["member_id", "user_id"],
+    "additionalProperties": False,
+}
+
+MEMBER_CLAIMS_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "member_id": {"type": "string"},
+        "claim_count": {"type": "integer"},
+        "claims": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
+        "message": {"type": "string"},
+        "error": {"type": "string"},
+    },
+}
+
 # ============================================================================
 # SCHEMA REGISTRY – maps "tool_name:direction" → JSON Schema
 # ============================================================================
@@ -142,4 +171,6 @@ def build_schema_registry() -> dict:
         "claim_payment_info:response": CLAIM_PAYMENT_INFO_RESPONSE,
         "update_claim_status:request": UPDATE_CLAIM_STATUS_REQUEST,
         "update_claim_status:response": UPDATE_CLAIM_STATUS_RESPONSE,
+        "member_claims:request": MEMBER_CLAIMS_REQUEST,
+        "member_claims:response": MEMBER_CLAIMS_RESPONSE,
     }

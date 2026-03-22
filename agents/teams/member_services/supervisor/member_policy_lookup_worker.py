@@ -1,5 +1,5 @@
 """
-Member Services: Update Member Info Worker Agent
+Member Services: Member Policy Lookup Worker Agent
 """
 
 from typing import Dict, Any
@@ -27,27 +27,16 @@ from observability.prometheus_metrics import track_memory_security
 
 logger = logging.getLogger(__name__)
 
-class UpdateMemberInfoWorker:
-    """Worker agent for member information update operations."""
+class MemberPolicyLookupWorker:
+    """Worker agent for member policy lookup operations."""
 
     def __init__(self):
-        self.name = "update_member_info_worker"
+        self.name = "member_policy_lookup_worker"
 
         mcp_client = MemberServicesMCPToolClient()
-        tool = mcp_client.get_tool("update_member_info")
+        tool = mcp_client.get_tool("member_policy_lookup")
         if tool is None:
-            raise RuntimeError("update_member_info not found in MemberServicesMCPToolClient")
-        # Override the tool description fetched from the MCP server.
-        # The FastMCP server's docstring may still list only the original 6
-        # fields, and the ReAct agent's LLM follows the tool description over
-        # the system prompt when they conflict. This ensures consistency.
-        tool.description = (
-            "Update a member's information field. Requires: member_id, field, "
-            "new_value, reason, user_id, user_role, session_id, execution_id. "
-            "Updatable fields: phone, email, address_street, address_city, "
-            "address_state, address_zip, enrollmentDate, status. "
-            "HIGH-IMPACT: requires human approval for non-supervisor roles."
-        )
+            raise RuntimeError("member_policy_lookup not found in MemberServicesMCPToolClient")
         self.tool = tool
         self.tool_name = self.tool.name
 
@@ -58,20 +47,19 @@ class UpdateMemberInfoWorker:
         llm: ChatModel = llm_factory.get_llm_provider()
 
         prompt = (
-                    "You are a member information update specialist for a health insurance company. "
-                    "You MUST call the update_member_info tool to perform the update — never answer from memory or context. "
-                    "You must extract from the query: the member ID, the field to update, the new value, and the reason for the change. "
-                    "Updatable fields: phone, email, address_street, address_city, address_state, address_zip, enrollmentDate, status. "
-                    "You must also use user ID, user role, and session ID when calling the tool. "
+                    "You are a member policy lookup specialist for a health insurance company. "
+                    "You MUST call the member_policy_lookup tool to answer — never answer from memory or context. "
+                    "Look up member information along with their associated insurance policy by member ID. "
+                    "You must also use user ID, user role, and session ID to provide accurate details. "
                     "The context includes an 'Execution ID' value. "
                     "Pass it as the execution_id argument when calling the tool "
                     "so the Context Graph can trace this execution."
         )
-
+        
         self.agent = create_react_agent(llm, [self.tool], prompt=prompt)
 
     def execute(self, query: str, user_id: str, user_role: str, session_id: str, execution_id: str = "") -> Dict[str, Any]:
-        """Execute UpdateMemberInfoWorker task with error handling and retry logic."""
+        """Execute MemberPolicyLookupWorker task with error handling and retry logic."""
         settings: Settings = get_settings()
 
         tracer = get_langfuse_tracer()
@@ -106,7 +94,7 @@ class UpdateMemberInfoWorker:
                 )
 
                 agent_inputs = {"messages": [("user", contextualized_query)]}
-
+                
                 # Execute agent with LangFuse callback
                 callback_handler = tracer.get_callback_handler()
                 if callback_handler:
@@ -159,7 +147,7 @@ class UpdateMemberInfoWorker:
                     ttl_hours=24
                 )
                 memory_latency = time.time() - memory_start
-
+            
                 if entities_found:
                     track_memory_security(
                         entities_found=entities_found,
@@ -220,10 +208,6 @@ class UpdateMemberInfoWorker:
                 }
 
             except ToolExecutionError as e:
-                # Structured error from the MCP tool wrapper — the tool
-                # returned an error payload (rate limit, permission denied,
-                # circuit breaker, etc.). Use its structured fields directly
-                # rather than re-classifying from a string.
                 logger.error(f"{self.name} tool error (attempt {retry_count + 1}/{max_retries + 1}): {e}")
                 metrics.record_error(self.name, e.error_type or "tool_error", e.is_retryable())
                 if not e.is_retryable() or retry_count >= max_retries:

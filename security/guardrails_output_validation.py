@@ -17,6 +17,7 @@ Integration points
 """
 
 import logging
+import re
 from typing import Dict, Any, Optional, List
 
 from dataclasses import dataclass as _dataclass, field as _field
@@ -71,6 +72,50 @@ from security.presidio_healthcare_recognizers import (
     HEALTHCARE_PHI_ENTITIES,
 )
 
+from security.presidio_memory_security import _filter_uuid_overlaps, _UUID_RE
+
+
+def _restore_uuids(original: str, sanitized: str) -> str:
+    """
+    Restore UUIDs in sanitized text that were corrupted by Presidio validators.
+
+    The Guardrails hub ``DetectPII`` validator is a black box that runs its
+    own Presidio analysis. We cannot inject UUID filtering into it. Instead,
+    after all validation runs, we compare the sanitized output against the
+    original and restore any UUIDs that were corrupted.
+
+    A corrupted UUID looks like: ``6fffc059-<US_DRIVER_LICENSE>-4c0f-af6c-...``
+    (one or more hex segments replaced with ``<ENTITY_TYPE>`` placeholders).
+
+    Args:
+        original:  The text before validation
+        sanitized: The text after validation (may have corrupted UUIDs)
+
+    Returns:
+        sanitized text with UUIDs restored from the original
+    """
+    original_uuids = _UUID_RE.findall(original)
+    if not original_uuids:
+        return sanitized
+
+    for uuid in original_uuids:
+        if uuid in sanitized:
+            continue  # This UUID survived intact
+
+        # Build a regex that matches this UUID with any segment(s) replaced
+        # by <ENTITY_TYPE> placeholders. UUID format: 8-4-4-4-12 hex segments.
+        parts = uuid.split("-")
+        # Each part could be intact or replaced with <...>
+        pattern_parts = []
+        for part in parts:
+            # Match either the original hex segment or an <ENTITY_TYPE> placeholder
+            pattern_parts.append(f"(?:{re.escape(part)}|<[A-Z_]+>)")
+        corrupted_pattern = re.compile("-".join(pattern_parts))
+
+        sanitized = corrupted_pattern.sub(uuid, sanitized)
+
+    return sanitized
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,6 +169,9 @@ class HIPAAComplianceValidator(_ValidatorBase):
                 entities=ALL_ENTITIES,
                 language="en",
             )
+            # Filter out entities that overlap with UUID positions — prevents
+            # UUID segments like "c149" being detected as US_DRIVER_LICENSE
+            results = _filter_uuid_overlaps(results, value)
 
             # Filter to high-confidence detections (score >= 0.5)
             significant = [r for r in results if r.score >= 0.5]
@@ -378,6 +426,11 @@ class GuardrailsOutputValidator:
                 or getattr(result, "fix_value", None)
                 or output        # last resort: pass original through
             )
+
+            # Restore any UUIDs that were corrupted by DetectPII or other
+            # Presidio-backed validators that we cannot patch internally.
+            if isinstance(sanitized, str):
+                sanitized = _restore_uuids(output, sanitized)
             # Extract pass/fail — attribute name varies by version
             passed = bool(
                 getattr(result, "validation_passed", None)

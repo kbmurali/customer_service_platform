@@ -1,0 +1,2473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSIP — Customer Service Intelligence Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.0/Recharts.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+:root {
+  --bg-primary: #F8FAFC;
+  --bg-secondary: #F1F5F9;
+  --bg-card: #FFFFFF;
+  --sidebar-bg: #0F172A;
+  --sidebar-hover: #1E293B;
+  --sidebar-active: #0EA5E9;
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #94A3B8;
+  --text-inverse: #F8FAFC;
+  --accent: #0EA5E9;
+  --accent-light: #E0F2FE;
+  --accent-dark: #0369A1;
+  --success: #10B981;
+  --success-light: #D1FAE5;
+  --warning: #F59E0B;
+  --warning-light: #FEF3C7;
+  --error: #EF4444;
+  --error-light: #FEE2E2;
+  --border: #E2E8F0;
+  --border-focus: #0EA5E9;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05);
+  --shadow-md: 0 4px 6px -1px rgba(15,23,42,0.07), 0 2px 4px -2px rgba(15,23,42,0.05);
+  --shadow-lg: 0 10px 15px -3px rgba(15,23,42,0.08), 0 4px 6px -4px rgba(15,23,42,0.04);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Fira Code', monospace;
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: var(--font-sans); background: var(--bg-primary); color: var(--text-primary); -webkit-font-smoothing: antialiased; }
+::selection { background: var(--accent); color: white; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+input, textarea, button, select { font-family: inherit; }
+a { color: var(--accent); text-decoration: none; }
+.mono { font-family: var(--font-mono); }
+
+/* App Layout */
+.app-layout { display: flex; height: 100vh; overflow: hidden; }
+.sidebar { width: 240px; min-width: 240px; background: var(--sidebar-bg); display: flex; flex-direction: column; z-index: 20; }
+.sidebar-brand { padding: 20px 18px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.sidebar-brand h1 { font-size: 18px; font-weight: 700; color: var(--text-inverse); letter-spacing: -0.3px; }
+.sidebar-brand span { font-size: 11px; color: var(--text-muted); display: block; margin-top: 2px; letter-spacing: 0.5px; text-transform: uppercase; }
+.sidebar-nav { flex: 1; padding: 12px 8px; overflow-y: auto; }
+.nav-section { margin-bottom: 16px; }
+.nav-section-label { font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.2px; padding: 8px 12px 6px; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--radius-sm); color: #94A3B8; cursor: pointer; transition: all var(--transition); font-size: 13.5px; font-weight: 500; margin-bottom: 2px; }
+.nav-item:hover { background: var(--sidebar-hover); color: #CBD5E1; }
+.nav-item.active { background: rgba(14,165,233,0.12); color: var(--sidebar-active); }
+.nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+.sidebar-user { padding: 14px 16px; border-top: 1px solid rgba(255,255,255,0.06); }
+.sidebar-user-info { display: flex; align-items: center; gap: 10px; }
+.sidebar-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: white; }
+.sidebar-user-name { font-size: 13px; font-weight: 600; color: #E2E8F0; }
+.sidebar-user-role { font-size: 11px; color: var(--text-muted); }
+
+.main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.top-bar { height: 52px; min-height: 52px; background: var(--bg-card); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+.top-bar-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.top-bar-actions { display: flex; align-items: center; gap: 12px; }
+.content-area { flex: 1; overflow-y: auto; padding: 24px; }
+
+/* Cards */
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-sm); }
+.card-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.card-header h3 { font-size: 14px; font-weight: 600; }
+.card-body { padding: 20px; }
+
+/* Metric Cards */
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.metric-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 18px 20px; box-shadow: var(--shadow-sm); }
+.metric-label { font-size: 12px; font-weight: 500; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.metric-value { font-size: 28px; font-weight: 700; color: var(--text-primary); letter-spacing: -1px; font-family: var(--font-mono); }
+.metric-change { font-size: 12px; font-weight: 500; margin-top: 4px; }
+.metric-change.up { color: var(--success); }
+.metric-change.down { color: var(--error); }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); border: none; }
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: var(--accent-dark); }
+.btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--border); }
+.btn-success { background: var(--success); color: white; }
+.btn-success:hover { background: #059669; }
+.btn-danger { background: var(--error); color: white; }
+.btn-danger:hover { background: #DC2626; }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-lg { padding: 10px 20px; font-size: 14px; }
+
+/* Badges */
+.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 100px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
+.badge-blue { background: var(--accent-light); color: var(--accent-dark); }
+.badge-green { background: var(--success-light); color: #065F46; }
+.badge-yellow { background: var(--warning-light); color: #92400E; }
+.badge-red { background: var(--error-light); color: #991B1B; }
+.badge-gray { background: #F1F5F9; color: #475569; }
+
+/* Tables */
+.data-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.data-table th { text-align: left; padding: 10px 14px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); }
+.data-table th:first-child { border-radius: var(--radius-sm) 0 0 0; }
+.data-table th:last-child { border-radius: 0 var(--radius-sm) 0 0; }
+.data-table td { padding: 11px 14px; font-size: 13px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+.data-table tr:hover td { background: #F8FAFC; }
+
+/* Form Controls */
+.input { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 13.5px; color: var(--text-primary); background: var(--bg-card); transition: border-color var(--transition); outline: none; }
+.input:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(14,165,233,0.1); }
+.input-group { display: flex; gap: 8px; }
+
+/* Chat Specific */
+.chat-container { display: flex; height: 100%; gap: 20px; }
+.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chat-sidebar { width: 300px; min-width: 300px; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 16px 0; display: flex; flex-direction: column; gap: 16px; }
+.chat-input-area { padding: 16px 0 0; border-top: 1px solid var(--border); }
+.msg-user { align-self: flex-end; max-width: 70%; background: var(--accent); color: white; padding: 10px 16px; border-radius: 14px 14px 4px 14px; font-size: 14px; line-height: 1.5; }
+.msg-agent { align-self: flex-start; max-width: 85%; }
+.msg-agent-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.msg-agent-response { padding: 16px 18px; font-size: 14px; line-height: 1.65; color: var(--text-primary); }
+.msg-agent-meta { background: var(--bg-secondary); padding: 10px 18px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.msg-agent-meta span { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+.msg-exec-path { padding: 10px 18px; border-top: 1px solid var(--border); }
+.msg-exec-path summary { font-size: 12px; color: var(--text-muted); cursor: pointer; font-weight: 500; }
+.msg-exec-path .path-nodes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.msg-exec-path .path-node { font-size: 11px; padding: 2px 8px; background: var(--accent-light); color: var(--accent-dark); border-radius: 4px; font-family: var(--font-mono); }
+.feedback-row { display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-top: 1px solid var(--border); }
+.feedback-btn { padding: 4px 10px; border-radius: 100px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1.5px solid var(--border); background: white; color: var(--text-secondary); transition: all var(--transition); }
+.feedback-btn:hover { border-color: var(--accent); color: var(--accent); }
+.feedback-btn.selected-correct { border-color: var(--success); background: var(--success-light); color: #065F46; }
+.feedback-btn.selected-partial { border-color: var(--warning); background: var(--warning-light); color: #92400E; }
+.feedback-btn.selected-incorrect { border-color: var(--error); background: var(--error-light); color: #991B1B; }
+
+/* Session chain */
+.session-chain { display: flex; align-items: center; gap: 4px; padding: 8px 0; margin-bottom: 8px; overflow-x: auto; }
+.session-chip { font-size: 11px; padding: 3px 10px; border-radius: 100px; background: var(--bg-secondary); color: var(--text-muted); cursor: pointer; white-space: nowrap; font-family: var(--font-mono); border: 1px solid transparent; }
+.session-chip.current { background: var(--accent-light); color: var(--accent-dark); border-color: var(--accent); font-weight: 600; }
+.session-arrow { color: var(--text-muted); font-size: 12px; }
+
+/* Circuit Breaker */
+.cb-toggle { display: flex; align-items: center; gap: 16px; }
+.cb-switch { width: 56px; height: 28px; border-radius: 14px; cursor: pointer; position: relative; transition: background var(--transition); }
+.cb-switch.active { background: var(--success); }
+.cb-switch.halted { background: var(--error); }
+.cb-switch-knob { width: 22px; height: 22px; border-radius: 50%; background: white; position: absolute; top: 3px; transition: left var(--transition); box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+.cb-switch.active .cb-switch-knob { left: 31px; }
+.cb-switch.halted .cb-switch-knob { left: 3px; }
+.cb-status { font-size: 14px; font-weight: 600; }
+.cb-status.active { color: var(--success); }
+.cb-status.halted { color: var(--error); }
+
+/* CG Tree */
+.cg-tree-node { padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 4px 0; background: var(--bg-card); cursor: pointer; transition: all var(--transition); font-size: 13px; }
+.cg-tree-node:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); }
+.cg-tree-node.status-completed { border-left: 3px solid var(--success); }
+.cg-tree-node.status-failed { border-left: 3px solid var(--error); }
+.cg-tree-node.status-pending { border-left: 3px solid var(--warning); }
+.cg-tree-node.status-cancelled { border-left: 3px solid var(--text-muted); }
+.cg-children { padding-left: 24px; border-left: 2px solid var(--border); margin-left: 12px; }
+
+/* Login */
+.login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: linear-gradient(135deg, #0F172A 0%, #1E3A5F 50%, #0F172A 100%); }
+.login-card { width: 400px; background: var(--bg-card); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden; }
+.login-header { padding: 32px 32px 20px; text-align: center; }
+.login-header h1 { font-size: 24px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.5px; }
+.login-header p { font-size: 13px; color: var(--text-muted); margin-top: 6px; }
+.login-body { padding: 8px 32px 32px; }
+.login-field { margin-bottom: 16px; }
+.login-field label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.login-error { color: var(--error); font-size: 13px; margin-bottom: 12px; text-align: center; }
+
+/* Heatmap */
+.heatmap-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.heatmap-label { width: 160px; font-size: 12px; color: var(--text-secondary); text-align: right; flex-shrink: 0; }
+.heatmap-track { flex: 1; height: 24px; background: var(--bg-secondary); border-radius: 4px; overflow: hidden; position: relative; }
+.heatmap-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; display: flex; align-items: center; padding-left: 8px; font-size: 11px; font-weight: 600; color: white; min-width: 28px; }
+.heatmap-fill.low { background: var(--success); }
+.heatmap-fill.med { background: var(--warning); }
+.heatmap-fill.high { background: var(--error); }
+
+/* Funnel */
+.funnel-step { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.funnel-bar-outer { flex: 1; height: 32px; background: var(--bg-secondary); border-radius: 4px; overflow: hidden; }
+.funnel-bar-inner { height: 100%; background: var(--accent); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: white; transition: width 0.6s ease; }
+.funnel-label { width: 120px; font-size: 12px; color: var(--text-secondary); text-align: right; flex-shrink: 0; }
+.funnel-value { width: 50px; font-size: 13px; font-weight: 600; color: var(--text-primary); font-family: var(--font-mono); }
+
+/* Provider Health */
+.provider-card { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; }
+.provider-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.provider-dot.active { background: var(--success); box-shadow: 0 0 6px rgba(16,185,129,0.4); }
+.provider-dot.cooldown { background: var(--warning); box-shadow: 0 0 6px rgba(245,158,11,0.4); }
+.provider-dot.broken { background: var(--error); box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+
+/* Loading */
+.loading-spinner { width: 20px; height: 20px; border: 2.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Empty State */
+.empty-state { text-align: center; padding: 48px 24px; }
+.empty-state-icon { font-size: 40px; margin-bottom: 12px; }
+.empty-state-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
+.empty-state-desc { font-size: 13px; color: var(--text-muted); max-width: 320px; margin: 0 auto; }
+
+/* Animations */
+@keyframes fadeIn { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: translateY(0); } }
+.fade-in { animation: fadeIn 0.3s ease forwards; }
+@keyframes slideIn { from { opacity:0; transform: translateX(-8px); } to { opacity:1; transform: translateX(0); } }
+.slide-in { animation: slideIn 0.25s ease forwards; }
+
+/* Grid layouts */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+const { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie } = Recharts;
+
+// ═══════════════════════════════════════════════════════════════
+// API CLIENT
+// ═══════════════════════════════════════════════════════════════
+const API_BASE = '/agentic/access';
+const DEMO_MODE = false; // Set false when connected to live backend
+
+const apiCall = async (method, path, body, token) => {
+  if (DEMO_MODE) return demoResponse(path, body);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method, headers: { 'Content-Type':'application/json', ...(token ? {'Authorization':`Bearer ${token}`} : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (res.status === 401) {
+      // Token expired or invalid — notify App to force re-login
+      window.dispatchEvent(new CustomEvent('session-expired'));
+      throw new Error('Session expired. Please log in again.');
+    }
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  } catch(e) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') throw new Error('Request timed out (120s). The first query may take longer due to cold start — please try again.');
+    throw e;
+  }
+};
+
+// Prometheus query helper — queries via the Nginx proxy
+const PROM_BASE = '/prometheus';
+const promQuery = async (query) => {
+  if (DEMO_MODE) return null;
+  try {
+    const res = await fetch(`${PROM_BASE}/api/v1/query?query=${encodeURIComponent(query)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.status === 'success' && data.data?.result?.length > 0) {
+      return data.data.result;
+    }
+    return [];
+  } catch(e) { return null; }
+};
+
+const promRangeQuery = async (query, minutes=60, stepSeconds=300) => {
+  if (DEMO_MODE) return null;
+  try {
+    const end = Math.floor(Date.now()/1000);
+    const start = end - (minutes * 60);
+    const res = await fetch(`${PROM_BASE}/api/v1/query_range?query=${encodeURIComponent(query)}&start=${start}&end=${end}&step=${stepSeconds}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.status === 'success' && data.data?.result?.length > 0) {
+      return data.data.result;
+    }
+    return [];
+  } catch(e) { return null; }
+};
+
+const promValue = (result) => {
+  if (!result || result.length === 0) return 0;
+  const val = parseFloat(result[0]?.value?.[1] || 0);
+  return isNaN(val) ? 0 : val;
+};
+
+// ═══════════════════════════════════════════════════════════════
+// DEMO DATA (mirrors exact API response shapes)
+// ═══════════════════════════════════════════════════════════════
+let demoSessionCounter = 0;
+const demoResponse = (path, body) => {
+  if (path === '/api/auth/login') {
+    const roles = { csr_readonly:'CSR_READONLY', csr1:'CSR_TIER1', csr2:'CSR_TIER2', supervisor:'CSR_SUPERVISOR' };
+    const user = body?.username || 'csr2';
+    return Promise.resolve({
+      access_token: 'demo-jwt-' + Date.now(),
+      token_type: 'bearer',
+      user: { sub: user, username: user, role: roles[user] || 'CSR_TIER2', full_name: user === 'supervisor' ? 'Lisa Nguyen' : user === 'csr1' ? 'John Miller' : 'Alex CSR' }
+    });
+  }
+  if (path === '/api/agent/query') {
+    demoSessionCounter++;
+    const sid = `sess-demo-${demoSessionCounter.toString().padStart(3,'0')}`;
+    const q = (body?.query || '').toLowerCase();
+    let response, exec_path, tool_results, teams;
+    if (q.includes('claim') && q.includes('status')) {
+      response = 'Claim CLM-123456 for member M-789 is currently under review. The service date was February 14, 2026. The total billed amount is $1,250.00 with $0.00 paid so far.';
+      exec_path = ['create_plan','supervisor_node','a2a_claims_services_team','goal_advance'];
+      tool_results = { claim_status: { output:'Claim CLM-123456 is UNDER_REVIEW. Service date: 2026-02-14, billed $1,250.00, paid $0.00.', tool_raw_output:'["{\"claimId\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"claimNumber\":\"CLM-123456\",\"status\":\"UNDER_REVIEW\",\"serviceDate\":\"2026-02-14\",\"totalAmount\":1250,\"paidAmount\":0,\"member\":{\"memberId\":\"f9e8d7c6-b5a4-3210-fedc-ba0987654321\",\"firstName\":\"Sarah\",\"lastName\":\"Johnson\",\"status\":\"ACTIVE\"}}", null]', worker:'claim_status_worker' }};
+      teams = ['claims_services_team'];
+    } else if (q.includes('eligib') || q.includes('member')) {
+      response = 'Member M-789 (Sarah Johnson) is currently active with PPO Gold plan POL-2024-001. Coverage is effective from January 1, 2026. Annual deductible: $500 ($125 used). Copay: $25 for PCP, $50 for specialist.';
+      exec_path = ['create_plan','supervisor_node','a2a_member_services_team','goal_advance'];
+      tool_results = { member_lookup: { output:'Member M-789 (Sarah Johnson) is ACTIVE with PPO Gold plan.', tool_raw_output:'["{\"memberId\":\"M-789\",\"firstName\":\"Sarah\",\"lastName\":\"Johnson\",\"status\":\"ACTIVE\",\"planType\":\"PPO Gold\",\"planName\":\"PPO Gold Premium\",\"deductible\":500,\"deductibleUsed\":125,\"outOfPocketMax\":3000,\"email\":\"sarah.j@example.com\",\"phone\":\"555-1234\",\"dateOfBirth\":\"1985-06-15\",\"enrollmentDate\":\"2025-01-01\",\"city\":\"Chicago\",\"state\":\"IL\",\"zipCode\":\"60601\"}", null]', worker:'member_lookup_worker' }};
+      teams = ['member_services_team'];
+    } else if (q.includes('prior auth') || q.includes('cpt')) {
+      response = 'CPT 29881 (knee arthroscopy) requires prior authorization under PPO plans. The clinical criteria require documented conservative treatment failure of at least 6 weeks. Current processing time: 3-5 business days.';
+      exec_path = ['create_plan','supervisor_node','a2a_pa_services_team','goal_advance'];
+      tool_results = { pa_requirements: { cptCode:'29881', description:'Knee arthroscopy', requiresPA:true, planType:'PPO', processingDays:'3-5' }};
+      teams = ['pa_services_team'];
+    } else if (q.includes('in-network') || q.includes('provider') || q.includes('dr.')) {
+      response = 'Dr. Chen (NPI 1234567890) is an in-network orthopedic surgeon under the PPO Gold plan. Located at 456 Medical Center Dr, accepting new patients. Board certified, 15 years experience.';
+      exec_path = ['create_plan','supervisor_node','a2a_provider_services_team','goal_advance'];
+      tool_results = { provider_lookup: { npi:'1234567890', name:'Dr. Michael Chen', specialty:'Orthopedic Surgery', networkStatus:'IN_NETWORK', acceptingPatients:true }};
+      teams = ['provider_services_team'];
+    } else {
+      response = 'Based on the policy documents, your PPO Gold plan covers preventive care at 100% with no copay when using in-network providers. This includes annual physicals, immunizations, and recommended screenings.';
+      exec_path = ['create_plan','supervisor_node','a2a_search_services_team','goal_advance'];
+      tool_results = { search_results: { source:'policy_documents', relevanceScore:0.92, answer:'Preventive care covered at 100% in-network' }};
+      teams = ['search_services_team'];
+    }
+    return new Promise(r => setTimeout(() => r({ session_id:sid, response, execution_path:exec_path, tool_results, error_count:0 }), 800 + Math.random()*700));
+  }
+  if (path === '/api/feedback') return Promise.resolve({ feedback_id:'fb-'+Date.now(), status:'stored' });
+  if (path === '/api/feedback/classify') return Promise.resolve({ classification_id:'cls-'+Date.now(), status:'stored' });
+  if (path === '/api/feedback/patterns') return Promise.resolve([
+    { report_id:'rpt-001', team:'claims_services_team', classification_type:'planning', cluster_count:12, suggested_action:'Review PLANNING_SYSTEM_PROMPT Rule 8 for claim queries that combine status and payment lookups.', status:'new', generated_at:'2026-03-19T14:30:00Z', representative_queries:'["Get status and payment for CLM-123","Show me claim details and payment info"]' },
+    { report_id:'rpt-002', team:'pa_services_team', classification_type:'routing', cluster_count:7, suggested_action:'PA team routing prompt may be confusing authorization checks with status lookups for CPT codes.', status:'acknowledged', generated_at:'2026-03-18T09:15:00Z', representative_queries:'["Does this procedure need auth?","Check PA requirements for knee surgery"]' },
+  ]);
+  if (path === '/api/feedback/improvements') return Promise.resolve([
+    { change_id:'chg-001', changed_by:'admin', change_type:'planning_rule', component:'central_supervisor', description:'Added Rule 11: Simple eligibility checks require exactly 1 goal.', baseline_metrics:'{"accuracy":0.82}', post_change_metrics:'{"accuracy":0.91}', change_timestamp:'2026-03-15T10:00:00Z' },
+    { change_id:'chg-002', changed_by:'admin', change_type:'retrieval_update', component:'chroma_policies', description:'Added 15 new PPO policy documents covering mental health coverage.', baseline_metrics:'{"recall":0.74}', post_change_metrics:'{"recall":0.88}', change_timestamp:'2026-03-12T16:30:00Z' },
+  ]);
+  return Promise.resolve({});
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ICONS (inline SVGs for zero dependencies)
+// ═══════════════════════════════════════════════════════════════
+const Icon = ({ name, size=18 }) => {
+  const icons = {
+    chat: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+    shield: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+    activity: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+    git: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>,
+    brain: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 4.5 17.5a2.5 2.5 0 0 1-.44-4.96A2.5 2.5 0 0 1 6.5 10a2.5 2.5 0 0 1 .44-4.96A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 19.5 17.5a2.5 2.5 0 0 0 .44-4.96A2.5 2.5 0 0 0 17.5 10a2.5 2.5 0 0 0-.44-4.96A2.5 2.5 0 0 0 14.5 2z"/></svg>,
+    send: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+    check: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>,
+    x: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    search: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+    logout: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+    chevronRight: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>,
+    trash: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>,
+  };
+  return icons[name] || null;
+};
+
+// ═══════════════════════════════════════════════════════════════
+// LOGIN VIEW
+// ═══════════════════════════════════════════════════════════════
+const LoginView = ({ onLogin, expiredMessage }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(''); setLoading(true);
+    try {
+      const data = await apiCall('POST', '/api/auth/login', { username, password });
+      onLogin(data);
+    } catch (err) {
+      setError('Authentication failed. Please check your credentials.');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="login-wrapper">
+      <div className="login-card fade-in">
+        <div className="login-header">
+          <div style={{marginBottom:12}}>
+            <div style={{width:48,height:48,borderRadius:12,background:'linear-gradient(135deg,#0EA5E9,#0369A1)',margin:'0 auto',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <Icon name="shield" size={24} />
+            </div>
+          </div>
+          <h1>CSIP</h1>
+          <p>Customer Service Intelligence Platform</p>
+        </div>
+        <form className="login-body" onSubmit={handleSubmit}>
+          {expiredMessage && <div style={{
+            padding:'10px 14px',marginBottom:12,borderRadius:'var(--radius-sm)',fontSize:13,
+            background:'#FEF3C7',color:'#92400E',border:'1px solid #FDE68A',
+          }}>⏱ {expiredMessage}</div>}
+          {error && <div className="login-error">{error}</div>}
+          <div className="login-field">
+            <label>Username</label>
+            <input className="input" type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="csr2" autoFocus />
+          </div>
+          <div className="login-field">
+            <label>Password</label>
+            <input className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="testuser" />
+          </div>
+          <button className="btn btn-primary btn-lg" type="submit" style={{width:'100%',justifyContent:'center',marginTop:8}}>
+            {loading ? <span className="loading-spinner" style={{width:16,height:16,borderWidth:2}}/> : 'Sign In'}
+          </button>
+          <div style={{textAlign:'center',marginTop:16}}>
+            <span style={{fontSize:11,color:'var(--text-muted)'}}>Demo: csr2/testuser • supervisor/testuser</span>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
+// CSR WORKSPACE
+// ═══════════════════════════════════════════════════════════════
+const CSRWorkspace = ({ token, user, onNavigateToCG }) => {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [currentSession, setCurrentSession] = useState(null);
+  const [memberContext, setMemberContext] = useState(null);
+  const messagesEnd = useRef(null);
+
+  useEffect(() => { messagesEnd.current?.scrollIntoView({behavior:'smooth'}); }, [messages]);
+
+  const sendQuery = async () => {
+    if (!input.trim() || loading) return;
+    const q = input.trim();
+    setInput('');
+    setMessages(prev => [...prev, { type:'user', content:q }]);
+    setLoading(true);
+    try {
+      const body = { query:q, prior_session_id: currentSession };
+      if (memberContext?.memberId) body.member_id = memberContext.memberId;
+      const data = await apiCall('POST', '/api/agent/query', body, token);
+      const newSess = data.session_id;
+      if (!currentSession) setSessions([newSess]);
+      else setSessions(prev => [...prev, newSess]);
+      setCurrentSession(newSess);
+      // Extract member context from ANY tool result's raw output.
+      // tool_results structure: { worker_name: { output, tool_raw_output, worker } }
+      // tool_raw_output is a JSON string like: ["{ ... }", null]
+      // Member data can appear at top level (member_lookup) or nested (claim_lookup → .member)
+      const tr = data.tool_results || {};
+      let extracted = null;
+      for (const [workerName, result] of Object.entries(tr)) {
+        if (!result || typeof result !== 'object') continue;
+        const rawStr = result.tool_raw_output || '';
+        if (!rawStr) continue;
+        try {
+          // tool_raw_output is typically: '["{ JSON }", null]'
+          let parsed = JSON.parse(rawStr);
+          if (Array.isArray(parsed)) parsed = parsed.find(x => typeof x === 'string');
+          if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+          if (!parsed || typeof parsed !== 'object') continue;
+
+          // Direct member_lookup / check_eligibility — memberId at top level
+          if (parsed.memberId) {
+            extracted = { memberId: parsed.memberId, ...parsed, _source: workerName };
+            break; // Direct member data is best — stop looking
+          }
+          // Nested inside claim_lookup, claim_payment_info, etc.
+          if (parsed.member && parsed.member.memberId) {
+            extracted = { ...parsed.member, memberId: parsed.member.memberId, _source: workerName };
+            // Don't break — keep looking in case a direct member_lookup is also present
+          }
+        } catch(e) { /* unparseable — skip */ }
+      }
+
+      // Fallback: extract UUID member ID from response text if no structured data
+      if (!extracted) {
+        const uuidMatch = (data.response || '').match(/member\s+(?:ID|id)\s+(?:is\s+)?[`*]*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/i);
+        if (uuidMatch) extracted = { memberId: uuidMatch[1], _source: 'response_text' };
+      }
+
+      if (extracted) {
+        setMemberContext(prev => ({...(prev||{}), ...extracted}));
+      }
+      setMessages(prev => [...prev, { type:'agent', ...data }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { type:'agent', response:'Sorry, an error occurred processing your request. Please try again.', error_count:1, execution_path:[], tool_results:{}, session_id:'' }]);
+    }
+    setLoading(false);
+  };
+
+  const submitFeedback = async (sessionId, rating) => {
+    try { await apiCall('POST', '/api/feedback', { session_id:sessionId, rating }, token); } catch(e) {}
+    setMessages(prev => prev.map(m => m.session_id === sessionId ? {...m, feedbackGiven:rating} : m));
+  };
+
+  const clearWorkspace = () => {
+    setMessages([]);
+    setSessions([]);
+    setCurrentSession(null);
+    setMemberContext(null);
+    setInput('');
+  };
+
+  return (
+    <div className="chat-container" style={{height:'calc(100vh - 52px)'}}>
+      <div className="chat-main" style={{padding:'0 24px 16px'}}>
+        {messages.length > 0 && (
+          <div style={{display:'flex',justifyContent:'flex-end',padding:'8px 0 4px'}}>
+            <button className="btn btn-secondary btn-sm" onClick={clearWorkspace} style={{fontSize:11,gap:4}}>
+              <Icon name="trash" size={12}/> Clear Workspace
+            </button>
+          </div>
+        )}
+        {sessions.length > 1 && (
+          <div className="session-chain">
+            {sessions.map((s,i) => (
+              <React.Fragment key={s}>
+                {i > 0 && <span className="session-arrow">→</span>}
+                <span className={`session-chip ${s===currentSession?'current':''}`}
+                  onClick={() => {
+                    const el = document.getElementById(`query-${i}`);
+                    if (el) el.scrollIntoView({behavior:'smooth',block:'start'});
+                  }}
+                  title={`Scroll to query ${i+1}`}
+                >{`Query ${i+1}`}</span>
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+        <div className="chat-messages">
+          {messages.length === 0 && (
+            <div className="empty-state" style={{marginTop:'15vh'}}>
+              <div className="empty-state-icon">💬</div>
+              <div className="empty-state-title">Start a conversation</div>
+              <div className="empty-state-desc">Ask about member eligibility, claims, prior authorizations, providers, or policy details.</div>
+              <div style={{display:'flex',gap:8,justifyContent:'center',marginTop:16,flexWrap:'wrap'}}>
+                {['What is the status of claim 7799c06c-0883-4dca-b1f0-bded6d1027a5?','Check eligibility for member 2c0d65ea-29b8-4261-89e6-85bbb995200c','Does CPT 29881 need prior auth under PPO?','Is Dr. Chen in-network?'].map(q => (
+                  <button key={q} className="btn btn-secondary btn-sm" onClick={()=>{setInput(q)}} style={{fontSize:11}}>{q}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {(() => {
+            let queryIdx = 0;
+            return messages.map((m,i) => {
+              if (m.type === 'user') {
+                const idx = queryIdx++;
+                return <div key={i} id={`query-${idx}`} className="msg-user fade-in">{m.content}</div>;
+              }
+              return (
+            <div key={i} className="msg-agent fade-in">
+                <div className="msg-agent-card">
+                  <div className="msg-agent-response">{m.response}</div>
+                  <div className="msg-agent-meta">
+                    <span className="mono" style={{cursor:'pointer',color:'var(--accent)',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}}
+                      onClick={()=>onNavigateToCG && onNavigateToCG(m.session_id)}
+                      title="View in CG Explorer"
+                    >Session: {m.session_id}</span>
+                    <span>•</span>
+                    <span>{m.error_count === 0 ? <span style={{color:'var(--success)'}}>✓ No errors</span> : <span style={{color:'var(--error)'}}>✗ {m.error_count} error(s)</span>}</span>
+                  </div>
+                  {m.execution_path?.length > 0 && (
+                    <details className="msg-exec-path">
+                      <summary>Execution path ({m.execution_path.length} nodes)</summary>
+                      <div className="path-nodes">
+                        {m.execution_path.map((n,j) => <span key={j} className="path-node">{n}</span>)}
+                      </div>
+                    </details>
+                  )}
+                  {Object.keys(m.tool_results||{}).length > 0 && (
+                    <details className="msg-exec-path">
+                      <summary>Tool results ({Object.keys(m.tool_results).length} tool(s))</summary>
+                      <pre style={{fontSize:11,padding:'8px 0',fontFamily:'var(--font-mono)',whiteSpace:'pre-wrap',color:'var(--text-secondary)',lineHeight:1.5}}>{JSON.stringify(m.tool_results, null, 2)}</pre>
+                    </details>
+                  )}
+                  {!m.feedbackGiven && m.session_id && (
+                    <div className="feedback-row">
+                      <span style={{fontSize:12,color:'var(--text-muted)',marginRight:4}}>Rate:</span>
+                      <button className="feedback-btn" onClick={()=>submitFeedback(m.session_id,'correct')}>✓ Correct</button>
+                      <button className="feedback-btn" onClick={()=>submitFeedback(m.session_id,'partial')}>◐ Partial</button>
+                      <button className="feedback-btn" onClick={()=>submitFeedback(m.session_id,'incorrect')}>✗ Incorrect</button>
+                    </div>
+                  )}
+                  {m.feedbackGiven && (
+                    <div className="feedback-row">
+                      <span className={`feedback-btn selected-${m.feedbackGiven}`}>
+                        {m.feedbackGiven === 'correct' ? '✓ Correct' : m.feedbackGiven === 'partial' ? '◐ Partial' : '✗ Incorrect'} — Thank you
+                      </span>
+                    </div>
+                  )}
+                </div>
+            </div>
+              );
+            });
+          })()}
+          {loading && <div className="fade-in" style={{alignSelf:'flex-start',display:'flex',alignItems:'center',gap:8,color:'var(--text-muted)',fontSize:13}}><span className="loading-spinner"/> Processing query...</div>}
+          <div ref={messagesEnd}/>
+        </div>
+        <div className="chat-input-area">
+          <div className="input-group">
+            <input className="input" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&sendQuery()} placeholder="Ask about members, claims, authorizations, providers..." disabled={loading} />
+            <button className="btn btn-primary" onClick={sendQuery} disabled={loading}><Icon name="send" size={16}/></button>
+          </div>
+        </div>
+      </div>
+      <div className="chat-sidebar">
+        <div className="card" style={{height:'100%',overflow:'auto'}}>
+          <div className="card-header"><h3>Member Context</h3></div>
+          <div className="card-body">
+            {memberContext ? (
+              <div className="fade-in">
+                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
+                  <div style={{width:44,height:44,borderRadius:'50%',background:'var(--accent-light)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:700,color:'var(--accent-dark)'}}>{
+                    (memberContext.firstName && memberContext.firstName.length < 40) ? (memberContext.firstName||'?')[0] : '?'
+                  }{
+                    (memberContext.lastName && memberContext.lastName.length < 40) ? (memberContext.lastName||'?')[0] : '?'
+                  }</div>
+                  <div>
+                    <div style={{fontWeight:600,fontSize:15}}>{
+                      // Presidio hashes names as SHA256 hex — detect and hide those
+                      (memberContext.firstName && memberContext.firstName.length < 40 && memberContext.lastName && memberContext.lastName.length < 40)
+                        ? `${memberContext.firstName} ${memberContext.lastName}`
+                        : 'Member'
+                    }</div>
+                    <div className="mono" style={{fontSize:11,color:'var(--text-muted)',wordBreak:'break-all'}}>{memberContext.memberId}</div>
+                  </div>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                  {[
+                    memberContext.status && ['Status', memberContext.status, memberContext.status==='ACTIVE'?'badge-green':'badge-yellow'],
+                    memberContext.email && !memberContext.email.startsWith('<') && ['Email', memberContext.email],
+                    memberContext.phone && !memberContext.phone.includes('*') && ['Phone', memberContext.phone],
+                    memberContext.dateOfBirth && ['DOB', memberContext.dateOfBirth],
+                    memberContext.enrollmentDate && ['Enrolled', memberContext.enrollmentDate],
+                    memberContext.planType && ['Plan', memberContext.planType],
+                    memberContext.planName && !memberContext.planName.startsWith('<') && ['Plan Name', memberContext.planName],
+                    (memberContext.deductible != null) && ['Deductible', memberContext.deductibleUsed != null ? `$${memberContext.deductible} ($${memberContext.deductibleUsed} used)` : `$${memberContext.deductible}`],
+                    (memberContext.outOfPocketMax != null) && ['OOP Max', `$${memberContext.outOfPocketMax}`],
+                    memberContext.city && !memberContext.city.startsWith('<') && memberContext.state && !memberContext.state.startsWith('<') && ['Location', `${memberContext.city}, ${memberContext.state}`],
+                    memberContext.zipCode && ['ZIP', memberContext.zipCode],
+                  ].filter(Boolean).map(([label, val, badge]) => (
+                    <div key={label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:13}}>
+                      <span style={{color:'var(--text-muted)'}}>{label}</span>
+                      {badge ? <span className={`badge ${badge}`}>{val}</span> : <span style={{fontWeight:500,textAlign:'right',maxWidth:'60%',wordBreak:'break-all'}}>{val}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="empty-state" style={{padding:'32px 16px'}}>
+                <div className="empty-state-icon">👤</div>
+                <div className="empty-state-desc">Member details will appear here when a member is identified in the conversation.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
+// SUPERVISOR CONTROL PANE
+// ═══════════════════════════════════════════════════════════════
+const SupervisorPane = ({ token, onSystemHalted }) => {
+  const [cbActive, setCbActive] = useState(true);
+
+  // Propagate circuit breaker state to App for top-bar badge
+  useEffect(() => { if (onSystemHalted) onSystemHalted(!cbActive); }, [cbActive]);
+  const [loading, setLoading] = useState(!DEMO_MODE);
+  const [approvals, setApprovals] = useState([]);
+  const [rateLimits, setRateLimits] = useState([]);
+  const [approvalCounts, setApprovalCounts] = useState({requested:0,approved:0,denied:0});
+
+  // Tool permissions management state
+  const [permissions, setPermissions] = useState({});
+  const [permLoading, setPermLoading] = useState(false);
+  const [permRole, setPermRole] = useState('CSR_TIER2');
+  const [permSaving, setPermSaving] = useState('');
+  const [permMsg, setPermMsg] = useState('');
+
+  // HITL approval modal state
+  const [approvalModal, setApprovalModal] = useState(null);  // null=closed, {approval, phase, message, error}
+  // phase: 'reason' → 'executing' → 'done'
+
+  // HITL tab state
+  const [hitlTab, setHitlTab] = useState('claims');
+
+  // Tool permissions tab state
+  const [permTab, setPermTab] = useState('Member Services');
+
+  const ROLES = ['CSR_READONLY', 'CSR_TIER1', 'CSR_TIER2', 'CSR_SUPERVISOR'];
+
+  // Demo data
+  const demoApprovals = [
+    { id:'APR-2026-001', timestamp:'2026-03-20 14:23:01', csr:'csr2', tool:'update_claim_status', impact:'HIGH', params:'CLM-789012 → APPROVED', rawParams:{claim_id:'a1b2c3d4-e5f6-7890-abcd-ef1234567890',action:'APPROVED',reason:'Reprocessed after appeal'}, status:'PENDING' },
+    { id:'APR-2026-002', timestamp:'2026-03-20 14:18:45', csr:'csr1', tool:'approve_prior_auth', impact:'HIGH', params:'PA-2024-005 → APPROVED', rawParams:{pa_id:'pa-2024-005',reason:'Clinical criteria met'}, status:'PENDING' },
+    { id:'APR-2026-003', timestamp:'2026-03-20 13:55:12', csr:'csr2', tool:'deny_prior_auth', impact:'HIGH', params:'PA-2024-008 → DENIED', rawParams:{pa_id:'pa-2024-008',reason:'Insufficient documentation'}, status:'PENDING' },
+    { id:'APR-2026-004', timestamp:'2026-03-20 13:40:30', csr:'csr1', tool:'update_member_info', impact:'HIGH', params:'Member address update', rawParams:{member_id:'f9e8d7c6-b5a4-3210-fedc-ba0987654321',field:'address',new_value:'123 New St, Chicago IL'}, status:'PENDING' },
+  ];
+  const demoRateLimits = [
+    { user:'csr1', current:45, limit:120, pct:37.5 },
+    { user:'csr2', current:89, limit:120, pct:74.2 },
+    { user:'csr3', current:12, limit:120, pct:10 },
+  ];
+  // Catalog used only in demo mode — enriches demo permission rows with
+  // service/description to match the shape the backend returns in live mode.
+  const DEMO_CATALOG = {
+    member_lookup:{service:'Member Services',description:'Look up member demographics by member ID'},
+    check_eligibility:{service:'Member Services',description:'Check member eligibility and active coverage status'},
+    coverage_lookup:{service:'Member Services',description:'Retrieve detailed coverage info (deductibles, copays, benefits)'},
+    update_member_info:{service:'Member Services',description:'Update member contact or demographic information'},
+    member_policy_lookup:{service:'Member Services',description:'Look up member with their associated insurance policy'},
+    claim_lookup:{service:'Claims Services',description:'Look up full claim details by claim ID'},
+    claim_status:{service:'Claims Services',description:'Check claim processing status by claim number'},
+    claim_payment_info:{service:'Claims Services',description:'Retrieve payment amounts and dates for a claim'},
+    member_claims:{service:'Claims Services',description:'List all claims filed by a specific member'},
+    update_claim_status:{service:'Claims Services',description:'Update claim status (requires HITL approval)'},
+    pa_lookup:{service:'PA Services',description:'Look up prior authorization details by PA ID'},
+    pa_status:{service:'PA Services',description:'Check PA processing status by PA ID'},
+    pa_requirements:{service:'PA Services',description:'Determine if a procedure requires PA under a policy type'},
+    member_prior_authorizations:{service:'PA Services',description:'List all PAs for a specific member'},
+    approve_prior_auth:{service:'PA Services',description:'Approve a prior authorization (requires HITL approval)'},
+    deny_prior_auth:{service:'PA Services',description:'Deny a prior authorization (requires HITL approval)'},
+    provider_lookup:{service:'Provider Services',description:'Look up provider details by provider ID'},
+    provider_network_check:{service:'Provider Services',description:'Check if a provider is in-network for a plan'},
+    provider_search_by_specialty:{service:'Provider Services',description:'Search providers by specialty and location'},
+    search_policy_info:{service:'Search Services',description:'Semantic search over policy documents'},
+    search_medical_codes:{service:'Search Services',description:'Look up CPT/ICD codes and descriptions'},
+    search_knowledge_base:{service:'Search Services',description:'Search clinical guidelines and knowledge base'},
+  };
+  // In demo mode, enrich permission rows with service/description from DEMO_CATALOG
+  // to match the same shape the backend returns in live mode.
+  const _enrichDemo = (rows) => rows.map(r => ({
+    ...r,
+    service: (DEMO_CATALOG[r.tool_name] || {}).service || 'Other',
+    description: (DEMO_CATALOG[r.tool_name] || {}).description || r.tool_name,
+  }));
+  const demoPermissions = {
+    CSR_READONLY: _enrichDemo([
+      {tool_name:'member_lookup',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'check_eligibility',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'coverage_lookup',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'member_policy_lookup',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'claim_lookup',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'claim_status',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'claim_payment_info',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'member_claims',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'pa_lookup',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'pa_status',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'pa_requirements',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'member_prior_authorizations',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'provider_lookup',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'provider_network_check',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'provider_search_by_specialty',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'search_policy_info',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'search_medical_codes',is_allowed:true,rate_limit_per_minute:20},
+      {tool_name:'search_knowledge_base',is_allowed:true,rate_limit_per_minute:20},
+    ]),
+    CSR_TIER1: _enrichDemo([
+      {tool_name:'member_lookup',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'check_eligibility',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'coverage_lookup',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'member_policy_lookup',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'claim_lookup',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'claim_status',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'claim_payment_info',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'member_claims',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'pa_lookup',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'pa_status',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'pa_requirements',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'member_prior_authorizations',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'provider_lookup',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'provider_network_check',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'provider_search_by_specialty',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'search_policy_info',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'search_medical_codes',is_allowed:true,rate_limit_per_minute:40},
+      {tool_name:'search_knowledge_base',is_allowed:true,rate_limit_per_minute:40},
+    ]),
+    CSR_TIER2: _enrichDemo([
+      {tool_name:'member_lookup',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'check_eligibility',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'coverage_lookup',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'member_policy_lookup',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'update_member_info',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'claim_lookup',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'claim_status',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'claim_payment_info',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'member_claims',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'update_claim_status',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'pa_lookup',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'pa_status',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'pa_requirements',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'member_prior_authorizations',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'approve_prior_auth',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'deny_prior_auth',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'provider_lookup',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'provider_network_check',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'provider_search_by_specialty',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'search_policy_info',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'search_medical_codes',is_allowed:true,rate_limit_per_minute:60},
+      {tool_name:'search_knowledge_base',is_allowed:true,rate_limit_per_minute:60},
+    ]),
+    CSR_SUPERVISOR: _enrichDemo([
+      {tool_name:'member_lookup',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'check_eligibility',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'coverage_lookup',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'member_policy_lookup',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'update_member_info',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'claim_lookup',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'claim_status',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'claim_payment_info',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'member_claims',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'update_claim_status',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'pa_lookup',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'pa_status',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'pa_requirements',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'member_prior_authorizations',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'approve_prior_auth',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'deny_prior_auth',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'provider_lookup',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'provider_network_check',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'provider_search_by_specialty',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'search_policy_info',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'search_medical_codes',is_allowed:true,rate_limit_per_minute:120},
+      {tool_name:'search_knowledge_base',is_allowed:true,rate_limit_per_minute:120},
+    ]),
+  };
+
+  // Fetch monitoring data (Prometheus)
+  useEffect(() => {
+    if (DEMO_MODE) {
+      setApprovals(demoApprovals);
+      setRateLimits(demoRateLimits);
+      setPermissions(demoPermissions);
+      return;
+    }
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        // Circuit breaker state from Redis via API (more reliable than Prometheus)
+        try {
+          const cbData = await apiCall('GET', '/api/admin/circuit-breaker', null, token);
+          setCbActive(!cbData.active);
+        } catch(cbErr) {
+          // Fallback to Prometheus if API fails
+          const cbResult = await promQuery('circuit_breaker_state');
+          if (cbResult && cbResult.length > 0) setCbActive(promValue(cbResult) === 0);
+        }
+
+        // Approval queue from MySQL (not Prometheus — counters are in A2A containers)
+        try {
+          const aqData = await apiCall('GET', '/api/admin/approval-queue', null, token);
+          const counts = aqData.counts || {};
+          setApprovalCounts({requested: counts.total||0, approved: counts.approved||0, denied: counts.denied||0});
+          setApprovals((aqData.pending || []).map(a => {
+            const params = typeof a.parameters === 'string' ? JSON.parse(a.parameters) : (a.parameters || {});
+            return {
+              id: a.request_id,
+              timestamp: a.requested_at,
+              csr: a.requested_by,
+              tool: a.tool_name,
+              impact: a.impact_level,
+              params: JSON.stringify(params).slice(0,80),
+              rawParams: params,
+              status: a.status,
+            };
+          }));
+        } catch(aqErr) { console.warn('Approval queue fetch failed:', aqErr); }
+
+        // Rate limit utilization from MySQL (Prometheus counters are in A2A containers)
+        try {
+          const rlData = await apiCall('GET', '/api/stats/rate-limit-utilization', null, token);
+          if (rlData.users?.length > 0) {
+            setRateLimits(rlData.users);
+          }
+        } catch(rlErr) { console.warn('Rate limit utilization fetch failed:', rlErr); }
+      } catch(e) { console.error('SupervisorPane fetch error:', e); }
+      setLoading(false);
+    };
+    fetchData();
+    const interval = setInterval(fetchData, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch tool permissions from admin API.
+  // The enriched API returns service/description on each row. For backward
+  // compatibility with older API versions that don't include them, we also
+  // fetch the tool catalog and merge — both are backend data, no frontend logic.
+  const fetchPermissions = async () => {
+    if (DEMO_MODE) { setPermissions(demoPermissions); return; }
+    setPermLoading(true);
+    try {
+      const data = await apiCall('GET', '/api/admin/tool-permissions', null, token);
+      const perms = data.permissions || {};
+
+      // Check if backend already enriched (first row of any role has 'service')
+      const firstRole = Object.keys(perms)[0];
+      const isEnriched = firstRole && perms[firstRole][0]?.service;
+
+      if (!isEnriched) {
+        // Older API — fetch catalog separately and merge
+        try {
+          const catData = await apiCall('GET', '/api/admin/tool-catalog', null, token);
+          const catalog = catData.catalog || {};
+          for (const role of Object.keys(perms)) {
+            perms[role] = perms[role].map(p => {
+              const cat = catalog[p.tool_name] || {};
+              return {...p, service: cat.service || 'Other', description: cat.description || p.tool_name};
+            });
+          }
+        } catch(ce) { console.warn('Catalog fetch failed, service grouping unavailable:', ce); }
+      }
+
+      setPermissions(perms);
+    } catch(e) { console.error('Failed to load permissions:', e); }
+    setPermLoading(false);
+  };
+
+  useEffect(() => { fetchPermissions(); }, [token]);
+
+  // ------------------------------------------------------------------
+  // Circuit Breaker Toggle
+  // ------------------------------------------------------------------
+  const [cbToggling, setCbToggling] = useState(false);
+
+  const toggleCircuitBreaker = async () => {
+    const newActive = !cbActive;
+    const action = newActive ? 'deactivate' : 'activate';
+    const actionLabel = newActive ? 'RESUME all agent processing' : 'HALT all agent processing immediately';
+
+    const reason = prompt(
+      `${action === 'activate' ? '⚠️ EMERGENCY STOP' : '✅ RESUME OPERATIONS'}\n\n` +
+      `This will ${actionLabel}.\n\n` +
+      `Enter reason:`
+    );
+    if (reason === null) return; // cancelled
+
+    if (DEMO_MODE) { setCbActive(newActive); return; }
+
+    setCbToggling(true);
+    try {
+      await apiCall('POST', '/api/admin/circuit-breaker', {
+        action,
+        reason: reason.trim() || `${action}d via supervisor control pane`,
+      }, token);
+      setCbActive(newActive);
+      setPermMsg(`Circuit breaker ${action}d successfully`);
+    } catch(e) {
+      setPermMsg(`Circuit breaker ${action} failed: ${e.message}`);
+    }
+    setCbToggling(false);
+    setTimeout(() => setPermMsg(''), 4000);
+  };
+
+  // ------------------------------------------------------------------
+  // HITL Approval Actions
+  // ------------------------------------------------------------------
+
+  // Build a natural-language query from the pending request's tool + params
+  const buildApprovalQuery = (approval, supervisorReason) => {
+    const p = approval.rawParams || {};
+    const tool = approval.tool;
+    const reason = supervisorReason || p.reason || 'Approved by supervisor';
+
+    if (tool === 'update_claim_status') {
+      return `Update the status of claim ${p.claim_id||'unknown'} to ${p.new_status||p.action||'APPROVED'}. Reason: ${reason}`;
+    }
+    if (tool === 'approve_prior_auth') {
+      return `Approve prior authorization ${p.pa_id||'unknown'}. Reason: ${reason}`;
+    }
+    if (tool === 'deny_prior_auth') {
+      return `Deny prior authorization ${p.pa_id||'unknown'}. Reason: ${reason}`;
+    }
+    if (tool === 'update_member_info') {
+      return `Update member ${p.member_id||'unknown'} information: ${JSON.stringify(p)}. Reason: ${reason}`;
+    }
+    return `Execute ${tool} with parameters: ${JSON.stringify(p)}. Reason: ${reason}`;
+  };
+
+  // Approve: open modal → capture reason → spinner → execute → show result
+  const handleApprove = (approval) => {
+    setApprovalModal({ approval, phase:'reason', message:'', error:false, reason:'' });
+  };
+
+  const executeApproval = async () => {
+    if (!approvalModal) return;
+    const { approval, reason } = approvalModal;
+    const finalReason = (reason || '').trim() || 'Approved by supervisor';
+    setApprovalModal(prev => ({...prev, phase:'executing', message:`Sending ${approval.tool} through the agent pipeline...`}));
+
+    if (DEMO_MODE) {
+      await new Promise(r => setTimeout(r, 2500));
+      setApprovalModal(prev => ({...prev, phase:'done', error:false, message:`${approval.tool} approved and executed successfully.\n\nThe action has been processed through the full agent pipeline with a complete CG audit trail.`}));
+      setApprovals(prev => prev.filter(a => a.id !== approval.id));
+      return;
+    }
+
+    try {
+      const query = buildApprovalQuery(approval, finalReason);
+      const result = await apiCall('POST', '/api/agent/query', { query }, token);
+      await apiCall('POST', '/api/admin/approval-resolve', {
+        request_id: approval.id,
+        decision: 'approve',
+        rationale: `${finalReason} | Agent response: ${(result.response||'').slice(0,150)}`,
+      }, token);
+      setApprovalModal(prev => ({
+        ...prev, phase:'done', error:false,
+        message: `${approval.tool} approved and executed.\n\nAgent response:\n${(result.response||'Action completed successfully.').slice(0,400)}`,
+      }));
+      setApprovals(prev => prev.filter(a => a.id !== approval.id));
+      setApprovalCounts(prev => ({...prev, pending: Math.max(0, prev.pending-1), approved: prev.approved+1}));
+    } catch(e) {
+      setApprovalModal(prev => ({
+        ...prev, phase:'done', error:true,
+        message: `Approval execution failed:\n\n${e.message}\n\nThe request remains in the pending queue. You may retry or deny it.`,
+      }));
+    }
+  };
+
+  // Deny: prompt for reason → resolve immediately
+  const handleDeny = (approval) => {
+    const rationale = prompt('Denial reason:');
+    if (rationale === null) return; // cancelled
+    const finalRationale = rationale.trim() || 'Denied by supervisor';
+    if (DEMO_MODE) { setApprovals(prev => prev.filter(a => a.id !== approval.id)); return; }
+    (async () => {
+      try {
+        await apiCall('POST', '/api/admin/approval-resolve', {
+          request_id: approval.id,
+          decision: 'deny',
+          rationale: finalRationale,
+        }, token);
+        setPermMsg(`Denied: ${approval.tool}`);
+        setApprovals(prev => prev.filter(a => a.id !== approval.id));
+        setApprovalCounts(prev => ({...prev, pending: Math.max(0, prev.pending-1), denied: prev.denied+1}));
+      } catch(e) {
+        setPermMsg(`Deny failed: ${e.message}`);
+      }
+      setTimeout(() => setPermMsg(''), 4000);
+    })();
+  };
+
+  // Toggle tool enabled/disabled
+  const toggleTool = async (role, toolName, currentAllowed) => {
+    setPermSaving(`${role}:${toolName}`);
+    setPermMsg('');
+    try {
+      await apiCall('PUT', '/api/admin/tool-permissions', {
+        role, tool_name: toolName, is_allowed: !currentAllowed
+      }, token);
+      setPermMsg(`${toolName} ${!currentAllowed?'enabled':'disabled'} for ${role}`);
+      // Optimistic update
+      setPermissions(prev => {
+        const updated = {...prev};
+        if (updated[role]) {
+          updated[role] = updated[role].map(p =>
+            p.tool_name === toolName ? {...p, is_allowed: !currentAllowed} : p
+          );
+        }
+        return updated;
+      });
+    } catch(e) { setPermMsg(`Failed: ${e.message}`); }
+    setPermSaving('');
+    setTimeout(() => setPermMsg(''), 3000);
+  };
+
+  // Update rate limit
+  const updateRateLimit = async (role, toolName, newLimit) => {
+    const limit = parseInt(newLimit, 10);
+    if (isNaN(limit) || limit < 1 || limit > 1000) return;
+    setPermSaving(`${role}:${toolName}:rate`);
+    try {
+      await apiCall('PUT', '/api/admin/tool-permissions', {
+        role, tool_name: toolName, rate_limit_per_minute: limit
+      }, token);
+      setPermissions(prev => {
+        const updated = {...prev};
+        if (updated[role]) {
+          updated[role] = updated[role].map(p =>
+            p.tool_name === toolName ? {...p, rate_limit_per_minute: limit} : p
+          );
+        }
+        return updated;
+      });
+      setPermMsg(`Rate limit for ${toolName}/${role} set to ${limit}/min`);
+    } catch(e) { setPermMsg(`Failed: ${e.message}`); }
+    setPermSaving('');
+    setTimeout(() => setPermMsg(''), 3000);
+  };
+
+  const SERVICE_ORDER = ['Member Services', 'Claims Services', 'PA Services', 'Provider Services', 'Search Services'];
+  const SERVICE_COLORS = {'Member Services':'#0EA5E9', 'Claims Services':'#8B5CF6', 'PA Services':'#F59E0B', 'Provider Services':'#10B981', 'Search Services':'#EC4899', 'Other':'#6B7280'};
+
+  const currentPerms = permissions[permRole] || [];
+
+  // Group current permissions by service.
+  // service and description come from the backend (enriched from A2A agent cards).
+  const groupedPerms = {};
+  currentPerms.forEach(p => {
+    const service = p.service || 'Other';
+    const desc = p.description || p.tool_name;
+    if (!groupedPerms[service]) groupedPerms[service] = [];
+    groupedPerms[service].push({...p, desc});
+  });
+  const orderedServices = [
+    ...SERVICE_ORDER.filter(s => groupedPerms[s]?.length > 0),
+    ...(groupedPerms['Other']?.length > 0 ? ['Other'] : []),
+  ];
+
+  return (
+    <div style={{maxWidth:1200,margin:'0 auto'}}>
+      {loading && <div style={{textAlign:'center',padding:24}}><span className="loading-spinner"/> Loading supervisor data...</div>}
+      {/* Circuit Breaker */}
+      <div className="card fade-in" style={{marginBottom:24}}>
+        <div className="card-header"><h3>Circuit Breaker — Emergency Kill Switch</h3></div>
+        <div className="card-body">
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div>
+              <div className="cb-toggle">
+                <div className={`cb-switch ${cbActive?'active':'halted'}`} onClick={toggleCircuitBreaker} style={{opacity:cbToggling?0.5:1,pointerEvents:cbToggling?'none':'auto'}}>
+                  <div className="cb-switch-knob"/>
+                </div>
+                <div className={`cb-status ${cbActive?'active':'halted'}`}>{cbActive ? 'SYSTEM ACTIVE' : 'ALL AGENTS HALTED'}</div>
+              </div>
+              <p style={{fontSize:13,color:'var(--text-muted)',marginTop:8,maxWidth:500}}>
+                {cbActive ? 'All agent processing is operational. Toggle off to immediately halt all agent activity across the platform.' : 'Emergency stop is engaged. All agent queries are being rejected at the circuit breaker. Toggle on to resume operations.'}
+              </p>
+            </div>
+            {!DEMO_MODE && <div style={{textAlign:'right'}}>
+              <div style={{fontSize:12,color:'var(--text-muted)'}}>Approval totals (lifetime)</div>
+              <div style={{fontSize:12,marginTop:4}}><span style={{color:'var(--success)'}}>Approved: {approvalCounts.approved}</span> • <span style={{color:'var(--error)'}}>Denied: {approvalCounts.denied}</span></div>
+            </div>}
+            {DEMO_MODE && <div style={{textAlign:'right'}}>
+              <div style={{fontSize:12,color:'var(--text-muted)'}}>Last state change</div>
+              <div className="mono" style={{fontSize:13}}>2026-03-20 09:15:00 UTC</div>
+            </div>}
+          </div>
+        </div>
+      </div>
+
+      {/* HITL Approval Queue — tabbed by category */}
+      <div className="card fade-in" style={{marginBottom:24}}>
+        <div className="card-header">
+          <h3>Human-in-the-Loop Approval Queue</h3>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {!DEMO_MODE && <div style={{fontSize:11,color:'var(--text-muted)'}}>
+              Total: {approvalCounts.requested} • <span style={{color:'var(--success)'}}>Approved: {approvalCounts.approved}</span> • <span style={{color:'var(--error)'}}>Denied: {approvalCounts.denied}</span>
+            </div>}
+            <span className="badge badge-yellow">{approvals.length} pending</span>
+          </div>
+        </div>
+        {(() => {
+          const TABS = [
+            { id:'claims',  label:'Claims Operations',   icon:'📋', color:'#8B5CF6', tools:['update_claim_status'] },
+            { id:'pa',      label:'Prior Authorization',  icon:'🔐', color:'#F59E0B', tools:['approve_prior_auth','deny_prior_auth'] },
+            { id:'member',  label:'Member Operations',    icon:'👤', color:'#0EA5E9', tools:['update_member_info'] },
+          ];
+          const tabCounts = {};
+          TABS.forEach(t => { tabCounts[t.id] = approvals.filter(a => t.tools.includes(a.tool)).length; });
+          const currentTabItems = approvals.filter(a => {
+            const tab = TABS.find(t => t.id === hitlTab);
+            return tab ? tab.tools.includes(a.tool) : true;
+          });
+          const activeTab = TABS.find(t => t.id === hitlTab) || TABS[0];
+
+          return (
+            <div>
+              {/* Tab bar */}
+              <div style={{display:'flex',borderBottom:'1px solid var(--border)',background:'var(--bg-secondary)'}}>
+                {TABS.map(tab => (
+                  <div key={tab.id}
+                    onClick={()=>setHitlTab(tab.id)}
+                    style={{
+                      padding:'10px 20px',cursor:'pointer',fontSize:13,fontWeight:hitlTab===tab.id?600:400,
+                      color:hitlTab===tab.id?tab.color:'var(--text-muted)',
+                      borderBottom:hitlTab===tab.id?`3px solid ${tab.color}`:'3px solid transparent',
+                      display:'flex',alignItems:'center',gap:6,transition:'all 0.2s',
+                      background:hitlTab===tab.id?'white':'transparent',
+                    }}>
+                    <span>{tab.icon}</span>
+                    <span>{tab.label}</span>
+                    {tabCounts[tab.id] > 0 && <span className="badge badge-yellow" style={{fontSize:10,padding:'1px 6px'}}>{tabCounts[tab.id]}</span>}
+                  </div>
+                ))}
+              </div>
+
+              {/* Tab content */}
+              <div style={{overflow:'auto',maxHeight:450}}>
+                {currentTabItems.length === 0 ? (
+                  <div className="empty-state" style={{padding:32}}>
+                    <div className="empty-state-desc">No pending {activeTab.label.toLowerCase()} approvals.</div>
+                  </div>
+                ) : (
+                  <table className="data-table">
+                    <thead><tr><th>Request</th><th>CSR</th><th>Tool / Details</th><th style={{width:160}}>Actions</th></tr></thead>
+                    <tbody>
+                      {currentTabItems.map(a => {
+                        const p = a.rawParams || {};
+                        let summary = a.params;
+                        if (a.tool === 'update_claim_status') summary = `Claim ${(p.claim_id||'?').slice(0,20)}… → ${p.new_status||p.action||'?'} (${(p.reason||'no reason').slice(0,40)})`;
+                        else if (a.tool === 'approve_prior_auth') summary = `PA ${p.pa_id||'?'} → APPROVE (${(p.reason||'').slice(0,40)})`;
+                        else if (a.tool === 'deny_prior_auth') summary = `PA ${p.pa_id||'?'} → DENY (${(p.reason||'').slice(0,40)})`;
+                        else if (a.tool === 'update_member_info') summary = `Member ${(p.member_id||'?').slice(0,20)}… : ${p.field||'?'} → ${(p.new_value||'?').slice(0,30)}`;
+                        return (
+                          <tr key={a.id}>
+                            <td><span className="mono" style={{fontSize:11,wordBreak:'break-all'}}>{a.id}</span><br/><span style={{fontSize:11,color:'var(--text-muted)'}}>{a.timestamp}</span></td>
+                            <td><span className="badge badge-gray">{a.csr}</span></td>
+                            <td><span className="mono" style={{fontSize:12,fontWeight:500}}>{a.tool}</span><br/><span style={{fontSize:11,color:'var(--text-muted)'}}>{summary}</span></td>
+                            <td>
+                              <div style={{display:'flex',gap:4}}>
+                                <button className="btn btn-success btn-sm" onClick={()=>handleApprove(a)} title="Approve — sends query through agent pipeline"><Icon name="check" size={12}/> Approve</button>
+                                <button className="btn btn-danger btn-sm" onClick={()=>handleDeny(a)} title="Deny — marks request as denied"><Icon name="x" size={12}/> Deny</button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Rate Limits */}
+      <div className="card fade-in" style={{marginBottom:24}}>
+          <div className="card-header"><h3>Rate Limit Utilization</h3></div>
+          <div className="card-body">
+            {rateLimits.length === 0 && !loading ? (
+              <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No rate limit data available yet.</div></div>
+            ) : rateLimits.map(r => (
+              <div key={r.user} style={{marginBottom:16}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                  <span style={{fontSize:13,fontWeight:500}}>{r.user}</span>
+                  <span className="mono" style={{fontSize:12,color:'var(--text-muted)'}}>{r.current}/{r.limit} req/min</span>
+                </div>
+                <div style={{height:8,background:'var(--bg-secondary)',borderRadius:4,overflow:'hidden'}}>
+                  <div style={{width:`${r.pct}%`,height:'100%',borderRadius:4,transition:'width 0.5s',background:r.pct>80?'var(--error)':r.pct>50?'var(--warning)':'var(--success)'}}/>
+                </div>
+              </div>
+            ))}
+            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:12}}>Sliding window: 120 requests/minute per user. Source: Redis + Prometheus.</div>
+          </div>
+      </div>
+
+      {/* Tool Permissions & Rate Limit Management */}
+      <div className="card fade-in" style={{marginTop:24}}>
+        <div className="card-header">
+          <h3>Tool Permissions & Rate Limits</h3>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {permMsg && <span style={{fontSize:11,color:permMsg.includes('Failed')?'var(--error)':'var(--success)',transition:'opacity 0.3s'}}>{permMsg}</span>}
+            <select value={permRole} onChange={e=>setPermRole(e.target.value)} style={{
+              padding:'6px 10px',fontSize:12,borderRadius:'var(--radius-sm)',border:'1px solid var(--border)',
+              background:'white',fontFamily:'var(--font-mono)',cursor:'pointer',
+            }}>
+              {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <button className="btn btn-secondary btn-sm" onClick={fetchPermissions} disabled={permLoading}>
+              {permLoading ? <span className="loading-spinner" style={{width:12,height:12,borderWidth:2}}/> : '↻'} Refresh
+            </button>
+          </div>
+        </div>
+        {(() => {
+          const SERVICE_ICONS = {'Member Services':'👤','Claims Services':'📋','PA Services':'🔐','Provider Services':'🏥','Search Services':'🔍','Other':'⚙️'};
+          const allTabs = orderedServices.length > 0 ? orderedServices : SERVICE_ORDER;
+          const activeService = allTabs.includes(permTab) ? permTab : allTabs[0];
+          const activeTools = groupedPerms[activeService] || [];
+
+          return (
+            <div>
+              {/* Service tabs */}
+              <div style={{display:'flex',borderBottom:'1px solid var(--border)',background:'var(--bg-secondary)',overflowX:'auto'}}>
+                {allTabs.map(svc => {
+                  const count = (groupedPerms[svc] || []).length;
+                  const color = SERVICE_COLORS[svc] || '#6B7280';
+                  const isActive = activeService === svc;
+                  return (
+                    <div key={svc}
+                      onClick={()=>setPermTab(svc)}
+                      style={{
+                        padding:'10px 16px',cursor:'pointer',fontSize:12,fontWeight:isActive?600:400,
+                        color:isActive?color:'var(--text-muted)',whiteSpace:'nowrap',
+                        borderBottom:isActive?`3px solid ${color}`:'3px solid transparent',
+                        display:'flex',alignItems:'center',gap:5,transition:'all 0.2s',
+                        background:isActive?'white':'transparent',
+                      }}>
+                      <span>{SERVICE_ICONS[svc]||'⚙️'}</span>
+                      <span>{svc.replace(' Services','')}</span>
+                      {count > 0 && <span style={{fontSize:10,color:'var(--text-muted)',fontWeight:400}}>({count})</span>}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Tab content */}
+              <div style={{overflow:'auto'}}>
+                {activeTools.length === 0 && !permLoading ? (
+                  <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No tools found for {activeService} under {permRole}.</div></div>
+                ) : (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th style={{width:'45%'}}>Tool</th>
+                      <th style={{textAlign:'center',width:70}}>Enabled</th>
+                      <th style={{width:130}}>Rate Limit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeTools.map(p => (
+                      <tr key={p.tool_name}>
+                        <td>
+                          <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                            <span className="mono" style={{fontSize:12,fontWeight:500}}>{p.tool_name}</span>
+                            <span style={{fontSize:11,color:'var(--text-muted)',lineHeight:1.3}}>{p.desc}</span>
+                          </div>
+                        </td>
+                        <td style={{textAlign:'center'}}>
+                          <div
+                            onClick={()=>!DEMO_MODE && toggleTool(permRole, p.tool_name, p.is_allowed)}
+                            style={{
+                              display:'inline-flex',alignItems:'center',justifyContent:p.is_allowed?'flex-end':'flex-start',
+                              width:36,height:20,borderRadius:10,cursor:DEMO_MODE?'default':'pointer',
+                              background:p.is_allowed?'var(--success)':'var(--border)',transition:'background 0.2s',
+                              padding:2,opacity:permSaving===`${permRole}:${p.tool_name}`?0.5:1,
+                            }}>
+                            <div style={{width:16,height:16,borderRadius:'50%',background:'white',boxShadow:'0 1px 2px rgba(0,0,0,0.2)',transition:'all 0.2s'}}/>
+                          </div>
+                        </td>
+                        <td>
+                          <input
+                            type="number" min="1" max="1000"
+                            defaultValue={p.rate_limit_per_minute}
+                            onBlur={e => {
+                              const v = parseInt(e.target.value, 10);
+                              if (!DEMO_MODE && v !== p.rate_limit_per_minute && v >= 1 && v <= 1000) {
+                                updateRateLimit(permRole, p.tool_name, v);
+                              }
+                            }}
+                            onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                            disabled={DEMO_MODE}
+                            style={{
+                              width:80,padding:'4px 8px',fontSize:12,fontFamily:'var(--font-mono)',
+                              border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',
+                              textAlign:'right',background:DEMO_MODE?'var(--bg-secondary)':'white',
+                            }}
+                          />
+                          <span style={{fontSize:10,color:'var(--text-muted)',marginLeft:4}}>/min</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+        <div style={{padding:'8px 16px',fontSize:11,color:'var(--text-muted)',borderTop:'1px solid var(--border)'}}>
+          Toggle tools on/off or edit rate limits. Changes take effect immediately across all containers (Redis cache invalidation). Source: MySQL tool_permissions table.
+        </div>
+      </div>
+
+      {/* ── Approval Modal Overlay ─────────────────────────────────── */}
+      {approvalModal && (
+        <div style={{
+          position:'fixed', top:0, left:0, right:0, bottom:0, zIndex:9999,
+          background:'rgba(0,0,0,0.5)', backdropFilter:'blur(2px)',
+          display:'flex', alignItems:'center', justifyContent:'center',
+        }}>
+          <div style={{
+            background:'white', borderRadius:'var(--radius-lg)', padding:28,
+            width:'100%', maxWidth:520, boxShadow:'0 20px 60px rgba(0,0,0,0.3)',
+          }}>
+            {/* Phase: Capture Reason */}
+            {approvalModal.phase === 'reason' && (() => {
+              const a = approvalModal.approval;
+              const p = a.rawParams || {};
+              const TOOL_LABELS = {
+                update_claim_status: { label:'Approve Claim Status Update', icon:'📋', color:'#8B5CF6',
+                  detail:`Claim: ${p.claim_id||'?'}\nNew Status: ${p.new_status||p.action||'APPROVED'}` },
+                approve_prior_auth: { label:'Approve Prior Authorization', icon:'🔐', color:'#F59E0B',
+                  detail:`PA: ${p.pa_id||'?'}` },
+                deny_prior_auth: { label:'Deny Prior Authorization', icon:'🔐', color:'#F59E0B',
+                  detail:`PA: ${p.pa_id||'?'}` },
+                update_member_info: { label:'Approve Member Update', icon:'👤', color:'#0EA5E9',
+                  detail:`Member: ${p.member_id||'?'}\nField: ${p.field||'?'} → ${p.new_value||'?'}` },
+              };
+              const info = TOOL_LABELS[a.tool] || { label:`Approve: ${a.tool}`, icon:'⚙️', color:'#6B7280', detail:JSON.stringify(p) };
+              return (
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+                    <span style={{fontSize:24}}>{info.icon}</span>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:16,color:info.color}}>{info.label}</div>
+                      <div style={{fontSize:12,color:'var(--text-muted)'}}>Requested by: {a.csr} at {a.timestamp}</div>
+                    </div>
+                  </div>
+                  <div className="mono" style={{fontSize:12,background:'var(--bg-secondary)',padding:12,borderRadius:'var(--radius-sm)',whiteSpace:'pre-wrap',marginBottom:16,lineHeight:1.5}}>
+                    {info.detail}
+                  </div>
+                  <div style={{marginBottom:16}}>
+                    <label style={{fontSize:13,fontWeight:600,display:'block',marginBottom:6}}>Approval Reason <span style={{color:'var(--text-muted)',fontWeight:400}}>(required)</span></label>
+                    <textarea
+                      rows={3}
+                      placeholder="Enter the reason for approval..."
+                      value={approvalModal.reason||''}
+                      onChange={e => setApprovalModal(prev => ({...prev, reason:e.target.value}))}
+                      autoFocus
+                      style={{
+                        width:'100%', padding:'10px 12px', fontSize:13, border:'1px solid var(--border)',
+                        borderRadius:'var(--radius-sm)', resize:'vertical', fontFamily:'inherit',
+                        boxSizing:'border-box',
+                      }}
+                    />
+                  </div>
+                  <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                    <button className="btn btn-secondary" onClick={()=>setApprovalModal(null)} style={{padding:'8px 20px'}}>Cancel</button>
+                    <button className="btn btn-success" onClick={executeApproval}
+                      disabled={!(approvalModal.reason||'').trim()}
+                      style={{padding:'8px 20px',opacity:(approvalModal.reason||'').trim()?1:0.5}}>
+                      <Icon name="check" size={14}/> Approve & Execute
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Phase: Executing (spinner) */}
+            {approvalModal.phase === 'executing' && (
+              <div style={{textAlign:'center',padding:'20px 0'}}>
+                <div style={{
+                  width:48,height:48,border:'4px solid var(--border)',borderTopColor:'var(--accent)',
+                  borderRadius:'50%',animation:'spin 0.8s linear infinite',margin:'0 auto 20px',
+                }}/>
+                <div style={{fontWeight:600,fontSize:15,marginBottom:8}}>Processing Approval</div>
+                <div style={{fontSize:13,color:'var(--text-muted)',lineHeight:1.5}}>
+                  {approvalModal.message}
+                </div>
+                <div style={{fontSize:11,color:'var(--text-muted)',marginTop:12}}>
+                  This may take up to 60 seconds. Please do not close this window.
+                </div>
+              </div>
+            )}
+
+            {/* Phase: Done (success or error) */}
+            {approvalModal.phase === 'done' && (
+              <div style={{textAlign:'center',padding:'12px 0'}}>
+                <div style={{fontSize:48,marginBottom:12}}>
+                  {approvalModal.error ? '❌' : '✅'}
+                </div>
+                <div style={{fontWeight:700,fontSize:16,marginBottom:12,color:approvalModal.error?'var(--error)':'var(--success)'}}>
+                  {approvalModal.error ? 'Approval Failed' : 'Approval Successful'}
+                </div>
+                <div style={{
+                  fontSize:13,color:'var(--text-secondary)',lineHeight:1.6,
+                  whiteSpace:'pre-wrap',textAlign:'left',
+                  background:'var(--bg-secondary)',padding:14,borderRadius:'var(--radius-sm)',
+                  maxHeight:200,overflow:'auto',marginBottom:20,
+                }}>
+                  {approvalModal.message}
+                </div>
+                <button className="btn btn-primary" onClick={()=>setApprovalModal(null)} style={{padding:'8px 32px'}}>
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
+// PERFORMANCE DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+const PerformanceDashboard = ({ token }) => {
+  const [loading, setLoading] = useState(!DEMO_MODE);
+  const [agenticHealth, setAgenticHealth] = useState({});
+  const [latencyData, setLatencyData] = useState([]);
+  const [securityData, setSecurityData] = useState([]);
+  const [teamData, setTeamData] = useState([]);
+  const [providers, setProviders] = useState([]);
+
+  // Demo data
+  const demoHealth = {
+    estimated_tokens_per_query:1850, llm_calls_per_query:5.3, tool_success_rate:0.941,
+    planning_routing_accuracy:0.923, positive_feedback_rate:0.873,
+    agent_error_rate:0.047, avg_agent_latency_seconds:1.2, avg_e2e_latency_seconds:4.2,
+    avg_plan_goals:1.1, avg_plan_steps:1.8,
+  };
+  const demoLatency = [{t:'12:00',v:4.2},{t:'12:05',v:3.8},{t:'12:10',v:5.1},{t:'12:15',v:4.5},{t:'12:20',v:3.9},{t:'12:25',v:4.8},{t:'12:30',v:4.1},{t:'12:35',v:3.6},{t:'12:40',v:5.3},{t:'12:45',v:4.0},{t:'12:50',v:3.7},{t:'12:55',v:4.4}];
+  const demoSecurity = [
+    {name:'NeMo Blocks',count:23},{name:'RBAC Denials',count:5},{name:'Rate Limited',count:12},
+    {name:'NH3 Sanitized',count:89},{name:'Presidio Vaulted',count:156},{name:'Output Validation',count:3},
+    {name:'DLP Flags',count:1},{name:'Replay Rejected',count:0},
+  ];
+  const demoTeams = [{name:'Member',count:2100},{name:'Claims',count:3200},{name:'PA',count:2800},{name:'Provider',count:1900},{name:'Search',count:1500}];
+  const demoProviders = [
+    {name:'OpenAI (GPT-4o-mini)',status:'active',failures:0,lastSuccess:'2s ago',avgMs:1200},
+    {name:'Anthropic (Claude)',status:'active',failures:0,lastSuccess:'45s ago',avgMs:1450},
+    {name:'Amazon Bedrock',status:'cooldown',failures:3,lastSuccess:'12m ago',avgMs:2100},
+  ];
+
+  useEffect(() => {
+    if (DEMO_MODE) {
+      setAgenticHealth(demoHealth); setLatencyData(demoLatency); setSecurityData(demoSecurity);
+      setTeamData(demoTeams); setProviders(demoProviders);
+      return;
+    }
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        // Agentic health metrics from consolidated API endpoint
+        try {
+          const healthData = await apiCall('GET', '/api/stats/agentic-health', null, token);
+          if (healthData.metrics) setAgenticHealth(healthData.metrics);
+        } catch(e) { console.warn('Agentic health fetch failed:', e); }
+
+        // Latency time series (last hour, 5-min steps)
+        const latRange = await promRangeQuery(
+          'rate(request_processing_latency_seconds_sum[15m]) / rate(request_processing_latency_seconds_count[15m])', 60, 300
+        );
+        if (latRange && latRange.length > 0 && latRange[0].values) {
+          setLatencyData(latRange[0].values
+            .map(([ts, val]) => ({
+              t: new Date(ts * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),
+              v: parseFloat(parseFloat(val).toFixed(2)) || 0,
+            }))
+            .filter(d => isFinite(d.v) && d.v > 0)
+          );
+        }
+
+        // Security controls heatmap from Prometheus counters (sum across labels)
+        const secQueries = [
+          ['NeMo Blocks', 'sum(increase(input_validation_failures_total[24h]))'],
+          ['RBAC Denials', 'sum(increase(authorization_denials_total[24h]))'],
+          ['Rate Limited', 'sum(increase(rate_limit_exceeded_total[24h]))'],
+          ['NH3 Sanitized', 'sum(increase(malicious_patterns_detected_total[24h]))'],
+          ['Presidio Vaulted', 'sum(increase(anonymization_operations_total[24h]))'],
+          ['Output Validation', 'sum(increase(tool_execution_denials_total[24h]))'],
+          ['Approval Requests', 'sum(increase(approval_requests_total[24h]))'],
+          ['Replay Rejected', 'sum(increase(mcp_replay_rejections_total[24h]))'],
+        ];
+        const secResults = await Promise.all(secQueries.map(([_,q]) => promQuery(q)));
+        const secData = secQueries.map(([name], i) => ({name, count: Math.round(promValue(secResults[i]))}));
+
+        // Override "Approval Requests" with MySQL data — Prometheus counters for
+        // approvals are unreliable (they're in A2A containers which aren't scraped)
+        if (token) {
+          try {
+            const aqData = await apiCall('GET', '/api/admin/approval-queue', null, token);
+            const approvalIdx = secData.findIndex(s => s.name === 'Approval Requests');
+            if (approvalIdx >= 0) secData[approvalIdx].count = (aqData.counts?.total || 0);
+          } catch(e) { /* supervisor-only endpoint — may fail for non-supervisor roles */ }
+        }
+        setSecurityData(secData);
+
+        // Team execution data from Context Graph (Prometheus counter is dead code)
+        try {
+          const teamResp = await apiCall('GET', '/api/stats/team-invocations', null, token);
+          if (teamResp.teams?.length > 0) {
+            setTeamData(teamResp.teams);
+          }
+        } catch(e) { console.warn('Team invocations fetch failed:', e); }
+
+        // Infrastructure service health from /health endpoint
+        try {
+          const healthRes = await fetch(`${API_BASE}/health`);
+          if (healthRes.ok) {
+            const health = await healthRes.json();
+            const services = health.services || {};
+            setProviders(Object.entries(services).map(([name, status]) => ({
+              name: name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+              status: status === 'connected' ? 'active' : 'broken',
+              failures: 0,
+              lastSuccess: status === 'connected' ? 'via /health' : 'unavailable',
+              avgMs: 0,
+            })));
+          }
+        } catch(e) { /* /health not reachable */ }
+      } catch(e) { console.error('PerformanceDashboard fetch error:', e); }
+      setLoading(false);
+    };
+    fetchData();
+    const interval = setInterval(fetchData, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const maxSec = Math.max(...securityData.map(d=>d.count), 1);
+  const h = agenticHealth;
+  const fmtPct = (v) => (v && v > 0) ? (v * 100).toFixed(1) + '%' : '--';
+  const fmtSec = (v) => (v && v > 0) ? v.toFixed(1) + 's' : '--';
+  const fmtNum = (v) => (v && v > 0) ? v.toFixed(1) : '--';
+  const fmtTokenCost = (tokens) => (tokens && tokens > 0) ? '$' + (tokens * 0.000003).toFixed(4) : '--';
+  const pctColor = (v, good=0.9) => v >= good ? 'var(--success)' : v >= good*0.8 ? 'var(--warning)' : 'var(--error)';
+  const pctColorInv = (v, bad=0.1) => v <= bad ? 'var(--success)' : v <= bad*2 ? 'var(--warning)' : 'var(--error)';
+
+  return (
+    <div style={{maxWidth:1200,margin:'0 auto'}}>
+      {loading && <div style={{textAlign:'center',padding:24}}><span className="loading-spinner"/> Loading agentic health metrics...</div>}
+
+      {/* Tier 1: LLM & Cost Metrics */}
+      <div className="card fade-in" style={{marginBottom:24}}>
+        <div className="card-header">
+          <h3>Tier 1 — LLM Performance & Cost</h3>
+          <span className="badge badge-gray" style={{fontSize:10}}>Updated every 30s from Context Graph</span>
+        </div>
+        <div className="metric-grid">
+          {[
+            { label:'Est. Tokens / Query', value:fmtNum(h.estimated_tokens_per_query), sub:fmtTokenCost(h.estimated_tokens_per_query), color:'#0EA5E9' },
+            { label:'LLM Calls / Query', value:fmtNum(h.llm_calls_per_query), sub:'Agent executions per session', color:'#8B5CF6' },
+            { label:'Tool Success Rate', value:fmtPct(h.tool_success_rate), sub:`${h.tool_success_rate > 0 ? Math.round(h.tool_success_rate*200)+'/200' : '--'} recent tools`, color:pctColor(h.tool_success_rate||0,0.9) },
+            { label:'Planning Accuracy', value:fmtPct(h.planning_routing_accuracy), sub:'Correct routing to team/tool', color:pctColor(h.planning_routing_accuracy||0,0.9) },
+            { label:'Positive Feedback', value:fmtPct(h.positive_feedback_rate), sub:'CSR satisfaction (7-day)', color:pctColor(h.positive_feedback_rate||0,0.8) },
+            { label:'E2E Latency', value:fmtSec(h.avg_e2e_latency_seconds), sub:'Session start → plan complete', color: (h.avg_e2e_latency_seconds||0) < 10 ? 'var(--success)' : (h.avg_e2e_latency_seconds||0) < 20 ? 'var(--warning)' : 'var(--error)' },
+          ].map(m => (
+            <div className="metric-card" key={m.label}>
+              <div className="metric-label">{m.label}</div>
+              <div className="metric-value" style={{color:m.color}}>{m.value}</div>
+              {m.sub && <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>{m.sub}</div>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tier 2: Agent Health & Drift */}
+      <div className="card fade-in" style={{marginBottom:24}}>
+        <div className="card-header">
+          <h3>Tier 2 — Agent Health & Drift Detection</h3>
+          <span className="badge badge-gray" style={{fontSize:10}}>Rolling window over last 200 executions</span>
+        </div>
+        <div className="metric-grid">
+          {[
+            { label:'Agent Error Rate', value:fmtPct(h.agent_error_rate), sub:'Executions with errors or failures', color:pctColorInv(h.agent_error_rate||0,0.05) },
+            { label:'Avg Agent Latency', value:h.avg_agent_latency_seconds > 0 ? (h.avg_agent_latency_seconds*1000).toFixed(0)+'ms' : '--', sub:'Team supervisor routing time', color:'#0EA5E9' },
+            { label:'Avg Goals / Plan', value:fmtNum(h.avg_plan_goals), sub:'Drift signal: should be ~1.0', color: Math.abs((h.avg_plan_goals||1)-1) < 0.3 ? 'var(--success)' : 'var(--warning)' },
+            { label:'Avg Steps / Plan', value:fmtNum(h.avg_plan_steps), sub:'Drift signal: should be 1-3', color: (h.avg_plan_steps||0) <= 3 ? 'var(--success)' : 'var(--warning)' },
+          ].map(m => (
+            <div className="metric-card" key={m.label}>
+              <div className="metric-label">{m.label}</div>
+              <div className="metric-value" style={{color:m.color}}>{m.value}</div>
+              {m.sub && <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>{m.sub}</div>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:24}}>
+        <div className="card fade-in">
+          <div className="card-header"><h3>Request Latency (last hour)</h3></div>
+          <div className="card-body" style={{height:220}}>
+            {latencyData.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={latencyData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0"/>
+                <XAxis dataKey="t" tick={{fontSize:11,fill:'#94A3B8'}} axisLine={{stroke:'#E2E8F0'}}/>
+                <YAxis tick={{fontSize:11,fill:'#94A3B8'}} axisLine={{stroke:'#E2E8F0'}} unit="s"/>
+                <Tooltip contentStyle={{fontSize:12,borderRadius:8,border:'1px solid #E2E8F0'}}/>
+                <Line type="monotone" dataKey="v" stroke="#0EA5E9" strokeWidth={2} dot={false} name="Latency"/>
+              </LineChart>
+            </ResponsiveContainer>
+            ) : !loading && <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No latency data available yet. Send some queries first.</div></div>}
+          </div>
+        </div>
+        <div className="card fade-in">
+          <div className="card-header"><h3>Security Controls {DEMO_MODE?'(demo)':'(last 24h)'}</h3></div>
+          <div className="card-body">
+            {securityData.map(d => (
+              <div className="heatmap-bar" key={d.name}>
+                <div className="heatmap-label">{d.name}</div>
+                <div className="heatmap-track">
+                  <div className={`heatmap-fill ${d.count/maxSec>0.5?'high':d.count/maxSec>0.15?'med':'low'}`} style={{width:`${Math.max((d.count/maxSec)*100,d.count>0?18:0)}%`}}>{d.count}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="card fade-in">
+          <div className="card-header"><h3>Agent Invocations by Team</h3></div>
+          <div className="card-body" style={{height:240}}>
+            {teamData.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={teamData} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0"/>
+                <XAxis type="number" tick={{fontSize:11,fill:'#94A3B8'}}/>
+                <YAxis type="category" dataKey="name" tick={{fontSize:12,fill:'#475569'}} width={70}/>
+                <Tooltip contentStyle={{fontSize:12,borderRadius:8}}/>
+                <Bar dataKey="count" fill="#0EA5E9" radius={[0,4,4,0]} name="Total Invocations"/>
+              </BarChart>
+            </ResponsiveContainer>
+            ) : !loading && <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No agent invocation data yet.</div></div>}
+          </div>
+        </div>
+        <div className="card fade-in">
+          <div className="card-header"><h3>{DEMO_MODE ? 'LLM Provider Health' : 'Infrastructure Health'}</h3></div>
+          <div className="card-body">
+            {providers.length > 0 ? providers.map(p => (
+              <div className="provider-card" key={p.name}>
+                <div className={`provider-dot ${p.status}`}/>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:600}}>{p.name}</div>
+                  <div style={{fontSize:12,color:'var(--text-muted)'}}>{p.status==='active'?'Active':p.status==='cooldown'?'Cooldown':'Unavailable'} {p.lastSuccess ? `• ${p.lastSuccess}` : ''} {p.avgMs ? `• Avg: ${p.avgMs}ms` : ''}</div>
+                </div>
+                <span className={`badge ${p.status==='active'?'badge-green':p.status==='cooldown'?'badge-yellow':'badge-red'}`}>
+                  {p.failures} failures
+                </span>
+              </div>
+            )) : !loading && <div className="empty-state" style={{padding:16}}><div className="empty-state-desc">Provider status unavailable.</div></div>}
+            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:12}}>Provider circuit breaker threshold: 5 consecutive failures → 60s cooldown.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
+// CONTEXT GRAPH EXPLORER
+// ═══════════════════════════════════════════════════════════════
+const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
+  const [searchId, setSearchId] = useState('');
+
+  // Auto-search when navigated from workspace with a target session
+  useEffect(() => {
+    if (targetSession) {
+      _triggerSearch(targetSession);
+      if (onTargetConsumed) onTargetConsumed();
+    }
+  }, [targetSession]);
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [cgTrees, setCgTrees] = useState({});
+  const [followUpChain, setFollowUpChain] = useState([]);
+  const chainScrollRef = useRef(null);
+
+  // Demo CG trees — one per session in the chain, each with different content
+  const demoCGTrees = {
+    'sess-prev-001': {
+      type:'Session', id:'sess-prev-001', status:'completed', props:{userId:'CSR_001',timestamp:'2026-03-20T14:10:00Z',rootSessionId:'sess-prev-001',chainDepth:0},
+      children: [{
+        type:'Plan', id:'plan-001', status:'completed', props:{planType:'central',totalGoals:1},
+        children: [{
+          type:'Goal', id:'goal_1', status:'completed', props:{description:'Find claim filed on Feb 14',priority:1},
+          children: [{
+            type:'Step', id:'step_1', status:'completed', props:{agent:'claims_services_team',order:1},
+            children: [{
+              type:'AgentExecution', id:'exec-cs-001', status:'completed', props:{agentName:'claims_services_supervisor',durationMs:2400},
+              children: [{
+                type:'AgentExecution', id:'exec-wk-001', status:'completed', props:{agentName:'claim_lookup_worker',durationMs:1600},
+                children: [{
+                  type:'ToolExecution', id:'tool-001', status:'completed', props:{toolName:'claim_lookup',durationMs:380,inputData:'serviceDate=2026-02-14',outputData:'CLM-123456'},
+                  children:[]
+                }]
+              }]
+            }]
+          }]
+        }]
+      }]
+    },
+    'sess-demo-001': {
+      type:'Session', id:'sess-demo-001', status:'completed', props:{userId:'CSR_001',timestamp:'2026-03-20T14:23:01Z',rootSessionId:'sess-prev-001',chainDepth:1},
+      children: [{
+        type:'Plan', id:'plan-abc', status:'completed', props:{planType:'central',totalGoals:1},
+        children: [{
+          type:'Goal', id:'goal_1', status:'completed', props:{description:'Check claim status',priority:1},
+          children: [{
+            type:'Step', id:'step_1', status:'completed', props:{agent:'claims_services_team',order:1},
+            children: [{
+              type:'AgentExecution', id:'exec-central-01', status:'completed', props:{agentName:'central_supervisor',durationMs:1250},
+              children: [{
+                type:'AgentExecution', id:'exec-claims-01', status:'completed', props:{agentName:'claims_services_supervisor',durationMs:2100},
+                children: [{
+                  type:'AgentExecution', id:'exec-worker-01', status:'completed', props:{agentName:'claim_status_worker',durationMs:1800},
+                  children: [{
+                    type:'ToolExecution', id:'tool-01', status:'completed', props:{toolName:'claim_status',durationMs:450,inputData:'CLM-123456',outputData:'UNDER_REVIEW'},
+                    children:[]
+                  }]
+                }]
+              }]
+            }]
+          }]
+        }]
+      }]
+    },
+    'sess-demo-002': {
+      type:'Session', id:'sess-demo-002', status:'completed', props:{userId:'CSR_001',timestamp:'2026-03-20T14:25:30Z',rootSessionId:'sess-prev-001',chainDepth:2},
+      children: [{
+        type:'Plan', id:'plan-xyz', status:'completed', props:{planType:'central',totalGoals:2},
+        children: [{
+          type:'Goal', id:'goal_1', status:'completed', props:{description:'Retrieve claim denial details',priority:1},
+          children: [{
+            type:'Step', id:'step_1', status:'completed', props:{agent:'claims_services_team',order:1},
+            children: [{
+              type:'AgentExecution', id:'exec-cs-002', status:'completed', props:{agentName:'claims_services_supervisor',durationMs:2800},
+              children: [{
+                type:'AgentExecution', id:'exec-wk-002', status:'completed', props:{agentName:'claim_status_worker',durationMs:1500},
+                children: [{
+                  type:'ToolExecution', id:'tool-002', status:'completed', props:{toolName:'claim_status',durationMs:320,inputData:'CLM-123456',outputData:'UNDER_REVIEW: pending medical records'},
+                  children:[]
+                }]
+              }]
+            }]
+          }],
+        },{
+          type:'Goal', id:'goal_2', status:'completed', props:{description:'Look up review policy timeline',priority:2},
+          children: [{
+            type:'Step', id:'step_2', status:'completed', props:{agent:'search_services_team',order:2},
+            children: [{
+              type:'AgentExecution', id:'exec-ss-001', status:'completed', props:{agentName:'search_services_supervisor',durationMs:1900},
+              children: [{
+                type:'AgentExecution', id:'exec-wk-003', status:'completed', props:{agentName:'search_policy_info_worker',durationMs:1200},
+                children: [{
+                  type:'ToolExecution', id:'tool-003', status:'completed', props:{toolName:'search_policy_info',durationMs:280,inputData:'claim review timeline policy',outputData:'30 business days per policy 4.2.1'},
+                  children:[]
+                }]
+              }]
+            }]
+          }]
+        }]
+      }]
+    },
+    'sess-demo-003': {
+      type:'Session', id:'sess-demo-003', status:'failed', props:{userId:'CSR_001',timestamp:'2026-03-20T14:28:15Z',rootSessionId:'sess-prev-001',chainDepth:3},
+      children: [{
+        type:'Plan', id:'plan-fail', status:'failed', props:{planType:'central',totalGoals:1},
+        children: [{
+          type:'Goal', id:'goal_1', status:'failed', props:{description:'Escalate claim for supervisor review',priority:1},
+          children: [{
+            type:'Step', id:'step_1', status:'failed', props:{agent:'claims_services_team',order:1},
+            children: [{
+              type:'AgentExecution', id:'exec-fail-01', status:'failed', props:{agentName:'claims_services_supervisor',durationMs:3500},
+              children: [{
+                type:'AgentExecution', id:'exec-fail-wk', status:'failed', props:{agentName:'update_claim_status_worker',durationMs:2200},
+                children: [{
+                  type:'ToolExecution', id:'tool-fail', status:'pending', props:{toolName:'update_claim_status',durationMs:0,inputData:'CLM-123456 → ESCALATED',outputData:'PENDING_APPROVAL'},
+                  children:[]
+                }]
+              }]
+            }]
+          }]
+        }]
+      }]
+    },
+  };
+
+  const demoFollowUpChain = [
+    { id:'sess-prev-001', depth:0, query:'What claim was filed on Feb 14?', timestamp:'14:10' },
+    { id:'sess-demo-001', depth:1, query:'What is the status of claim CLM-123456?', timestamp:'14:23' },
+    { id:'sess-demo-002', depth:2, query:'Why is it still under review?', timestamp:'14:25' },
+    { id:'sess-demo-003', depth:3, query:'Escalate this to a supervisor', timestamp:'14:28' },
+  ];
+
+  const [searchError, setSearchError] = useState('');
+  const [searching, setSearching] = useState(false);
+
+  // Core search function — can be called with explicit ID or uses searchId state
+  const _triggerSearch = async (explicitId) => {
+    const sid = (explicitId || searchId || '').trim();
+    if (!sid) return;
+    if (explicitId) setSearchId(sid);
+    setSearchError('');
+    setSearching(true);
+
+    if (DEMO_MODE) {
+      setCgTrees(demoCGTrees);
+      setFollowUpChain(demoFollowUpChain);
+      const match = demoFollowUpChain.find(s => s.id === sid);
+      setSelectedSession(match ? match.id : demoFollowUpChain[0].id);
+      if (!match) setSearchError('Session not found in demo data. Showing demo follow-up chain instead. Try: sess-prev-001, sess-demo-001, sess-demo-002, or sess-demo-003.');
+      setSearching(false);
+      return;
+    }
+
+    try {
+      const data = await apiCall('GET', `/api/cg/session/${encodeURIComponent(sid)}`, null, token);
+
+      // Build follow-up chain from response
+      const chain = (data.follow_up_chain || []).map(s => ({
+        id: s.sessionId,
+        depth: s.depth || s.chainDepth || 0,
+        query: s.query || s.sessionId,
+        timestamp: s.startTime ? new Date(s.startTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '',
+        status: s.planStatus || s.status || 'unknown',
+      }));
+
+      if (chain.length === 0) {
+        // Single session with no chain — show just this one
+        chain.push({
+          id: sid,
+          depth: 0,
+          query: data.session?.metadata?.query || sid,
+          timestamp: data.session?.startTime ? new Date(data.session.startTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '',
+          status: data.session?.status || 'unknown',
+        });
+      }
+
+      setFollowUpChain(chain);
+
+      // Set the tree for the searched session
+      const trees = {};
+      trees[sid] = data.tree || {type:'Session', id:sid, status:'unknown', props:{}, children:[]};
+      setCgTrees(trees);
+      setSelectedSession(sid);
+
+    } catch(e) {
+      const msg = e.message || '';
+      if (msg.includes('404')) {
+        setSearchError(`Session "${sid}" not found in the Context Graph.`);
+      } else {
+        setSearchError(`Failed to load Context Graph: ${msg}. Verify the stack is running.`);
+      }
+      setCgTrees({});
+      setFollowUpChain([]);
+      setSelectedSession(null);
+    }
+    setSearching(false);
+  };
+
+  const handleSearch = () => _triggerSearch();
+
+  const selectSession = async (sessionId) => {
+    setSelectedSession(sessionId);
+    setTimeout(() => {
+      const el = document.getElementById(`chain-${sessionId}`);
+      if (el) el.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+    }, 50);
+
+    // Lazy-load tree for this session if not already fetched
+    if (!cgTrees[sessionId] && !DEMO_MODE && token) {
+      try {
+        const data = await apiCall('GET', `/api/cg/session/${encodeURIComponent(sessionId)}`, null, token);
+        setCgTrees(prev => ({...prev, [sessionId]: data.tree || {type:'Session', id:sessionId, status:'unknown', props:{}, children:[]}}));
+      } catch(e) {
+        setCgTrees(prev => ({...prev, [sessionId]: {type:'Session', id:sessionId, status:'error', props:{error:e.message}, children:[]}}));
+      }
+    }
+  };
+
+  const scrollChain = (direction) => {
+    if (chainScrollRef.current) {
+      chainScrollRef.current.scrollBy({left: direction * 260, behavior:'smooth'});
+    }
+  };
+
+  const currentTree = cgTrees[selectedSession];
+  const currentChainItem = followUpChain.find(s => s.id === selectedSession);
+  const currentIndex = followUpChain.findIndex(s => s.id === selectedSession);
+
+  const TreeNode = ({ node, depth=0 }) => {
+    const [expanded, setExpanded] = useState(depth < 4);
+    const typeColors = { Session:'#0EA5E9', Plan:'#8B5CF6', Goal:'#F59E0B', Step:'#10B981', AgentExecution:'#EC4899', ToolExecution:'#EF4444', ToolError:'#DC2626', AgentError:'#DC2626' };
+    const hasChildren = node.children?.length > 0;
+    return (
+      <div>
+        <div className={`cg-tree-node status-${node.status}`} onClick={()=>hasChildren&&setExpanded(!expanded)} style={{borderLeftColor:typeColors[node.type]||'var(--border)',cursor:hasChildren?'pointer':'default'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              {hasChildren && <span style={{fontSize:10,color:'var(--text-muted)',transition:'transform 0.2s',transform:expanded?'rotate(90deg)':'rotate(0deg)',display:'inline-block'}}>▶</span>}
+              <span className="badge" style={{background:typeColors[node.type]+'20',color:typeColors[node.type],fontSize:10}}>{node.type}</span>
+              <span className="mono" style={{fontSize:12}}>{node.id}</span>
+            </div>
+            <span className={`badge ${node.status==='completed'?'badge-green':node.status==='failed'?'badge-red':node.status==='pending'?'badge-yellow':'badge-gray'}`}>{node.status}</span>
+          </div>
+          {expanded && node.props && (
+            <div style={{marginTop:6,display:'flex',gap:12,flexWrap:'wrap'}}>
+              {Object.entries(node.props).map(([k,v]) => (
+                <span key={k} style={{fontSize:11,color:'var(--text-muted)'}}><strong>{k}:</strong> <span className="mono">{String(v)}</span></span>
+              ))}
+            </div>
+          )}
+        </div>
+        {expanded && hasChildren && (
+          <div className="cg-children">
+            {node.children.map(c => <TreeNode key={c.id} node={c} depth={depth+1}/>)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{maxWidth:1200,margin:'0 auto'}}>
+      <div className="card fade-in" style={{marginBottom:24}}>
+        <div className="card-header"><h3>Session Search</h3></div>
+        <div className="card-body">
+          <div className="input-group">
+            <input className="input" value={searchId} onChange={e=>setSearchId(e.target.value)} placeholder="Enter session ID, user ID, or date range..." onKeyDown={e=>e.key==='Enter'&&handleSearch()} disabled={searching} />
+            <button className="btn btn-primary" onClick={handleSearch} disabled={searching}>
+              {searching ? <span className="loading-spinner" style={{width:14,height:14,borderWidth:2}}/> : <Icon name="search" size={16}/>} Search
+            </button>
+          </div>
+          {searchError && (
+            <div style={{marginTop:12,padding:'10px 14px',background:'var(--warning-light)',borderRadius:'var(--radius-sm)',fontSize:13,color:'#92400E',lineHeight:1.5}}>
+              {searchError}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {followUpChain.length > 0 && (
+        <>
+          <div className="card fade-in" style={{marginBottom:24}}>
+            <div className="card-header">
+              <h3>Follow-Up Chain ({followUpChain.length} sessions)</h3>
+              <div style={{display:'flex',gap:4}}>
+                <button className="btn btn-secondary btn-sm" onClick={()=>scrollChain(-1)} disabled={currentIndex<=0} style={{padding:'4px 8px',opacity:currentIndex<=0?0.4:1}}>←</button>
+                <button className="btn btn-secondary btn-sm" onClick={()=>scrollChain(1)} disabled={currentIndex>=followUpChain.length-1} style={{padding:'4px 8px',opacity:currentIndex>=followUpChain.length-1?0.4:1}}>→</button>
+              </div>
+            </div>
+            <div className="card-body" style={{padding:'12px 20px'}}>
+              <div ref={chainScrollRef} style={{display:'flex',alignItems:'stretch',gap:0,overflowX:'auto',scrollBehavior:'smooth',paddingBottom:8,scrollbarWidth:'thin'}}>
+                {followUpChain.map((s,i) => {
+                  const isSelected = s.id === selectedSession;
+                  const tree = cgTrees[s.id];
+                  const isFailed = tree?.status === 'failed' || tree?.children?.[0]?.status === 'failed';
+                  return (
+                    <React.Fragment key={s.id}>
+                      {i > 0 && (
+                        <div style={{display:'flex',alignItems:'center',flexShrink:0}}>
+                          <div style={{width:32,height:2,background:isFailed?'var(--error)':'var(--accent)'}}/>
+                          <div style={{width:0,height:0,borderTop:'5px solid transparent',borderBottom:'5px solid transparent',borderLeft:`6px solid ${isFailed?'var(--error)':'var(--accent)'}`}}/>
+                        </div>
+                      )}
+                      <div id={`chain-${s.id}`}
+                        onClick={()=>selectSession(s.id)}
+                        style={{
+                          padding:'12px 16px',minWidth:220,maxWidth:260,flexShrink:0,
+                          border:isSelected?'2px solid var(--accent)':'1px solid var(--border)',
+                          borderRadius:'var(--radius-sm)',cursor:'pointer',
+                          background:isSelected?'var(--accent-light)':isFailed?'var(--error-light)':'white',
+                          transition:'all 0.2s',
+                          transform:isSelected?'scale(1.02)':'scale(1)',
+                          boxShadow:isSelected?'var(--shadow-md)':'none',
+                        }}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                          <span style={{fontSize:10,fontWeight:600,color:isSelected?'var(--accent-dark)':'var(--text-muted)',fontFamily:'var(--font-mono)'}}>Depth {s.depth}</span>
+                          <span style={{fontSize:10,color:'var(--text-muted)',fontFamily:'var(--font-mono)'}}>{s.timestamp}</span>
+                        </div>
+                        <div style={{fontSize:12,fontWeight:500,color:isSelected?'var(--accent-dark)':'var(--text-primary)',marginBottom:4,lineHeight:1.4}}>{s.query}</div>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                          <span className="mono" style={{fontSize:10,color:'var(--text-muted)'}}>{s.id}</span>
+                          {isFailed && <span className="badge badge-red" style={{fontSize:9}}>failed</span>}
+                        </div>
+                      </div>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {currentTree && (
+            <div className="card fade-in" key={selectedSession}>
+              <div className="card-header">
+                <h3>Context Graph — {selectedSession}</h3>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>currentIndex>0&&selectSession(followUpChain[currentIndex-1].id)} disabled={currentIndex<=0}>← Previous</button>
+                  <span style={{fontSize:12,color:'var(--text-muted)'}}>{currentIndex+1} of {followUpChain.length}</span>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>currentIndex<followUpChain.length-1&&selectSession(followUpChain[currentIndex+1].id)} disabled={currentIndex>=followUpChain.length-1}>Next →</button>
+                </div>
+              </div>
+              <div className="card-body">
+                {currentChainItem && (
+                  <div style={{padding:'10px 14px',background:'var(--bg-secondary)',borderRadius:'var(--radius-sm)',marginBottom:16,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div>
+                      <span style={{fontSize:12,color:'var(--text-muted)'}}>Query: </span>
+                      <span style={{fontSize:13,fontWeight:500}}>{currentChainItem.query}</span>
+                    </div>
+                    <span className="mono" style={{fontSize:11,color:'var(--text-muted)'}}>chainDepth: {currentChainItem.depth} • rootSession: {followUpChain[0].id}</span>
+                  </div>
+                )}
+                <TreeNode node={currentTree}/>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {followUpChain.length === 0 && (
+        <div className="card"><div className="card-body"><div className="empty-state">
+          <div className="empty-state-icon">🌐</div>
+          <div className="empty-state-title">Search for a session</div>
+          <div className="empty-state-desc">Enter a session ID to explore the full Context Graph execution tree, including follow-up session chains.</div>
+        </div></div></div>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
+// FEEDBACK LEARNING DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+const FeedbackDashboard = ({ token }) => {
+  const [patterns, setPatterns] = useState([]);
+  const [improvements, setImprovements] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [funnelData, setFunnelData] = useState([]);
+  const [storeStats, setStoreStats] = useState([]);
+
+  // Demo data
+  const demoFunnel = [
+    { label:'Total Queries', value:5000, pct:100 },
+    { label:'With Feedback', value:1850, pct:37 },
+    { label:'Low Rated', value:234, pct:4.7 },
+    { label:'Classified', value:142, pct:2.8 },
+    { label:'Led to Improvement', value:23, pct:0.46 },
+  ];
+  const demoStore = [
+    { label:'Total Experiences', value:'142', sub:'Chroma collection: successful_experiences' },
+    { label:'Extracted This Week', value:'23', sub:'From correct-rated sessions' },
+    { label:'Hit Rate', value:'78%', sub:'Planning calls with ≥1 matching experience' },
+    { label:'Seed Experiences', value:'25', sub:'Curated cold-start examples' },
+  ];
+
+  useEffect(() => {
+    (async () => {
+      try {
+        // Patterns and improvements from API (works in both modes via apiCall)
+        const [p, imp] = await Promise.all([
+          apiCall('GET', '/api/feedback/patterns', null, token),
+          apiCall('GET', '/api/feedback/improvements', null, token),
+        ]);
+        setPatterns(p); setImprovements(imp);
+      } catch(e) {}
+
+      if (DEMO_MODE) {
+        setFunnelData(demoFunnel);
+        setStoreStats(demoStore);
+      } else {
+        // Funnel data from Prometheus counters
+        // Available metrics: agent_invocations_total, csip_positive_feedback_rate,
+        // csip_feedback_classifications_total, csip_experiences_extracted_total,
+        // csip_pattern_reports_generated_total.
+        // NOTE: There is no "total feedback submissions" counter — only the
+        // positive_feedback_rate gauge (a ratio). We show what we CAN measure.
+        try {
+          // Get total agent invocations from CG (Prometheus counter is dead code)
+          let total = 0;
+          try {
+            const teamResp = await apiCall('GET', '/api/stats/team-invocations', null, token);
+            total = (teamResp.teams || []).reduce((sum, t) => sum + (t.count||0), 0);
+          } catch(e) { /* fallback to 0 */ }
+          const [fbRate, fbClassified, extractedTotal, patternReports] = await Promise.all([
+            promQuery('csip_positive_feedback_rate'),
+            promQuery('sum(csip_feedback_classifications_total)'),
+            promQuery('sum(csip_experiences_extracted_total)'),
+            promQuery('sum(csip_pattern_reports_generated_total)'),
+          ]);
+          const posRate = promValue(fbRate);
+          const classified = Math.round(promValue(fbClassified));
+          const extracted = Math.round(promValue(extractedTotal));
+          const reports = Math.round(promValue(patternReports));
+          const funnel = [
+            { label:'Total Agent Invocations', value:total, pct:100 },
+            { label:'Positive Feedback Rate', value:posRate > 0 ? (posRate*100).toFixed(1)+'%' : '--', pct:posRate > 0 ? Math.round(posRate*100) : 0 },
+            { label:'Failure Classifications', value:classified, pct:total>0?Math.round(classified/total*1000)/10:0 },
+            { label:'Pattern Reports Generated', value:reports, pct:total>0?Math.round(reports/total*1000)/10:0 },
+            { label:'Experiences Extracted', value:extracted, pct:total>0?Math.round(extracted/total*1000)/10:0 },
+          ];
+          setFunnelData(funnel);
+        } catch(e) { setFunnelData([]); }
+
+        // Experience store stats from Prometheus
+        try {
+          const [storeSize, hitRate, extractedW] = await Promise.all([
+            promQuery('csip_experience_store_size'),
+            promQuery('csip_experience_hit_rate'),
+            promQuery('csip_experiences_extracted_total'),
+          ]);
+          setStoreStats([
+            { label:'Total Experiences', value:String(Math.round(promValue(storeSize))), sub:'Chroma collection: successful_experiences' },
+            { label:'Total Extracted', value:String(Math.round(promValue(extractedW))), sub:'From correct-rated sessions' },
+            { label:'Hit Rate', value:promValue(hitRate) > 0 ? Math.round(promValue(hitRate)*100)+'%' : '--', sub:'Planning calls with ≥1 matching experience' },
+            { label:'Collection', value:'active', sub:'successful_experiences' },
+          ]);
+        } catch(e) { setStoreStats([]); }
+      }
+
+      setLoaded(true);
+    })();
+  }, [token]);
+
+  return (
+    <div style={{maxWidth:1200,margin:'0 auto'}}>
+      <div className="card fade-in" style={{marginBottom:24}}>
+        <div className="card-header"><h3>Feedback Funnel {DEMO_MODE?'(demo)':'(live)'}</h3></div>
+        <div className="card-body">
+          {funnelData.length > 0 ? funnelData.map((d,i) => (
+            <div className="funnel-step" key={d.label}>
+              <div className="funnel-label">{d.label}</div>
+              <div className="funnel-bar-outer">
+                <div className="funnel-bar-inner" style={{width:`${Math.max(d.pct, (typeof d.value === 'number' ? d.value : 1) > 0?2:0)}%`,background: i===0?'var(--accent)':i<3?'#38BDF8':i<4?'var(--warning)':'var(--success)'}}>{typeof d.value === 'number' ? d.value.toLocaleString() : d.value}</div>
+              </div>
+              <div className="funnel-value">{d.pct}%</div>
+            </div>
+          )) : !loaded ? <div style={{textAlign:'center',padding:24}}><span className="loading-spinner"/></div> : <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No funnel data available yet. Submit some queries and feedback first.</div></div>}
+        </div>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:24}}>
+        <div className="card fade-in">
+          <div className="card-header"><h3>Failure Pattern Clusters</h3>
+            <span className="badge badge-blue">{patterns.length} active</span>
+          </div>
+          <div className="card-body">
+            {!loaded ? <div style={{textAlign:'center',padding:24}}><span className="loading-spinner"/></div> :
+            patterns.length === 0 ? <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No patterns detected yet.</div></div> :
+            patterns.map(p => (
+              <div key={p.report_id} style={{padding:14,border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',marginBottom:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                    <span className="badge badge-red">{p.classification_type}</span>
+                    <span className="badge badge-gray">{p.team.replace('_team','').replace('_services','')}</span>
+                  </div>
+                  <span className={`badge ${p.status==='new'?'badge-yellow':p.status==='acknowledged'?'badge-blue':'badge-green'}`}>{p.status}</span>
+                </div>
+                <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>{p.cluster_count} similar failures</div>
+                <div style={{fontSize:12,color:'var(--text-secondary)',lineHeight:1.5}}>{p.suggested_action}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card fade-in">
+          <div className="card-header"><h3>Improvement Timeline</h3></div>
+          <div className="card-body">
+            {!loaded ? <div style={{textAlign:'center',padding:24}}><span className="loading-spinner"/></div> :
+            improvements.length === 0 ? <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No improvements logged yet.</div></div> :
+            improvements.map(imp => {
+              let baseline, post;
+              try { baseline = JSON.parse(imp.baseline_metrics); post = JSON.parse(imp.post_change_metrics); } catch(e) { baseline={}; post={}; }
+              return (
+                <div key={imp.change_id} style={{padding:14,border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',marginBottom:10,borderLeft:'3px solid var(--success)'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                    <span className="badge badge-green">{imp.change_type}</span>
+                    <span style={{fontSize:11,color:'var(--text-muted)',fontFamily:'var(--font-mono)'}}>{new Date(imp.change_timestamp).toLocaleDateString()}</span>
+                  </div>
+                  <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>{imp.description}</div>
+                  <div style={{fontSize:12,color:'var(--text-muted)'}}>Component: {imp.component} • By: {imp.changed_by}</div>
+                  {Object.keys(baseline).length > 0 && (
+                    <div style={{display:'flex',gap:16,marginTop:8}}>
+                      {Object.keys(baseline).map(k => (
+                        <div key={k} style={{fontSize:12}}>
+                          <span style={{color:'var(--text-muted)'}}>{k}: </span>
+                          <span style={{color:'var(--error)',textDecoration:'line-through'}}>{baseline[k]}</span>
+                          <span> → </span>
+                          <span style={{color:'var(--success)',fontWeight:600}}>{post[k]}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="card fade-in">
+        <div className="card-header"><h3>Experience Store Status {DEMO_MODE?'(demo)':'(live)'}</h3></div>
+        <div className="card-body">
+          <div style={{display:'flex',gap:32,flexWrap:'wrap'}}>
+            {storeStats.length > 0 ? storeStats.map(s => (
+              <div key={s.label}>
+                <div style={{fontSize:24,fontWeight:700,fontFamily:'var(--font-mono)',color:'var(--text-primary)'}}>{s.value}</div>
+                <div style={{fontSize:13,fontWeight:500,marginTop:2}}>{s.label}</div>
+                <div style={{fontSize:11,color:'var(--text-muted)'}}>{s.sub}</div>
+              </div>
+            )) : !loaded ? <span className="loading-spinner"/> : <div className="empty-state" style={{padding:16}}><div className="empty-state-desc">Experience store metrics not available yet.</div></div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+const App = () => {
+  const [auth, setAuth] = useState(null);
+  const [view, setView] = useState('workspace');
+  // sessionKey increments on each login, forcing all components to remount
+  // with fresh state (no stale messages, sessions, or member context from
+  // the previous login). React's key prop triggers full unmount+remount.
+  const [sessionKey, setSessionKey] = useState(0);
+  // When a session ID is clicked in the workspace, this is set to trigger
+  // CG Explorer auto-search after switching views.
+  const [cgTargetSession, setCgTargetSession] = useState(null);
+  // Tracks circuit breaker state for the top-bar status badge.
+  // Updated by SupervisorPane via callback.
+  const [systemHalted, setSystemHalted] = useState(false);
+  // Session expiry message shown on the login screen after a 401
+  const [sessionExpiredMsg, setSessionExpiredMsg] = useState('');
+
+  // Listen for 401 session-expired events dispatched by apiCall.
+  // Fires once regardless of which component's request triggered the 401.
+  useEffect(() => {
+    const handler = () => {
+      setAuth(null);
+      setView('workspace');
+      setSessionExpiredMsg('Your session has expired. Please log in again.');
+    };
+    window.addEventListener('session-expired', handler);
+    return () => window.removeEventListener('session-expired', handler);
+  }, []);
+
+  const navigateToCG = (sessionId) => {
+    setCgTargetSession(sessionId);
+    setView('cg-explorer');
+  };
+
+  const handleLogin = (authData) => {
+    setAuth(authData);
+    setView('workspace');
+    setSessionKey(prev => prev + 1);  // force fresh component state
+    setSessionExpiredMsg('');          // clear expiry message
+  };
+
+  const handleLogout = () => {
+    setAuth(null);
+    setView('workspace');
+    // sessionKey will increment on next login
+  };
+
+  // Poll circuit breaker status for all roles (not just supervisor).
+  // Must be ABOVE the conditional return — React hooks cannot be
+  // called after an early return (rules of hooks).
+  useEffect(() => {
+    if (!auth?.access_token || DEMO_MODE) return;
+    const checkStatus = async () => {
+      try {
+        const resp = await apiCall('GET', '/api/system/status', null, auth.access_token);
+        setSystemHalted(!!resp.circuit_breaker_active);
+      } catch(e) { /* ignore — badge stays as-is */ }
+    };
+    checkStatus();
+    const interval = setInterval(checkStatus, 15000);
+    return () => clearInterval(interval);
+  }, [auth?.access_token]);
+
+  if (!auth) return <LoginView onLogin={handleLogin} expiredMessage={sessionExpiredMsg}/>;
+
+  const user = auth.user;
+  const role = user?.role || '';
+  const isSupervisor = role === 'CSR_SUPERVISOR';
+  const isTier2OrAbove = role === 'CSR_TIER2' || isSupervisor;
+
+  const navItems = [
+    { section:'Operations', items: [
+      { id:'workspace', label:'CSR Workspace', icon:'chat' },
+      { id:'cg-explorer', label:'Context Graph', icon:'git' },
+    ]},
+    ...(isTier2OrAbove ? [{ section:'Analytics', items: [
+      { id:'performance', label:'Performance', icon:'activity' },
+    ]}] : []),
+    ...(isSupervisor ? [{ section:'Supervision', items: [
+      { id:'controls', label:'Control Pane', icon:'shield' },
+      { id:'feedback', label:'Feedback Learning', icon:'brain' },
+    ]}] : []),
+  ];
+
+  const viewTitles = { workspace:'CSR Workspace', controls:'Supervisor Control Pane', performance:'AI/LLM Performance Dashboard', 'cg-explorer':'Context Graph Explorer', feedback:'Feedback Learning Dashboard' };
+
+  return (
+    <div className="app-layout">
+      <div className="sidebar">
+        <div className="sidebar-brand">
+          <h1>CSIP</h1>
+          <span>Intelligence Platform</span>
+        </div>
+        <nav className="sidebar-nav">
+          {navItems.map(sec => (
+            <div className="nav-section" key={sec.section}>
+              <div className="nav-section-label">{sec.section}</div>
+              {sec.items.map(item => (
+                <div key={item.id} className={`nav-item ${view===item.id?'active':''}`} onClick={()=>setView(item.id)}>
+                  <Icon name={item.icon}/> {item.label}
+                </div>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <div className="sidebar-user">
+          <div className="sidebar-user-info">
+            <div className="sidebar-avatar">{(user?.full_name||user?.username||'?')[0].toUpperCase()}</div>
+            <div>
+              <div className="sidebar-user-name">{user?.full_name || user?.username}</div>
+              <div className="sidebar-user-role">{role}</div>
+            </div>
+          </div>
+          <div style={{marginTop:10}}>
+            <button className="btn btn-secondary btn-sm" style={{width:'100%',justifyContent:'center',fontSize:11}} onClick={handleLogout}>
+              <Icon name="logout" size={14}/> Sign Out
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="main-content">
+        <div className="top-bar">
+          <div className="top-bar-title">{viewTitles[view]}</div>
+          <div className="top-bar-actions">
+            <span className={`badge ${systemHalted?'badge-red':'badge-green'}`} style={{fontSize:10}}>{systemHalted ? '⛔ System Halted' : '● System Active'}</span>
+            <span style={{fontSize:12,color:'var(--text-muted)',fontFamily:'var(--font-mono)'}}>v2.0.0</span>
+          </div>
+        </div>
+        <div className="content-area">
+          {/* Components are always mounted but hidden via display:none so React
+              state (messages, sessions, member context) survives tab switches.
+              sessionKey forces full remount on login — clearing stale state. */}
+          <div style={{display: view === 'workspace' ? 'block' : 'none', height:'100%'}}>
+            <CSRWorkspace key={`ws-${sessionKey}`} token={auth.access_token} user={user} onNavigateToCG={navigateToCG}/>
+          </div>
+          <div style={{display: view === 'controls' ? 'block' : 'none'}}>
+            <SupervisorPane key={`cp-${sessionKey}`} token={auth.access_token} onSystemHalted={setSystemHalted}/>
+          </div>
+          <div style={{display: view === 'performance' ? 'block' : 'none'}}>
+            <PerformanceDashboard key={`pd-${sessionKey}`} token={auth.access_token}/>
+          </div>
+          <div style={{display: view === 'cg-explorer' ? 'block' : 'none'}}>
+            <CGExplorer key={`cg-${sessionKey}`} token={auth.access_token} targetSession={cgTargetSession} onTargetConsumed={()=>setCgTargetSession(null)}/>
+          </div>
+          <div style={{display: view === 'feedback' ? 'block' : 'none'}}>
+            <FeedbackDashboard key={`fb-${sessionKey}`} token={auth.access_token}/>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+ReactDOM.render(<App/>, document.getElementById('root'));
+</script>
+</body>
+</html>

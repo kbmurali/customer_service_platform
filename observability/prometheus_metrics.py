@@ -824,5 +824,42 @@ def track_mcp_encryption_event(event: str, agent_name: str, **kwargs) -> None:
         logger.warning(f"Failed to track MCP encryption event: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Feedback Learning Metrics
+# ---------------------------------------------------------------------------
+
+experiences_extracted_total = Counter(
+    'csip_experiences_extracted_total',
+    'Total experience records extracted from high-rated sessions',
+)
+
+experience_store_size = Gauge(
+    'csip_experience_store_size',
+    'Number of documents in the successful_experiences Chroma collection',
+)
+
+experience_hit_rate = Gauge(
+    'csip_experience_hit_rate',
+    'Fraction of planning calls where at least one experience was retrieved',
+)
+
+experience_retrieval_latency = Histogram(
+    'csip_experience_retrieval_latency_seconds',
+    'Time to query the experience store for similar past plans',
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0],
+)
+
+feedback_classifications_total = Counter(
+    'csip_feedback_classifications_total',
+    'Total root-cause classifications submitted for low-rated sessions',
+    ['classification_type'],
+)
+
+pattern_reports_generated_total = Counter(
+    'csip_pattern_reports_generated_total',
+    'Total feedback pattern analysis reports generated',
+)
+
+
 # Initialize on module import
 initialize_metrics()

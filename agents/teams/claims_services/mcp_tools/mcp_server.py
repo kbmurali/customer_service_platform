@@ -422,6 +422,90 @@ def update_claim_status(
         )
         return json.dumps({"error": error})
 
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Read", record_name="claim", record_id_arg="member_id")
+@require_rate_limits
+@require_permissions("CLAIM", "READ")
+def member_claims(
+    member_id: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    status: str = "",
+    execution_id: str = "",
+) -> str:
+    """
+    Retrieve all claims for a member by member ID.
+
+    Uses relationship: (Member)-[:FILED_CLAIM]->(Claim)
+
+    Returns a list of claims with claimId, claimNumber, serviceDate,
+    submissionDate, status, totalAmount, paidAmount, and processingDate.
+    Optionally filter by claim status (SUBMITTED, UNDER_REVIEW, APPROVED, DENIED).
+
+    Args:
+        member_id:    The member's unique identifier (e.g. M-12345)
+        user_id:      ID of the requesting user (for audit logging).
+        user_role:    RBAC role of the requesting user.
+        session_id:   Session ID for audit and PII scrubbing.
+        status:       Optional claim status filter (e.g. "UNDER_REVIEW").
+        execution_id: AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with list of claims, or an error payload.
+    """
+    start_time = datetime.now()
+
+    member_id = sanitize_text(member_id)
+    if status:
+        status = sanitize_text(status)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        claims = kg_data_access.get_member_claims(
+            member_id=member_id,
+            status=status if status else None,
+            limit=20,
+        )
+
+        if not claims:
+            output = json.dumps({
+                "member_id": member_id,
+                "claims": [],
+                "message": f"No claims found for member {member_id}"
+                           + (f" with status {status}" if status else ""),
+            })
+        else:
+            output = json.dumps({
+                "member_id": member_id,
+                "claim_count": len(claims),
+                "claims": claims,
+            }, indent=2)
+
+        scrubbed_output = scrub_output(output, session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "member_claims", {"member_id": member_id, "status": status or "all"},
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+
+        return scrubbed_output
+
+    except Exception as e:
+        logger.error(f"member_claims failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "member_claims", {"member_id": member_id},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────

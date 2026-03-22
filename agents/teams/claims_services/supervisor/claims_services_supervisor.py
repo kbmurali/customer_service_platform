@@ -16,6 +16,7 @@ from agents.teams.claims_services.supervisor.claim_lookup_worker import ClaimLoo
 from agents.teams.claims_services.supervisor.claim_status_worker import ClaimStatusWorker
 from agents.teams.claims_services.supervisor.claim_payment_info_worker import ClaimPaymentInfoWorker
 from agents.teams.claims_services.supervisor.update_claim_status_worker import UpdateClaimStatusWorker
+from agents.teams.claims_services.supervisor.member_claims_worker import MemberClaimsWorker
 from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
@@ -48,6 +49,7 @@ class ClaimsServicesSupervisor:
             "claim_status":         ClaimStatusWorker(),
             "claim_payment_info":   ClaimPaymentInfoWorker(),
             "update_claim_status":  UpdateClaimStatusWorker(),
+            "member_claims":        MemberClaimsWorker(),
         }
 
         self.rbac = rbac_service
@@ -73,13 +75,14 @@ Available workers:
 - claim_status: Check the processing status of a claim by claim number
 - claim_payment_info: Get payment amounts and processing info for a claim by claim ID
 - update_claim_status: Update the status of a claim — requires claim ID, new status, and reason
+- member_claims: Retrieve all claims for a member by member ID
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
-   (no claim ID, no claim number, no new status or reason for update), respond with "SKIP".
+   (no claim ID, no claim number, no member ID, no new status or reason for update), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: claim_lookup, claim_status, claim_payment_info, update_claim_status.
+4. Only use exact worker names: claim_lookup, claim_status, claim_payment_info, update_claim_status, member_claims.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -101,6 +104,7 @@ Available workers (use EXACT names only):
 - claim_status: Checks claim processing status — requires a claim number (e.g. CLM-123456)
 - claim_payment_info: Retrieves payment amounts and dates — requires a claim ID
 - update_claim_status: Updates a claim status — requires a claim ID, new status, and reason
+- member_claims: Retrieves all claims for a member — requires a member ID
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -126,6 +130,10 @@ RULES:
 10. update_claim_status is a write operation — only include it when the user
     explicitly requests a status change. It requires claim ID, new status
     (SUBMITTED, UNDER_REVIEW, APPROVED, DENIED), and a reason.
+11. member_claims retrieves claims by MEMBER ID (UUID), not by claim ID or claim number.
+    Use it when the user asks about "claims for member X" or "what claims does
+    member X have". Do not use claim_lookup or claim_status for this — those
+    require a specific claim identifier.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -280,7 +288,7 @@ Return JSON only (no markdown fences, no explanation):
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status"}
+        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status", "member_claims"}
 
         user_id    = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -811,12 +819,13 @@ Return JSON only (no markdown fences, no explanation):
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status"}
+        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status", "member_claims"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["claim_lookup", "claim_status", "claim_payment_info",
-                     "update_claim_status", "error_handler", "supervisor", "__end__"]:
+                     "update_claim_status", "member_claims",
+                     "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
                 return "error_handler"
@@ -848,6 +857,7 @@ Return JSON only (no markdown fences, no explanation):
                 "claim_status":        "claim_status",
                 "claim_payment_info":  "claim_payment_info",
                 "update_claim_status": "update_claim_status",
+                "member_claims":       "member_claims",
                 "error_handler":       "error_handler",
                 "__end__":             END,
             },

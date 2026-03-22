@@ -35,8 +35,14 @@ logger = logging.getLogger(__name__)
 _MAX_INPUT_LENGTH = 1000
 _MAX_SPECIAL_CHAR_RATIO = 0.3
 _BASE64_PATTERN = re.compile(r'[A-Za-z0-9+/]{50,}={0,2}')
-# Catches SQL comment sequences: '--' at end of line, '/*', '*/', or quote followed by '--'
-_SQL_COMMENT_PATTERN = re.compile(r"('?\s*--)|(/\*)|(\*/)")
+# Catches SQL comment sequences, but NOT double-dashes inside UUIDs.
+# In UUIDs, '--' is followed by a hex char (e.g. 6fffc059--4c0f).
+# In SQL injection, '--' is followed by space, end-of-string, or non-hex content.
+_SQL_COMMENT_PATTERN = re.compile(
+    r"--(?=\s|$|[^0-9a-fA-F-])"  # '--' NOT followed by hex/dash (UUID continuation)
+    r"|(/\*)"                      # C-style comment open
+    r"|(\*/)"                      # C-style comment close
+)
 
 
 def _sanity_check(message: str) -> Tuple[bool, str]:
@@ -217,8 +223,18 @@ class NemoGuardrailsFilter:
         # Primary content policy enforcement. Both run inside generate_async:
         #   - self check input: LLM judges raw text against prompts.yml policy
         #   - Colang dialog flows: semantic matching against policies.co examples
+        #
+        # When prior conversation turns are available (follow-up queries),
+        # they are prepended so NeMo evaluates the current message in its
+        # conversational context rather than as a cold standalone probe.
+        # This prevents legitimate follow-ups like "Can you look up the
+        # member?" from being blocked as PII extraction attempts.
         # ------------------------------------------------------------------
-        messages = [{"role": "user", "content": user_message}]
+        prior_turns = (context or {}).get("prior_turns", [])
+        messages = []
+        if prior_turns:
+            messages.extend(prior_turns)  # [{role: "user", content: "..."}, {role: "assistant", content: "..."}]
+        messages.append({"role": "user", "content": user_message})
         try:
             response = asyncio.run(self.rails.generate_async(messages=messages))
         except RuntimeError:

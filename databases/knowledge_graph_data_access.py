@@ -425,7 +425,7 @@ class KnowledgeGraphDataAccess:
         Update a single field on a Member node.
 
         Allowed fields: phone, email, address_street, address_city,
-        address_state, address_zip
+        address_state, address_zip, enrollmentDate, status
 
         Args:
             member_id: Member ID
@@ -436,7 +436,7 @@ class KnowledgeGraphDataAccess:
             True if successful
         """
         ALLOWED = {"phone", "email", "address_street", "address_city",
-                   "address_state", "address_zip"}
+                   "address_state", "address_zip", "enrollmentDate", "status"}
         if field not in ALLOWED:
             logger.error(f"Field '{field}' is not updatable on Member")
             return False

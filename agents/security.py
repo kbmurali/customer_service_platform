@@ -80,7 +80,14 @@ def decode_access_token(token: str) -> Dict[str, Any]:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         return payload
     except JWTError as e:
-        logger.error(f"Token decode failed: {e}")
+        # Expired tokens are expected (webapp polls /api/system/status every 15s;
+        # if the container restarts, old JWTs remain in the browser until re-login).
+        # Log at DEBUG to avoid flooding the log with ERROR every 15 seconds.
+        err_str = str(e).lower()
+        if "expired" in err_str:
+            logger.debug("Token expired: %s", e)
+        else:
+            logger.warning("Token decode failed: %s", e)
         raise AuthenticationError("Invalid token")
 
 
@@ -204,10 +211,57 @@ class AuthService:
 class RBACService:
     """Role-Based Access Control service"""
     
+    _CACHE_VERSION_KEY = "rbac:cache_version"
+
     def __init__(self):
         self.mysql = get_mysql()
         self._permission_cache = {}
         self._tool_permission_cache = {}
+        self._local_cache_version = 0
+        # Lazy Redis connection for cross-process cache invalidation.
+        # When any process calls clear_cache(), it increments a Redis key.
+        # Other processes (A2A servers) detect the version change on their
+        # next permission check and invalidate their local cache.
+        self._redis = None
+
+    def _get_redis(self):
+        """Lazy Redis connection — only created on first use."""
+        if self._redis is None:
+            try:
+                import redis as _redis
+                self._redis = _redis.Redis(
+                    host=settings.REDIS_HOST,
+                    port=settings.REDIS_PORT,
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2,
+                )
+                self._redis.ping()
+            except Exception as e:
+                logger.warning("RBACService: Redis unavailable for cache sync: %s", e)
+                self._redis = None
+        return self._redis
+
+    def _check_cache_version(self):
+        """
+        Compare local cache version with Redis. If Redis version is newer,
+        another process called clear_cache() — invalidate local caches.
+        """
+        r = self._get_redis()
+        if r is None:
+            return
+        try:
+            remote_version = int(r.get(self._CACHE_VERSION_KEY) or 0)
+            if remote_version > self._local_cache_version:
+                self._permission_cache.clear()
+                self._tool_permission_cache.clear()
+                self._local_cache_version = remote_version
+                logger.info(
+                    "RBACService: cache invalidated by remote version %d",
+                    remote_version,
+                )
+        except Exception as e:
+            logger.debug("RBACService: Redis cache version check failed: %s", e)
     
     def check_permission(
         self,
@@ -217,15 +271,10 @@ class RBACService:
     ) -> bool:
         """
         Check if a role has permission for an action on a resource
-        
-        Args:
-            user_role: User's role
-            resource_type: Type of resource (MEMBER, CLAIM, PA, etc.)
-            action: Action to perform (READ, WRITE, UPDATE, DELETE)
-        
-        Returns:
-            True if permitted, False otherwise
         """
+        # Cross-process cache invalidation check
+        self._check_cache_version()
+
         cache_key = f"{user_role}:{resource_type}:{action}"
         
         # Check cache
@@ -259,14 +308,10 @@ class RBACService:
     ) -> bool:
         """
         Check if a role has permission to use a tool
-        
-        Args:
-            user_role: User's role
-            tool_name: Name of the tool
-        
-        Returns:
-            True if permitted, False otherwise
         """
+        # Cross-process cache invalidation check
+        self._check_cache_version()
+
         cache_key = f"{user_role}:{tool_name}"
         
         # Check cache
@@ -376,11 +421,15 @@ class RBACService:
 
     def clear_cache(self) -> Dict[str, int]:
         """
-        Clear all in-memory permission caches.
+        Clear all in-memory permission caches and notify other processes.
 
-        Call this after making direct changes to the `tool_permissions` or
-        `role_permissions` tables in MySQL so the running MCP server picks
-        them up immediately without a container restart.
+        After clearing the local caches, increments a Redis version key
+        (``rbac:cache_version``).  Every ``check_permission`` and
+        ``check_tool_permission`` call in *any* process compares its
+        local version against this key and invalidates if stale.
+
+        Call this after making direct changes to the ``tool_permissions``
+        or ``role_permissions`` tables in MySQL.
 
         Returns:
             Dict with the number of entries cleared from each cache.
@@ -389,6 +438,20 @@ class RBACService:
         tool_count = len(self._tool_permission_cache)
         self._permission_cache.clear()
         self._tool_permission_cache.clear()
+
+        # Bump Redis version so A2A servers invalidate their caches
+        r = self._get_redis()
+        if r:
+            try:
+                new_version = r.incr(self._CACHE_VERSION_KEY)
+                self._local_cache_version = new_version
+                logger.info(
+                    "RBACService: Redis cache version bumped to %d",
+                    new_version,
+                )
+            except Exception as e:
+                logger.warning("RBACService: Redis cache version bump failed: %s", e)
+
         logger.info(
             "RBACService cache cleared: %d permission entries, %d tool permission entries",
             perm_count,

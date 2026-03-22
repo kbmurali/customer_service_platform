@@ -170,14 +170,49 @@ def process_user_request(
             logger.info("[%s] Control 1: input validation", session_id)
             nemo_filter = get_nemo_filter()
 
+            # When this is a follow-up query, fetch the last Q&A pair from the
+            # prior session so NeMo sees conversational context. Without this,
+            # follow-up queries like "Can you lookup the member?" look like cold
+            # PII probes and get blocked. Fetching is best-effort and lightweight
+            # — only the Session node is read, and the AI response is truncated
+            # to ~200 chars to keep NeMo's token budget minimal.
+            prior_turns = []
+            if prior_session_id:
+                try:
+                    _prior_session = get_context_graph_manager().get_session_context(prior_session_id)
+                    if _prior_session and _prior_session.get("session"):
+                        import json as _json
+                        _conv_raw = _prior_session["session"].get("conversationMessages", "")
+                        if _conv_raw:
+                            _conv = _json.loads(_conv_raw) if isinstance(_conv_raw, str) else _conv_raw
+                            _last_human = ""
+                            _last_ai = ""
+                            for _m in _conv:
+                                _mtype = _m.get("type", "")
+                                _mcontent = (_m.get("data") or {}).get("content", "")
+                                if _mtype == "human" and _mcontent:
+                                    _last_human = _mcontent
+                                elif _mtype == "ai" and _mcontent:
+                                    _last_ai = _mcontent
+                            if _last_human:
+                                prior_turns.append({"role": "user", "content": _last_human[:300]})
+                            if _last_ai:
+                                prior_turns.append({"role": "assistant", "content": _last_ai[:200]})
+                except Exception as _prior_exc:
+                    logger.debug(
+                        "[%s] Failed to fetch prior conversation for NeMo (non-fatal): %s",
+                        session_id, _prior_exc,
+                    )
+
             t0 = time.time()
             with input_validation_latency.time():
                 validation_result = nemo_filter.validate_input(
                     user_input,
                     context={
-                        "session_id": session_id,
-                        "user_id":    user_id,
-                        "user_role":  user_role,
+                        "session_id":  session_id,
+                        "user_id":     user_id,
+                        "user_role":   user_role,
+                        "prior_turns": prior_turns,
                     },
                 )
             track_input_validation(

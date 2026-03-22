@@ -448,6 +448,8 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     (UUID(), 'CSR_READONLY', 'pa_lookup',               TRUE,  20),
     (UUID(), 'CSR_READONLY', 'pa_status',               TRUE,  20),
     (UUID(), 'CSR_READONLY', 'pa_requirements',         TRUE,  20),
+    (UUID(), 'CSR_READONLY', 'member_claims',            TRUE,  20),
+    (UUID(), 'CSR_READONLY', 'member_prior_authorizations', TRUE, 20),
     (UUID(), 'CSR_READONLY', 'provider_search_by_specialty',         TRUE,  20),
     (UUID(), 'CSR_READONLY', 'provider_lookup',         TRUE,  20),
     (UUID(), 'CSR_READONLY', 'provider_network_check',           TRUE,  20),
@@ -468,6 +470,8 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     (UUID(), 'CSR_TIER1', 'pa_lookup',               TRUE,  30),
     (UUID(), 'CSR_TIER1', 'pa_status',               TRUE,  30),
     (UUID(), 'CSR_TIER1', 'pa_requirements',         TRUE,  30),
+    (UUID(), 'CSR_TIER1', 'member_claims',            TRUE,  30),
+    (UUID(), 'CSR_TIER1', 'member_prior_authorizations', TRUE, 30),
     (UUID(), 'CSR_TIER1', 'provider_search_by_specialty',         TRUE,  20),
     (UUID(), 'CSR_TIER1', 'provider_lookup',         TRUE,  20),
     (UUID(), 'CSR_TIER1', 'provider_network_check',           TRUE,  20),
@@ -488,6 +492,8 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     (UUID(), 'CSR_TIER2', 'pa_lookup',               TRUE,  60),
     (UUID(), 'CSR_TIER2', 'pa_status',               TRUE,  60),
     (UUID(), 'CSR_TIER2', 'pa_requirements',         TRUE,  60),
+    (UUID(), 'CSR_TIER2', 'member_claims',            TRUE,  60),
+    (UUID(), 'CSR_TIER2', 'member_prior_authorizations', TRUE, 60),
     (UUID(), 'CSR_TIER2', 'provider_search_by_specialty',         TRUE,  40),
     (UUID(), 'CSR_TIER2', 'provider_lookup',         TRUE,  40),
     (UUID(), 'CSR_TIER2', 'provider_network_check',           TRUE,  40),
@@ -498,25 +504,26 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     (UUID(), 'CSR_TIER2', 'update_claim_status',      TRUE,  10),
     (UUID(), 'CSR_TIER2', 'approve_prior_auth',       TRUE,  10),
     (UUID(), 'CSR_TIER2', 'deny_prior_auth',          TRUE,  10),
-    (UUID(), 'CSR_TIER2', 'update_member_info',       TRUE,  10),
+    (UUID(), 'CSR_TIER2', 'update_member_info',       TRUE,  10);
 
-    -- -----------------------------------------------------------------------------
-    -- Token budget limits — one row per role
-    -- Adjust daily_limit values to match your operational cost targets.
-    -- Rules of thumb at gpt-4o-mini pricing:
-    --   100,000 tokens  ≈ $0.015/user/day
-    --   500,000 tokens  ≈ $0.075/user/day
-    --   1,000,000 tokens ≈ $0.150/user/day
-    -- -----------------------------------------------------------------------------
-    INSERT IGNORE INTO token_budget_limits (role_name, daily_limit, notes) VALUES
-        ('CSR_READONLY',        100000,  'Standard read-only CSR — approx 40-50 queries/day'),
-        ('CSR_TIER1',           150000,  'Read/Limited Writes'),
-        ('CSR_TIER2',           200000,  'Read/write CSR — more complex multi-step queries'),
-        ('CSR_SUPERVISOR',      200000,  'Supervisor — oversight queries + escalation handling');
+-- -----------------------------------------------------------------------------
+-- Token budget limits — one row per role
+-- Adjust daily_limit values to match your operational cost targets.
+-- Rules of thumb at gpt-4o-mini pricing:
+--   100,000 tokens  ≈ $0.015/user/day
+--   500,000 tokens  ≈ $0.075/user/day
+--   1,000,000 tokens ≈ $0.150/user/day
+-- -----------------------------------------------------------------------------
+INSERT IGNORE INTO token_budget_limits (role_name, daily_limit, notes) VALUES
+    ('CSR_READONLY',        100000,  'Standard read-only CSR — approx 40-50 queries/day'),
+    ('CSR_TIER1',           150000,  'Read/Limited Writes'),
+    ('CSR_TIER2',           200000,  'Read/write CSR — more complex multi-step queries'),
+    ('CSR_SUPERVISOR',      200000,  'Supervisor — oversight queries + escalation handling');
 
-    -- -------------------------------------------------------
-    -- CSR_SUPERVISOR: All tools + highest rate limits
-    -- -------------------------------------------------------
+-- -------------------------------------------------------
+-- CSR_SUPERVISOR: All tools + highest rate limits
+-- -------------------------------------------------------
+INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, rate_limit_per_minute) VALUES
     (UUID(), 'CSR_SUPERVISOR', 'member_lookup',          TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'check_eligibility',      TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'coverage_lookup',         TRUE, 120),
@@ -526,12 +533,18 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     (UUID(), 'CSR_SUPERVISOR', 'pa_lookup',               TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'pa_status',               TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'pa_requirements',         TRUE, 120),
+    (UUID(), 'CSR_SUPERVISOR', 'member_claims',            TRUE, 120),
+    (UUID(), 'CSR_SUPERVISOR', 'member_prior_authorizations', TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'provider_search_by_specialty',         TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'provider_lookup',         TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'provider_network_check',           TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'search_policy_info',      TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'search_medical_codes',    TRUE, 120),
     (UUID(), 'CSR_SUPERVISOR', 'search_knowledge_base',   TRUE, 120),
+    (UUID(), 'CSR_READONLY',   'member_policy_lookup', TRUE,  20),
+    (UUID(), 'CSR_TIER1',      'member_policy_lookup', TRUE,  30),
+    (UUID(), 'CSR_TIER2',      'member_policy_lookup', TRUE,  60),
+    (UUID(), 'CSR_SUPERVISOR', 'member_policy_lookup', TRUE, 120);
     -- CSR_SUPERVISOR: Write tools (Human-in-the-Loop gated)
     (UUID(), 'CSR_SUPERVISOR', 'update_claim_status',      TRUE,  30),
     (UUID(), 'CSR_SUPERVISOR', 'approve_prior_auth',       TRUE,  30),
@@ -631,3 +644,110 @@ INSERT INTO mcp_agent_keys (agent_pair, key_version, is_active) VALUES
 
 -- Performance indexes for Control 8
 CREATE INDEX idx_nonce_log_timestamp ON mcp_nonce_log(received_at);
+-- ==========================================================================
+-- Feedback Learning Schema Extensions
+--
+-- Four new tables supporting the feedback-to-learning pipeline:
+--   1. experience_extraction_log  — tracks which sessions have been
+--      processed into the Chroma experience store
+--   2. feedback_classifications   — root-cause classifications for
+--      low-rated sessions (supervisor/admin annotations)
+--   3. feedback_pattern_reports   — clustered failure pattern reports
+--      generated by the pattern analyzer
+--   4. prompt_change_log          — tracks prompt modifications with
+--      before/after quality metrics
+--
+-- Run after the base mysql_schema.sql has been applied.
+-- ==========================================================================
+
+
+-- ---------------------------------------------------------------------------
+-- experience_extraction_log
+-- Tracks which sessions have been processed into the Chroma experience store.
+-- Prevents duplicate extraction and provides audit trail.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS experience_extraction_log (
+    session_id          VARCHAR(36)   NOT NULL,
+    extraction_timestamp DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    collection_name     VARCHAR(128)  NOT NULL DEFAULT 'successful_experiences',
+    status              VARCHAR(64)   NOT NULL DEFAULT 'extracted',
+    CONSTRAINT pk_experience_log PRIMARY KEY (session_id),
+    INDEX idx_exlog_timestamp (extraction_timestamp),
+    INDEX idx_exlog_status    (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Tracks sessions processed into the Chroma experience store';
+
+
+-- ---------------------------------------------------------------------------
+-- feedback_classifications
+-- Stores root-cause classifications for low-rated sessions.
+-- Populated by supervisors or admins via POST /api/feedback/classify.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS feedback_classifications (
+    id                  VARCHAR(36)   NOT NULL,
+    session_id          VARCHAR(36)   NOT NULL,
+    classified_by       VARCHAR(64)   NOT NULL,
+    classification_type ENUM(
+        'planning', 'routing', 'tool', 'synthesis',
+        'security', 'data_quality', 'retrieval'
+    ) NOT NULL,
+    notes               TEXT          DEFAULT NULL,
+    classified_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_fb_classifications PRIMARY KEY (id),
+    INDEX idx_fbc_session   (session_id),
+    INDEX idx_fbc_type      (classification_type),
+    INDEX idx_fbc_classified (classified_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Root-cause classifications for low-rated agent sessions';
+
+
+-- ---------------------------------------------------------------------------
+-- feedback_pattern_reports
+-- Stores clustered failure pattern analysis reports.
+-- Generated by observability/feedback_pattern_analyzer.py.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS feedback_pattern_reports (
+    report_id           VARCHAR(36)   NOT NULL,
+    generated_at        DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    team                VARCHAR(64)   NOT NULL DEFAULT 'unknown',
+    classification_type VARCHAR(32)   NOT NULL,
+    cluster_count       INT           NOT NULL DEFAULT 0,
+    representative_queries JSON       DEFAULT NULL,
+    suggested_action    TEXT          DEFAULT NULL,
+    status              ENUM('new', 'acknowledged', 'resolved')
+                        NOT NULL DEFAULT 'new',
+    CONSTRAINT pk_fb_pattern_reports PRIMARY KEY (report_id),
+    INDEX idx_fpr_team     (team),
+    INDEX idx_fpr_type     (classification_type),
+    INDEX idx_fpr_status   (status),
+    INDEX idx_fpr_generated (generated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Clustered failure pattern reports from the feedback analyzer';
+
+
+-- ---------------------------------------------------------------------------
+-- prompt_change_log
+-- Tracks prompt modifications with before/after quality metrics.
+-- Populated manually or via the management API when an engineer
+-- refines a planning or routing prompt based on feedback patterns.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS prompt_change_log (
+    change_id           VARCHAR(36)   NOT NULL,
+    changed_by          VARCHAR(64)   NOT NULL,
+    change_type         ENUM(
+        'planning_rule', 'routing_rule', 'agent_card', 'retrieval_update'
+    ) NOT NULL,
+    component           VARCHAR(128)  NOT NULL
+        COMMENT 'e.g. central_supervisor, claims_planning_prompt, chroma_policies',
+    description         TEXT          NOT NULL,
+    baseline_metrics    JSON          DEFAULT NULL
+        COMMENT 'Metrics snapshot before the change',
+    post_change_metrics JSON          DEFAULT NULL
+        COMMENT 'Metrics snapshot after validation',
+    change_timestamp    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_prompt_change_log PRIMARY KEY (change_id),
+    INDEX idx_pcl_component  (component),
+    INDEX idx_pcl_type       (change_type),
+    INDEX idx_pcl_timestamp  (change_timestamp)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Tracks prompt and retrieval changes with before/after quality metrics';

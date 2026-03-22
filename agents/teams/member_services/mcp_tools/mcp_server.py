@@ -339,7 +339,7 @@ def update_member_info(
     Update a member's information field. HIGH-IMPACT: requires human approval.
 
     Updatable fields: phone, email, address_street, address_city, address_state,
-    address_zip
+    address_zip, enrollmentDate, status
 
     Args:
         member_id: The member's unique identifier
@@ -356,7 +356,7 @@ def update_member_info(
     """
     start_time = datetime.now()
 
-    ALLOWED_FIELDS = {"phone", "email", "address_street", "address_city", "address_state", "address_zip"}
+    ALLOWED_FIELDS = {"phone", "email", "address_street", "address_city", "address_state", "address_zip", "enrollmentDate", "status"}
 
     member_id = sanitize_text(member_id)
     field = sanitize_text(field)
@@ -396,6 +396,77 @@ def update_member_info(
         execution_time = (datetime.now() - start_time).total_seconds() * 1000
         track_tool_execution_in_cg(
             session_id, "update_member_info", {"member_id": member_id, "field": field, "new_value": new_value, "reason": reason},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
+
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Read", record_name="member_policy", record_id_arg="member_id")
+@require_rate_limits
+@require_permissions("MEMBER", "READ")
+def member_policy_lookup(
+    member_id: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    execution_id: str = "",
+) -> str:
+    """
+    Look up member information together with their associated insurance policy.
+
+    Uses the graph relationship: (Member)-[:HAS_POLICY]->(Policy).
+    Returns member demographics and full policy details (policyId, policyNumber,
+    policyType, planName, planType, effectiveDate, expirationDate, status,
+    premium, deductible, outOfPocketMax).
+
+    Args:
+        member_id:    The member's unique identifier (e.g. M123456).
+        user_id:      ID of the requesting user (for audit logging).
+        user_role:    RBAC role of the requesting user.
+        session_id:   Session ID for audit and PII scrubbing.
+        execution_id: AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with member and policy information, or an error payload.
+    """
+    start_time = datetime.now()
+    member_id = sanitize_text(member_id)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        member_with_policy = kg_data_access.get_member_with_policy(member_id)
+
+        if not member_with_policy:
+            error = f"Member not found: {member_id}"
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+            track_tool_execution_in_cg(
+                session_id, "member_policy_lookup", {"member_id": member_id},
+                status="not_found", execution_time_ms=execution_time, error=error,
+                execution_id=execution_id or None,
+            )
+            return json.dumps({"error": error})
+
+        output = json.dumps(member_with_policy, indent=2)
+        scrubbed_output = scrub_output(output, session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "member_policy_lookup", {"member_id": member_id},
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+        return scrubbed_output
+
+    except Exception as e:
+        logger.error(f"member_policy_lookup failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "member_policy_lookup", {"member_id": member_id},
             status="failed", execution_time_ms=execution_time, error=error,
             execution_id=execution_id or None,
         )

@@ -42,9 +42,9 @@ def build_pa_services_agent_card(base_url: str) -> A2AAgentCard:
         name="pa_services_team",
         description=(
             "Health insurance prior authorization services agent. Handles PA lookup, "
-            "PA status checks, and PA requirements lookup. "
+            "PA status checks, PA requirements lookup, PA approval/denial, and member PA history. "
             "Routes queries to specialized workers: pa_lookup, "
-            "pa_status, pa_requirements."
+            "pa_status, pa_requirements, approve_prior_auth, deny_prior_auth, member_prior_authorizations."
         ),
         url=f"{base_url}/a2a",
         capabilities=A2ACapabilities(
@@ -94,6 +94,50 @@ def build_pa_services_agent_card(base_url: str) -> A2AAgentCard:
                 examples=[
                     "Does procedure code 27447 require PA under a PPO plan?",
                     "Check if CPT 43239 needs prior authorization for an HMO policy",
+                ],
+            ),
+            A2ASkill(
+                id="member_prior_authorizations",
+                name="Member Prior Authorizations",
+                description=(
+                    "Retrieve all prior authorizations for a specific member. "
+                    "Requires a member ID (e.g. M-12345). Returns a list of PAs "
+                    "with PA number, procedure code, status, dates, and requesting "
+                    "provider. Optionally filter by PA status."
+                ),
+                tags=["prior_authorization", "pa", "member", "lookup", "list"],
+                examples=[
+                    "What prior authorizations does member M-12345 have?",
+                    "Show me all PAs for member M-67890",
+                    "List pending prior authorizations for member M-11111",
+                ],
+            ),
+            A2ASkill(
+                id="approve_prior_auth",
+                name="Approve Prior Authorization",
+                description=(
+                    "Approve a prior authorization request. Requires the PA ID and "
+                    "a reason for approval. High-impact write operation — requires "
+                    "human approval before execution."
+                ),
+                tags=["prior_authorization", "pa", "approve", "write"],
+                examples=[
+                    "Approve PA abc123 — clinical criteria met",
+                    "Approve prior authorization 7799c06c — peer-to-peer review completed",
+                ],
+            ),
+            A2ASkill(
+                id="deny_prior_auth",
+                name="Deny Prior Authorization",
+                description=(
+                    "Deny a prior authorization request. Requires the PA ID and "
+                    "a reason for denial. High-impact write operation — requires "
+                    "human approval before execution."
+                ),
+                tags=["prior_authorization", "pa", "deny", "write"],
+                examples=[
+                    "Deny PA abc123 — does not meet medical necessity criteria",
+                    "Deny prior authorization 7799c06c — alternative treatment available",
                 ],
             ),
         ],

@@ -1,0 +1,50 @@
+# =============================================================================
+# docker-compose-webapp.yml — CSIP Web Application
+# =============================================================================
+# Deploys the CSIP single-page React application as a Docker Swarm service.
+# The webapp serves on port 3000 (published) and proxies API calls to the
+# agentic-access-api service on the shared overlay network.
+#
+# Deploy with:
+#   docker stack deploy -c docker-compose-webapp.yml health_insurance
+#
+# Prerequisites:
+#   - The health-insurance-network overlay network exists
+#   - The agentic-access-api service is running (for API proxy)
+#   - Prometheus is running (for metrics dashboard proxy)
+#   - The csip/webapp:latest image has been built:
+#       docker build -f Dockerfile.webapp -t csip/webapp:latest .
+# =============================================================================
+
+version: '3.8'
+
+services:
+  csip-webapp:
+    image: csip/webapp:latest
+    ports:
+      - "3000:3000"
+    networks:
+      - health_insurance_health-insurance-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+        reservations:
+          memory: 64M
+          cpus: '0.1'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  health_insurance_health-insurance-network:
+    external: true

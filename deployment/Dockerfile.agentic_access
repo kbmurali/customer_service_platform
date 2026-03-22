@@ -116,6 +116,7 @@ ENV PYTHONPATH=/app
 # Non-root user — reduces attack surface for a public-facing HTTP service
 RUN adduser --disabled-password --gecos "" csip && \
     chown -R csip:csip /app
+
 USER csip
 
 # -----------------------------------------------------------------------------
@@ -127,9 +128,22 @@ EXPOSE 8000
 
 # -----------------------------------------------------------------------------
 # Entrypoint
-# workers=1 — the CentralSupervisor and A2AClientNode singletons are not safe
-# to share across forked processes; use a single worker and scale via replicas
-# in Docker Swarm or Kubernetes instead.
+# The CentralSupervisor, A2AClientNode, and all LLM clients are stateless —
+# all per-request state flows through function arguments, not instance vars.
+# Multiple uvicorn workers are architecturally safe, but each worker loads
+# ~2.2GB of ML models (spaCy + Presidio + HuggingFace bart-large-mnli +
+# NeMo Guardrails). With 2+ workers the second OOMs during model load,
+# dies, and uvicorn restarts it in an infinite crash loop that burns CPU.
+#
+# A single async worker handles concurrent CSR queries efficiently —
+# while one request awaits an LLM API response (I/O-bound), others
+# proceed through the asyncio event loop. All heavy operations (LLM calls,
+# Neo4j queries, MySQL, Redis) are async I/O, not CPU-bound.
+#
+# To scale beyond one process, use Docker Swarm replicas (each replica
+# gets its own container with its own model memory) rather than
+# in-process workers that share a single container's memory limit.
+# -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 CMD ["python", "-m", "uvicorn", \
      "agents.agentic_access_http_api:app", \

@@ -119,6 +119,14 @@ The plan will be executed step-by-step by delegating to remote specialist agents
 === AVAILABLE REMOTE AGENTS ===
 {agent_skills_summary}
 
+=== SIMILAR PAST SUCCESSFUL PLANS ===
+{past_successful_plans}
+
+Use the past successful plans above (if any) as reference patterns for
+similar queries.  Adapt the structure to the current query — do not copy
+blindly.  If no past plans are shown, plan from first principles using
+the rules below.
+
 === PLAN STRUCTURE ===
 Return ONLY a valid JSON object with this exact structure:
 
@@ -163,9 +171,11 @@ Return ONLY a valid JSON object with this exact structure:
 5. MINIMUM STEPS. Do not create steps for information you already have or
    that was not requested. Every step must be necessary to answer the query.
 
-6. MEMBER CONTEXT FIRST. If the query references member ID, eligibility,
-   or coverage and ALSO requires another team, place member_services_team
-   steps at order 1 so downstream steps have member context.
+6. MEMBER CONTEXT FIRST — but only for member-specific information.
+   If the query needs member demographics, eligibility, or coverage AND also
+   requires another team, place member_services_team at order 1.
+   However, if the query asks for claims or prior authorizations belonging
+   to a member, route directly to the team that owns that data — see Rule 11.
 
 7. SEARCH AUGMENTS, NOT REPLACES. Use search_services_team to look up
    policy rules, clinical guidelines, or medical codes — not to answer
@@ -185,6 +195,16 @@ Return ONLY a valid JSON object with this exact structure:
       include all relevant identifiers (member ID, claim number, PA ID, procedure
       code, plan type, ZIP code, etc.) so the remote agent needs no other context.
       Do NOT include plan metadata (step_id, goal_id, order) in the query.
+
+11. CROSS-ENTITY ROUTING. Route by the PRIMARY data entity, not the identifier type:
+    - "claims for member X" or "claims associated with member X"
+      → claims_services_team (has member_claims tool)
+    - "prior authorizations for member X" or "PAs for member X"
+      → pa_services_team (has member_prior_authorizations tool)
+    - "member details" or "look up member X" or "eligibility for member X"
+      → member_services_team
+    The presence of a member ID does NOT mean member_services_team owns the query.
+    Match the NOUN being requested (claims, PAs, member info), not the identifier.
 
 Return ONLY the JSON. No explanation, no markdown, no preamble.
 """
@@ -495,6 +515,28 @@ class CentralSupervisor:
                 "CentralSupervisor: skills summary compression failed (non-fatal): %s", _exc
             )
 
+        # Retrieve similar past successful plans from the experience store.
+        # These are injected as few-shot examples in the planning prompt.
+        # Non-fatal — falls back to empty string (no examples) on any error.
+        past_plans_text = ""
+        try:
+            from config.settings import get_settings as _exp_settings
+            if getattr(_exp_settings(), "EXPERIENCE_STORE_ENABLED", False):
+                from databases.chroma_experience_store import get_experience_store
+                _top_k = getattr(_exp_settings(), "EXPERIENCE_TOP_K", 3)
+                past_plans_text = get_experience_store().retrieve_similar_experiences(
+                    query_text=query, top_k=_top_k,
+                )
+                if past_plans_text:
+                    logger.info(
+                        "CentralSupervisor: injecting %d experience examples for session=%s",
+                        past_plans_text.count("Example"), session_id,
+                    )
+        except Exception as _exp_exc:
+            logger.warning(
+                "CentralSupervisor: experience retrieval failed (non-fatal): %s", _exp_exc
+            )
+
         # Prompt versioning: fetch from LangFuse if enabled, else use constant
         try:
             from config.settings import get_settings as _gs
@@ -505,15 +547,17 @@ class CentralSupervisor:
                 _raw = tracer.get_prompt_or_default(
                     "csip-central-planning-prompt", PLANNING_SYSTEM_PROMPT, label=_label
                 )
-                planning_prompt = _raw.format(agent_skills_summary=skills_summary)
+                planning_prompt = _raw.format(agent_skills_summary=skills_summary, past_successful_plans=past_plans_text)
             else:
                 planning_prompt = PLANNING_SYSTEM_PROMPT.format(
-                    agent_skills_summary=skills_summary
+                    agent_skills_summary=skills_summary,
+                    past_successful_plans=past_plans_text,
                 )
         except Exception as _ve:
             logger.warning("CentralSupervisor: prompt versioning error (using default): %s", _ve)
             planning_prompt = PLANNING_SYSTEM_PROMPT.format(
-                agent_skills_summary=skills_summary
+                agent_skills_summary=skills_summary,
+                past_successful_plans=past_plans_text,
             )
         user_prompt = PLANNING_USER_PROMPT.format(query=query)
 
@@ -835,6 +879,40 @@ class CentralSupervisor:
                     current_step.get("query")
                     or current_step.get("instruction", "")
                 )
+
+                # For dependent steps (order > 1), enrich the delegation query
+                # with results from completed prior steps. Without this, the
+                # planner's abstract references like "member ID obtained from
+                # the previous step" remain unresolved — the remote agent sees
+                # no actual identifier and SKIPs.
+                #
+                # KEY DESIGN DECISION: Use the worker's natural-language `output`
+                # (e.g. "The member ID is 2c0d65ea-...") instead of `tool_raw_output`
+                # (escaped JSON blob). The downstream team supervisor's planner
+                # needs to extract identifiers like member IDs from this context
+                # and embed them in its own step queries. NL summaries are far
+                # easier for the LLM to parse than raw JSON.
+                if idx > 0:
+                    tool_results = state.get("tool_results", {})
+                    if tool_results:
+                        prior_context_parts = []
+                        for worker_name, result in tool_results.items():
+                            if isinstance(result, dict):
+                                output = result.get("output", "").strip()
+                                if output:
+                                    prior_context_parts.append(
+                                        f"- {worker_name} returned: {output[:400]}"
+                                    )
+                        if prior_context_parts:
+                            delegation_query = (
+                                delegation_query
+                                + "\n\n=== RESULTS FROM PRIOR STEPS (use these values directly) ===\n"
+                                + "\n".join(prior_context_parts)
+                                + "\n\nExtract any IDs, names, or values from the above results "
+                                + "and use them directly in your plan. Do not ask for data that "
+                                + "is already provided above."
+                            )
+
                 injected_state = dict(state)
                 existing_messages = list(state.get("messages", []))
 
@@ -984,9 +1062,13 @@ class CentralSupervisor:
         tool_results = state.get("tool_results", {})
         plan         = state.get("plan") or {}
 
-        # Extract the original user query from the first HumanMessage
+        # Extract the current user query from the LAST HumanMessage.
+        # In follow-up sessions, prior conversation messages (restored by the
+        # checkpointer) precede the current query in state["messages"].
+        # Using the first HumanMessage would grab the prior session's question,
+        # causing the consolidation LLM to answer the wrong query.
         original_query = ""
-        for msg in messages:
+        for msg in reversed(messages):
             if isinstance(msg, HumanMessage):
                 original_query = msg.content if hasattr(msg, "content") else str(msg)
                 break
@@ -1288,7 +1370,7 @@ Agent: member_services_team
   Description: Member lookup, eligibility verification, and coverage/benefits inquiries.
   Skills:
     - member_lookup: Look up member demographics and contact details by member ID.
-    - eligibility_check: Verify active coverage status for a service date.
+    - check_eligibility: Verify active coverage status for a service date.
     - coverage_lookup: Retrieve deductibles, copays, and benefits detail.
 
 Agent: claims_services_team

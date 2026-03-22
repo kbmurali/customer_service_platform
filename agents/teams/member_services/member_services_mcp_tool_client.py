@@ -12,7 +12,7 @@ Tools registered:
     check_eligibility  — check member eligibility for a service date
     coverage_lookup    — get coverage details from the member's active policy
     update_member_info — Update a member's information field. HIGH-IMPACT: requires human approval.
-                         Updatable fields: phone, email, address_street, address_city, address_state, address_zip
+                         Updatable fields: phone, email, address_street, address_city, address_state, address_zip, enrollmentDate, status
 
 """
 
@@ -39,6 +39,7 @@ class MemberServicesMCPToolClient(MCPToolClient):
         self.register_tool("check_eligibility")
         self.register_tool("coverage_lookup")
         self.register_tool("update_member_info")
+        self.register_tool("member_policy_lookup")
         
         logger.info(
             "MemberServicesMCPToolClient ready (%s) — tools: %s",

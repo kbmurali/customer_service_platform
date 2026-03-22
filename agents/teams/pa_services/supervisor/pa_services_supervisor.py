@@ -17,6 +17,7 @@ from agents.teams.pa_services.supervisor.pa_status_worker import PAStatusWorker
 from agents.teams.pa_services.supervisor.pa_requirements_worker import PARequirementsWorker
 from agents.teams.pa_services.supervisor.approve_prior_auth_worker import ApprovePriorAuthWorker
 from agents.teams.pa_services.supervisor.deny_prior_auth_worker import DenyPriorAuthWorker
+from agents.teams.pa_services.supervisor.member_prior_auth_worker import MemberPriorAuthWorker
 from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
@@ -49,7 +50,8 @@ class PAServicesSupervisor:
             "pa_status":           PAStatusWorker(),
             "pa_requirements":     PARequirementsWorker(),
             "approve_prior_auth":  ApprovePriorAuthWorker(),
-            "deny_prior_auth":     DenyPriorAuthWorker(),
+            "deny_prior_auth":              DenyPriorAuthWorker(),
+            "member_prior_authorizations":  MemberPriorAuthWorker(),
         }
 
         self.rbac = rbac_service
@@ -76,13 +78,14 @@ Available workers:
 - pa_requirements: Look up whether a procedure requires PA, given a procedure code and policy type
 - approve_prior_auth: Approve a prior authorization — requires PA ID and clinical justification reason
 - deny_prior_auth: Deny a prior authorization — requires PA ID and clinical justification reason
+- member_prior_authorizations: Retrieve all prior authorizations for a member by member ID
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
-   (no PA ID, no procedure code, no policy type, no reason for approve/deny), respond with "SKIP".
+   (no PA ID, no member ID, no procedure code, no policy type, no reason for approve/deny), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: pa_lookup, pa_status, pa_requirements, approve_prior_auth, deny_prior_auth.
+4. Only use exact worker names: pa_lookup, pa_status, pa_requirements, approve_prior_auth, deny_prior_auth, member_prior_authorizations.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -106,6 +109,7 @@ Available workers (use EXACT names only):
   and policy type (HMO, PPO, EPO, or POS)
 - approve_prior_auth: Approves a prior authorization — requires a PA ID and reason
 - deny_prior_auth: Denies a prior authorization — requires a PA ID and reason
+- member_prior_authorizations: Retrieves all prior authorizations for a member — requires a member ID
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -130,6 +134,10 @@ RULES:
 10. approve_prior_auth and deny_prior_auth are write operations — only include them
     when the user explicitly requests an approval or denial decision. Both require
     a PA ID and a clinical justification reason.
+11. member_prior_authorizations retrieves PAs by MEMBER ID (UUID), not by PA ID. Use it
+    when the user asks about "prior authorizations for member X" or "what PAs does
+    member X have". Do not use pa_lookup or pa_status for this — those require a
+    specific PA identifier.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -284,7 +292,7 @@ Return JSON only (no markdown fences, no explanation):
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth", "member_prior_authorizations"}
 
         user_id    = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -817,12 +825,13 @@ Return JSON only (no markdown fences, no explanation):
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth", "member_prior_authorizations"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["pa_lookup", "pa_status", "pa_requirements",
                      "approve_prior_auth", "deny_prior_auth",
+                     "member_prior_authorizations",
                      "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
@@ -855,8 +864,9 @@ Return JSON only (no markdown fences, no explanation):
                 "pa_status":          "pa_status",
                 "pa_requirements":    "pa_requirements",
                 "approve_prior_auth": "approve_prior_auth",
-                "deny_prior_auth":    "deny_prior_auth",
-                "error_handler":      "error_handler",
+                "deny_prior_auth":              "deny_prior_auth",
+                "member_prior_authorizations": "member_prior_authorizations",
+                "error_handler":               "error_handler",
                 "__end__":            END,
             },
         )

@@ -105,6 +105,35 @@ PA_REQUIREMENTS_RESPONSE = {
     },
 }
 
+MEMBER_PRIOR_AUTH_REQUEST = {
+    "type": "object",
+    "properties": {
+        "member_id": {"type": "string"},
+        "status": {"type": "string"},
+        "user_id": {"type": "string", "minLength": 1},
+        "user_role": {
+            "type": "string",
+            "enum": ["CSR_TIER1", "CSR_TIER2", "CSR_SUPERVISOR", "CSR_READONLY"],
+        },
+    },
+    "required": ["member_id", "user_id"],
+    "additionalProperties": False,
+}
+
+MEMBER_PRIOR_AUTH_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "member_id": {"type": "string"},
+        "pa_count": {"type": "integer"},
+        "prior_authorizations": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
+        "message": {"type": "string"},
+        "error": {"type": "string"},
+    },
+}
+
 # ============================================================================
 # SCHEMA REGISTRY – maps "tool_name:direction" → JSON Schema
 # ============================================================================
@@ -123,4 +152,6 @@ def build_pa_schema_registry() -> dict:
         "pa_status:response": PA_STATUS_RESPONSE,
         "pa_requirements:request": PA_REQUIREMENTS_REQUEST,
         "pa_requirements:response": PA_REQUIREMENTS_RESPONSE,
+        "member_prior_authorizations:request": MEMBER_PRIOR_AUTH_REQUEST,
+        "member_prior_authorizations:response": MEMBER_PRIOR_AUTH_RESPONSE,
     }

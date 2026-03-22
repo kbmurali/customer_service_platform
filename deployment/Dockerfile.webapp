@@ -1,0 +1,40 @@
+# =============================================================================
+# Dockerfile.webapp — CSIP Web Application
+# =============================================================================
+# Serves the CSIP single-page React application via Nginx.
+# The application is a self-contained HTML file with CDN-loaded
+# dependencies (React, Babel, Recharts) — no Node.js build step required.
+#
+# Nginx handles:
+#   - Static file serving (the SPA)
+#   - API proxy to agentic-access-api:8000
+#   - Prometheus proxy for the Performance Dashboard
+#   - SPA fallback routing (all non-API paths → index.html)
+#   - Security headers and gzip compression
+#
+# Port: 3000
+# =============================================================================
+
+FROM nginx:alpine
+
+# Remove default Nginx configuration
+RUN rm /etc/nginx/conf.d/default.conf
+
+# Copy custom Nginx configuration
+COPY nginx/webapp.conf /etc/nginx/conf.d/webapp.conf
+
+# Copy the SPA application
+COPY webapp/index.html /usr/share/nginx/html/index.html
+
+# Copy favicon and any static assets
+# (Add additional COPY lines here for images, icons, etc.)
+# COPY webapp/assets/ /usr/share/nginx/html/assets/
+
+# Health check — matches api-gateway healthcheck pattern
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget --spider -q http://127.0.0.1:3000/health || exit 1
+
+EXPOSE 3000
+
+# Run Nginx in foreground (required for Docker)
+CMD ["nginx", "-g", "daemon off;"]

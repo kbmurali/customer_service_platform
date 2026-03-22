@@ -17,6 +17,7 @@ from agents.teams.member_services.supervisor.member_lookup_worker import MemberL
 from agents.teams.member_services.supervisor.check_eligibility_worker import EligibilityCheckWorker
 from agents.teams.member_services.supervisor.coverage_lookup_worker import CoverageLookupWorker
 from agents.teams.member_services.supervisor.update_member_info_worker import UpdateMemberInfoWorker
+from agents.teams.member_services.supervisor.member_policy_lookup_worker import MemberPolicyLookupWorker
 from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
@@ -48,6 +49,7 @@ class MemberServicesSupervisor:
             "check_eligibility":  EligibilityCheckWorker(),
             "coverage_lookup":    CoverageLookupWorker(),
             "update_member_info": UpdateMemberInfoWorker(),
+            "member_policy_lookup": MemberPolicyLookupWorker(),
         }
         
         self.rbac = rbac_service
@@ -73,13 +75,14 @@ Available workers:
 - check_eligibility: Check member eligibility for a given service date
 - coverage_lookup: Get detailed coverage and benefits for a procedure code
 - update_member_info: Update a member information field — requires member ID, field, new value, and reason
+- member_policy_lookup: Look up member information with their associated insurance policy by member ID
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
    (no member ID, no service date, no procedure code, no field or new value for update), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: member_lookup, check_eligibility, coverage_lookup, update_member_info.
+4. Only use exact worker names: member_lookup, check_eligibility, coverage_lookup, update_member_info, member_policy_lookup.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -101,6 +104,7 @@ Available workers (use EXACT names only):
 - check_eligibility: Checks eligibility — requires a service date
 - coverage_lookup: Gets coverage details — requires a procedure code
 - update_member_info: Updates a member information field — requires member ID, field, new value, and reason
+- member_policy_lookup: Looks up member with their associated insurance policy by member ID
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -125,7 +129,7 @@ RULES:
 10. update_member_info is a write operation — only include it when the user
     explicitly requests a member information change. It requires member ID, the
     field to update (phone, email, address_street, address_city, address_state,
-    address_zip), the new value, and a reason.
+    address_zip, enrollmentDate, status), the new value, and a reason.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -284,7 +288,7 @@ Return JSON only (no markdown fences, no explanation):
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info"}
+        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info", "member_policy_lookup"}
 
         user_id = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -774,10 +778,11 @@ Return JSON only (no markdown fences, no explanation):
         Flow:
             create_plan
                 → supervisor
-                    → member_lookup      → goal_advance → supervisor
-                    → check_eligibility  → goal_advance → supervisor
-                    → coverage_lookup    → goal_advance → supervisor
-                    → update_member_info → goal_advance → supervisor
+                    → member_lookup          → goal_advance → supervisor
+                    → check_eligibility      → goal_advance → supervisor
+                    → coverage_lookup        → goal_advance → supervisor
+                    → update_member_info     → goal_advance → supervisor
+                    → member_policy_lookup   → goal_advance → supervisor
                     → error_handler → END
                     → END  (when FINISH)
         """
@@ -815,12 +820,12 @@ Return JSON only (no markdown fences, no explanation):
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info"}
+        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info", "member_policy_lookup"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["member_lookup", "check_eligibility", "coverage_lookup",
-                     "update_member_info", "error_handler", "supervisor", "__end__"]:
+                     "update_member_info", "member_policy_lookup", "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
                 return "error_handler"
@@ -852,6 +857,7 @@ Return JSON only (no markdown fences, no explanation):
                 "check_eligibility":   "check_eligibility",
                 "coverage_lookup":     "coverage_lookup",
                 "update_member_info":  "update_member_info",
+                "member_policy_lookup": "member_policy_lookup",
                 "error_handler":       "error_handler",
                 "__end__":             END,
             },

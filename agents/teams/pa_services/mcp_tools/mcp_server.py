@@ -498,6 +498,92 @@ def deny_prior_auth(
         )
         return json.dumps({"error": error})
 
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Read", record_name="pa", record_id_arg="member_id")
+@require_rate_limits
+@require_permissions("PA", "READ")
+def member_prior_authorizations(
+    member_id: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    status: str = "",
+    execution_id: str = "",
+) -> str:
+    """
+    Retrieve all prior authorizations for a member by member ID.
+
+    Uses relationship: (Member)-[:REQUESTED_PA]->(PriorAuthorization)
+
+    Returns a list of PAs with paId, paNumber, procedureCode,
+    procedureDescription, requestDate, status, urgency, approvalDate,
+    expirationDate, denialReason, and requesting provider details.
+    Optionally filter by PA status (PENDING, APPROVED, DENIED, EXPIRED).
+
+    Args:
+        member_id:    The member's unique identifier (e.g. M-12345)
+        user_id:      ID of the requesting user (for audit logging).
+        user_role:    RBAC role of the requesting user.
+        session_id:   Session ID for audit and PII scrubbing.
+        status:       Optional PA status filter (e.g. "PENDING").
+        execution_id: AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with list of prior authorizations, or an error payload.
+    """
+    start_time = datetime.now()
+
+    member_id = sanitize_text(member_id)
+    if status:
+        status = sanitize_text(status)
+
+    try:
+        kg_data_access = get_kg_data_access()
+        pas = kg_data_access.get_member_prior_authorizations(
+            member_id=member_id,
+            status=status if status else None,
+            limit=20,
+        )
+
+        if not pas:
+            output = json.dumps({
+                "member_id": member_id,
+                "prior_authorizations": [],
+                "message": f"No prior authorizations found for member {member_id}"
+                           + (f" with status {status}" if status else ""),
+            })
+        else:
+            output = json.dumps({
+                "member_id": member_id,
+                "pa_count": len(pas),
+                "prior_authorizations": pas,
+            }, indent=2)
+
+        scrubbed_output = scrub_output(output, session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "member_prior_authorizations",
+            {"member_id": member_id, "status": status or "all"},
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+
+        return scrubbed_output
+
+    except Exception as e:
+        logger.error(f"member_prior_authorizations failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "member_prior_authorizations", {"member_id": member_id},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────

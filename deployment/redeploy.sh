@@ -2,7 +2,17 @@ source .env
 
 docker stack rm health_insurance
 
-sleep 10
+sleep 20
+
+# Chroma Vector Database Docker Image (custom image with curl for health checks)
+
+docker rmi chroma-with-curl:latest
+
+sleep 1
+
+docker build -f Dockerfile.chroma -t chroma-with-curl:latest .
+
+sleep 1
 
 # Agentic Access API Docker Image
 
@@ -106,6 +116,16 @@ docker build -f Dockerfile.ms_a2a_server -t csip/member-services-a2a-server:late
 
 sleep 1
 
+# CSIP Web Application Docker Image
+
+docker rmi csip/webapp:latest
+
+sleep 1
+
+docker build -f Dockerfile.webapp -t csip/webapp:latest .
+
+sleep 1
+
 # Infrastructure Services Docker Swarm Deploy
 
 docker stack deploy -c docker-compose-v2.yml health_insurance
@@ -163,6 +183,12 @@ docker stack deploy -c docker-compose-search-a2a-server.yml health_insurance
 sleep 10
 
 docker stack deploy -c docker-compose-agentic-access.yml health_insurance
+
+sleep 1
+
+# CSIP Web Application Docker Swarm Deploy
+
+docker stack deploy -c docker-compose-webapp.yml health_insurance
 
 sleep 1
 

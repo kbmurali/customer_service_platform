@@ -62,6 +62,43 @@ define flow refuse unrelated topics
   stop
 
 # =============================================================================
+# CSR operational queries — Pattern C: acknowledge only
+# CSR follow-up commands that reference health insurance entities (members,
+# claims, PAs, providers, policies) are legitimate operational requests.
+# Without this flow, vague follow-ups like "look up the member" get
+# misclassified as PII extraction attempts by the self-check-input judge.
+# =============================================================================
+define user csr operational query
+  "Look up the member"
+  "Can you look up that member?"
+  "Get the member details"
+  "Show me the member information"
+  "Pull up the member record"
+  "Look up claims for that member"
+  "What claims does this member have?"
+  "Show me claims for this member"
+  "Get prior authorizations for this member"
+  "Look up the prior authorizations"
+  "What PAs does this member have?"
+  "Get the provider details"
+  "Look up that provider"
+  "Show me the policy details"
+  "Pull up the policy"
+  "Check eligibility for this member"
+  "What is the coverage for this member?"
+  "Get me the claim details"
+  "Show me that claim"
+
+define bot acknowledge csr query
+  "Let me look that up for you."
+  "I'll retrieve that information now."
+  "One moment while I pull up those details."
+
+define flow handle csr operational query
+  user csr operational query
+  bot acknowledge csr query
+
+# =============================================================================
 # Benefits inquiry — Pattern C: acknowledge only
 # NeMo validates and acknowledges. The multi-agent pipeline does the actual
 # benefits lookup after receiving this signal.

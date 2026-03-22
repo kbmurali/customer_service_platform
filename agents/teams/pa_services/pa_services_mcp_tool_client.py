@@ -39,6 +39,7 @@ class PAServicesMCPToolClient(MCPToolClient):
         self.register_tool("pa_requirements")
         self.register_tool("approve_prior_auth")
         self.register_tool("deny_prior_auth")
+        self.register_tool("member_prior_authorizations")
         
         logger.info(
             "PAServicesMCPToolClient ready (%s) — tools: %s",

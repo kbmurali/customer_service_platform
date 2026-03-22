@@ -262,6 +262,26 @@ class ApprovalWorkflow:
                 "message": "Action auto-approved (medium impact, logged).",
             }
 
+        # 5.5 SUPERVISOR OVERRIDE — HIGH impact actions by CSR_SUPERVISOR
+        # are auto-approved with full audit logging. This prevents the
+        # infinite-loop scenario where a supervisor approves a workflow
+        # item through the control pane, the agent pipeline calls the
+        # write tool, and require_approvals creates another HITL request.
+        # Supervisors ARE the approving authority — they should not need
+        # to approve their own actions.
+        if impact == ImpactLevel.HIGH and user_role == "CSR_SUPERVISOR":
+            self._log_action_execution(action, user_id, auto_approved=True)
+            logger.info(
+                f"Auto-approved HIGH-impact action for CSR_SUPERVISOR: "
+                f"{action_type} by {user_id}"
+            )
+            return {
+                "approved": True,
+                "pending": False,
+                "request_id": None,
+                "message": "Action auto-approved (supervisor override, logged).",
+            }
+
         # 6. HIGH / CRITICAL → submit for human review
         request = self._create_approval_request(action, impact, user_id)
         logger.info(
