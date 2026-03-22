@@ -21,7 +21,7 @@ FROM nginx:alpine
 RUN rm /etc/nginx/conf.d/default.conf
 
 # Copy custom Nginx configuration
-COPY nginx/webapp.conf /etc/nginx/conf.d/webapp.conf
+COPY deployment/nginx/webapp.conf /etc/nginx/conf.d/webapp.conf
 
 # Copy the SPA application
 COPY webapp/index.html /usr/share/nginx/html/index.html

@@ -122,7 +122,7 @@ docker rmi csip/webapp:latest
 
 sleep 1
 
-docker build -f Dockerfile.webapp -t csip/webapp:latest .
+docker build -f Dockerfile.webapp -t csip/webapp:latest ..
 
 sleep 1
 
