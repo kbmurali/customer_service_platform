@@ -1516,6 +1516,7 @@ const PerformanceDashboard = ({ token }) => {
   const [securityData, setSecurityData] = useState([]);
   const [teamData, setTeamData] = useState([]);
   const [providers, setProviders] = useState([]);
+  const [toolUsageData, setToolUsageData] = useState([]);
 
   // Demo data
   const demoHealth = {
@@ -1536,11 +1537,39 @@ const PerformanceDashboard = ({ token }) => {
     {name:'Anthropic (Claude)',status:'active',failures:0,lastSuccess:'45s ago',avgMs:1450},
     {name:'Amazon Bedrock',status:'cooldown',failures:3,lastSuccess:'12m ago',avgMs:2100},
   ];
+  const serviceColors = {
+    'Member Services':'#3B82F6','Claims Services':'#8B5CF6','PA Services':'#F59E0B',
+    'Provider Services':'#10B981','Search Services':'#EC4899','Other':'#94A3B8',
+  };
+  const demoToolUsage = [
+    {tool:'claim_lookup',count:1240,service:'Claims Services'},
+    {tool:'claim_status',count:980,service:'Claims Services'},
+    {tool:'member_lookup',count:860,service:'Member Services'},
+    {tool:'check_eligibility',count:720,service:'Member Services'},
+    {tool:'provider_network_check',count:650,service:'Provider Services'},
+    {tool:'pa_status',count:580,service:'PA Services'},
+    {tool:'search_policy_info',count:540,service:'Search Services'},
+    {tool:'coverage_lookup',count:480,service:'Member Services'},
+    {tool:'claim_payment_info',count:420,service:'Claims Services'},
+    {tool:'pa_requirements',count:390,service:'PA Services'},
+    {tool:'provider_lookup',count:340,service:'Provider Services'},
+    {tool:'search_medical_codes',count:310,service:'Search Services'},
+    {tool:'member_claims',count:280,service:'Claims Services'},
+    {tool:'pa_lookup',count:260,service:'PA Services'},
+    {tool:'provider_search_by_specialty',count:220,service:'Provider Services'},
+    {tool:'search_knowledge_base',count:190,service:'Search Services'},
+    {tool:'member_prior_authorizations',count:170,service:'PA Services'},
+    {tool:'member_policy_lookup',count:150,service:'Member Services'},
+    {tool:'update_claim_status',count:45,service:'Claims Services'},
+    {tool:'update_member_info',count:38,service:'Member Services'},
+    {tool:'approve_prior_auth',count:22,service:'PA Services'},
+    {tool:'deny_prior_auth',count:12,service:'PA Services'},
+  ];
 
   useEffect(() => {
     if (DEMO_MODE) {
       setAgenticHealth(demoHealth); setLatencyData(demoLatency); setSecurityData(demoSecurity);
-      setTeamData(demoTeams); setProviders(demoProviders);
+      setTeamData(demoTeams); setProviders(demoProviders); setToolUsageData(demoToolUsage);
       return;
     }
     const fetchData = async () => {
@@ -1614,6 +1643,37 @@ const PerformanceDashboard = ({ token }) => {
             })));
           }
         } catch(e) { /* /health not reachable */ }
+
+        // Tool usage: per-tool invocation counts from CG via API (consistent with team-invocations)
+        try {
+          const toolResp = await apiCall('GET', '/api/stats/tool-usage', null, token);
+          if (toolResp.tools?.length > 0) {
+            setToolUsageData(toolResp.tools);
+          }
+        } catch(e) {
+          // Fallback: query Prometheus directly if API endpoint unavailable
+          console.warn('Tool usage API failed, falling back to Prometheus:', e);
+          try {
+            const toolResult = await promQuery('sum by (tool_name) (increase(tool_executions_total[24h]))');
+            if (toolResult && toolResult.length > 0) {
+              let catalog = {};
+              try {
+                const catResp = await apiCall('GET', '/api/admin/tool-catalog', null, token);
+                catalog = catResp.catalog || {};
+              } catch(ce) { /* catalog not available */ }
+
+              const toolData = toolResult
+                .map(r => ({
+                  tool: r.metric?.tool_name || 'unknown',
+                  count: Math.round(parseFloat(r.value?.[1] || 0)),
+                  service: catalog[r.metric?.tool_name]?.service || 'Other',
+                }))
+                .filter(d => d.count > 0)
+                .sort((a, b) => b.count - a.count);
+              if (toolData.length > 0) setToolUsageData(toolData);
+            }
+          } catch(pe) { console.warn('Prometheus tool usage also failed:', pe); }
+        }
       } catch(e) { console.error('PerformanceDashboard fetch error:', e); }
       setLoading(false);
     };
@@ -1747,6 +1807,47 @@ const PerformanceDashboard = ({ token }) => {
             )) : !loading && <div className="empty-state" style={{padding:16}}><div className="empty-state-desc">Provider status unavailable.</div></div>}
             <div style={{fontSize:11,color:'var(--text-muted)',marginTop:12}}>Provider circuit breaker threshold: 5 consecutive failures → 60s cooldown.</div>
           </div>
+        </div>
+      </div>
+
+      {/* Tool Usage Heatmap — per-tool invocation counts colored by service */}
+      <div className="card fade-in" style={{marginTop:24}}>
+        <div className="card-header">
+          <h3>Tool Usage Across All Agents {DEMO_MODE?'(demo)':'(last 24h)'}</h3>
+          <span className="badge badge-gray" style={{fontSize:10}}>22 tools × 5 service teams</span>
+        </div>
+        <div className="card-body" style={{padding:'16px 20px'}}>
+          {toolUsageData.length > 0 ? (() => {
+            const maxCount = Math.max(...toolUsageData.map(d => d.count), 1);
+            return toolUsageData.map(d => (
+              <div key={d.tool} style={{display:'flex',alignItems:'center',marginBottom:6,gap:8}}>
+                <div style={{width:200,fontSize:12,fontFamily:'monospace',color:'var(--text-primary)',textAlign:'right',flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={d.tool}>{d.tool}</div>
+                <div style={{flex:1,background:'var(--bg-secondary)',borderRadius:4,height:20,position:'relative',overflow:'hidden'}}>
+                  <div style={{
+                    width:`${Math.max((d.count/maxCount)*100, d.count > 0 ? 3 : 0)}%`,
+                    height:'100%',
+                    background: serviceColors[d.service] || '#94A3B8',
+                    borderRadius:4,
+                    transition:'width 0.5s ease',
+                    display:'flex',alignItems:'center',justifyContent:'flex-end',paddingRight:6,
+                  }}>
+                    {(d.count/maxCount) > 0.12 && <span style={{fontSize:10,color:'#fff',fontWeight:600}}>{d.count.toLocaleString()}</span>}
+                  </div>
+                  {(d.count/maxCount) <= 0.12 && <span style={{position:'absolute',left:`${Math.max((d.count/maxCount)*100,3)+1}%`,top:2,fontSize:10,color:'var(--text-muted)'}}>{d.count}</span>}
+                </div>
+                <div style={{width:110,fontSize:11,color:serviceColors[d.service]||'var(--text-muted)',flexShrink:0,textAlign:'left'}}>{d.service}</div>
+              </div>
+            ));
+          })() : !loading && <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No tool execution data yet. Send some queries first.</div></div>}
+          {toolUsageData.length > 0 && (
+            <div style={{display:'flex',gap:16,marginTop:16,paddingTop:12,borderTop:'1px solid var(--border)',flexWrap:'wrap'}}>
+              {Object.entries(serviceColors).filter(([k]) => k !== 'Other').map(([name, color]) => (
+                <div key={name} style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'var(--text-muted)'}}>
+                  <div style={{width:10,height:10,borderRadius:2,background:color}}/> {name}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

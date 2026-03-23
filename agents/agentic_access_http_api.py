@@ -59,6 +59,59 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 logger.info("Logging configured at level: %s", os.getenv("LOG_LEVEL", "INFO"))
 
+# ── Authoritative tool → service mapping ──────────────────────────────────
+# Used by /api/stats/tool-usage, /api/admin/tool-permissions, and
+# /api/admin/tool-catalog as a reliable fallback when A2A agent card
+# builders fail (import errors, missing dependencies in API container).
+TOOL_SERVICE_MAP = {
+    "member_lookup": "Member Services",
+    "check_eligibility": "Member Services",
+    "coverage_lookup": "Member Services",
+    "update_member_info": "Member Services",
+    "member_policy_lookup": "Member Services",
+    "claim_lookup": "Claims Services",
+    "claim_status": "Claims Services",
+    "claim_payment_info": "Claims Services",
+    "member_claims": "Claims Services",
+    "update_claim_status": "Claims Services",
+    "pa_lookup": "PA Services",
+    "pa_status": "PA Services",
+    "pa_requirements": "PA Services",
+    "member_prior_authorizations": "PA Services",
+    "approve_prior_auth": "PA Services",
+    "deny_prior_auth": "PA Services",
+    "provider_lookup": "Provider Services",
+    "provider_network_check": "Provider Services",
+    "provider_search_by_specialty": "Provider Services",
+    "search_policy_info": "Search Services",
+    "search_medical_codes": "Search Services",
+    "search_knowledge_base": "Search Services",
+}
+TOOL_DESCRIPTION_MAP = {
+    "member_lookup": "Look up member demographics by member ID",
+    "check_eligibility": "Check member eligibility and active coverage status",
+    "coverage_lookup": "Retrieve detailed coverage info (deductibles, copays, benefits)",
+    "update_member_info": "Update member contact or demographic information",
+    "member_policy_lookup": "Look up member with their associated insurance policy",
+    "claim_lookup": "Look up full claim details by claim ID",
+    "claim_status": "Check claim processing status by claim number",
+    "claim_payment_info": "Retrieve payment amounts and dates for a claim",
+    "member_claims": "List all claims filed by a specific member",
+    "update_claim_status": "Update claim status (requires HITL approval)",
+    "pa_lookup": "Look up prior authorization details by PA ID",
+    "pa_status": "Check PA processing status by PA ID",
+    "pa_requirements": "Determine if a procedure requires PA under a policy type",
+    "member_prior_authorizations": "List all PAs for a specific member",
+    "approve_prior_auth": "Approve a prior authorization (requires HITL approval)",
+    "deny_prior_auth": "Deny a prior authorization (requires HITL approval)",
+    "provider_lookup": "Look up provider details by provider ID",
+    "provider_network_check": "Check if a provider is in-network for a plan",
+    "provider_search_by_specialty": "Search providers by specialty and location",
+    "search_policy_info": "Semantic search over policy documents",
+    "search_medical_codes": "Look up CPT/ICD codes and descriptions",
+    "search_knowledge_base": "Search clinical guidelines and knowledge base",
+}
+
 settings: Settings = get_settings()
 
 # Redis DB used by MetricsPersister for the central /metrics aggregation point
@@ -1040,6 +1093,93 @@ async def get_rate_limit_utilization(
         )
 
 
+@app.get("/api/stats/tool-usage")
+async def get_tool_usage(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    Return per-tool invocation counts from the Context Graph, enriched
+    with service team metadata from A2A agent cards.
+
+    Queries ToolExecution nodes grouped by toolName. Each result includes
+    the tool name, invocation count, and the service team it belongs to
+    (derived from the tool catalog).
+
+    Available to any authenticated role.
+    """
+    try:
+        from databases.context_graph_data_access import get_cg_data_access
+        cg = get_cg_data_access()
+        result = cg.conn.execute_query(
+            """
+            MATCH (te:ToolExecution)
+            WHERE te.toolName IS NOT NULL
+            RETURN te.toolName AS tool, count(te) AS invocations
+            ORDER BY invocations DESC
+            """
+        )
+
+        # ── Tool → Service mapping ─────────────────────────────────
+        # Start with the module-level authoritative map; optionally
+        # overlay live A2A agent card data if available.
+        tool_svc = dict(TOOL_SERVICE_MAP)
+
+        # Optional: override with live A2A agent card data if available
+        try:
+            from agents.core.a2a_agent_card import get_agent_card_registry
+            registry = get_agent_card_registry()
+            cards = registry.get_all_cards()
+            if not cards:
+                from agents.teams.claims_services.claims_services_a2a_agent_card import build_claims_services_agent_card
+                from agents.teams.member_services.member_services_a2a_agent_card import build_member_services_agent_card
+                from agents.teams.pa_services.pa_services_a2a_agent_card import build_pa_services_agent_card
+                from agents.teams.provider_services.provider_services_a2a_agent_card import build_provider_services_agent_card
+                from agents.teams.search_services.search_services_a2a_agent_card import build_search_services_agent_card
+                for name, builder in [
+                    ("claims_services_team", build_claims_services_agent_card),
+                    ("member_services_team", build_member_services_agent_card),
+                    ("pa_services_team", build_pa_services_agent_card),
+                    ("provider_services_team", build_provider_services_agent_card),
+                    ("search_services_team", build_search_services_agent_card),
+                ]:
+                    try:
+                        card = builder()
+                        registry.register_card(name, card)
+                    except Exception:
+                        pass
+                cards = registry.get_all_cards()
+
+            service_labels = {
+                "claims_services_team": "Claims Services",
+                "member_services_team": "Member Services",
+                "pa_services_team": "PA Services",
+                "provider_services_team": "Provider Services",
+                "search_services_team": "Search Services",
+            }
+            for agent_name, card in cards.items():
+                service = service_labels.get(agent_name, agent_name)
+                for skill in card.skills:
+                    tool_svc[skill.id] = service
+        except Exception as cat_exc:
+            logger.warning("A2A card enrichment unavailable, using built-in map: %s", cat_exc)
+
+        tools = [
+            {
+                "tool": r["tool"],
+                "count": int(r["invocations"]),
+                "service": tool_svc.get(r["tool"], "Other"),
+            }
+            for r in result
+        ]
+        return {"tools": tools}
+    except Exception as exc:
+        logger.error("get_tool_usage failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve tool usage data",
+        )
+
+
 # ============================================
 # Admin Endpoints — Tool Permissions & Rate Limits
 # ============================================
@@ -1271,53 +1411,66 @@ async def get_tool_catalog(
             detail="Tool catalog requires CSR_SUPERVISOR role",
         )
     try:
-        from agents.core.a2a_agent_card import get_agent_card_registry
+        # Start with authoritative built-in catalog
+        catalog = {}
+        for tool_name, svc in TOOL_SERVICE_MAP.items():
+            catalog[tool_name] = {
+                "name": tool_name,
+                "service": svc,
+                "description": TOOL_DESCRIPTION_MAP.get(tool_name, ""),
+                "tags": [],
+            }
 
-        registry = get_agent_card_registry()
-        cards = registry.get_all_cards()
+        # Overlay with live A2A agent card data if available
+        try:
+            from agents.core.a2a_agent_card import get_agent_card_registry
 
-        # If registry is empty (no queries sent yet), populate it
-        # by building cards directly from each team's module.
-        if not cards:
-            from agents.teams.claims_services.claims_services_a2a_agent_card import build_claims_services_agent_card
-            from agents.teams.member_services.member_services_a2a_agent_card import build_member_services_agent_card
-            from agents.teams.pa_services.pa_services_a2a_agent_card import build_pa_services_agent_card
-            from agents.teams.provider_services.provider_services_a2a_agent_card import build_provider_services_agent_card
-            from agents.teams.search_services.search_services_a2a_agent_card import build_search_services_agent_card
-
-            for name, builder in [
-                ("claims_services_team", build_claims_services_agent_card),
-                ("member_services_team", build_member_services_agent_card),
-                ("pa_services_team", build_pa_services_agent_card),
-                ("provider_services_team", build_provider_services_agent_card),
-                ("search_services_team", build_search_services_agent_card),
-            ]:
-                try:
-                    card = builder()
-                    registry.register_card(name, card)
-                except Exception:
-                    pass
+            registry = get_agent_card_registry()
             cards = registry.get_all_cards()
 
-        # Map agent_name → friendly service label
-        service_labels = {
-            "claims_services_team":   "Claims Services",
-            "member_services_team":   "Member Services",
-            "pa_services_team":       "PA Services",
-            "provider_services_team": "Provider Services",
-            "search_services_team":   "Search Services",
-        }
+            # If registry is empty (no queries sent yet), populate it
+            # by building cards directly from each team's module.
+            if not cards:
+                from agents.teams.claims_services.claims_services_a2a_agent_card import build_claims_services_agent_card
+                from agents.teams.member_services.member_services_a2a_agent_card import build_member_services_agent_card
+                from agents.teams.pa_services.pa_services_a2a_agent_card import build_pa_services_agent_card
+                from agents.teams.provider_services.provider_services_a2a_agent_card import build_provider_services_agent_card
+                from agents.teams.search_services.search_services_a2a_agent_card import build_search_services_agent_card
 
-        catalog = {}
-        for agent_name, card in cards.items():
-            service = service_labels.get(agent_name, agent_name)
-            for skill in card.skills:
-                catalog[skill.id] = {
-                    "name": skill.name,
-                    "service": service,
-                    "description": skill.description,
-                    "tags": skill.tags,
-                }
+                for name, builder in [
+                    ("claims_services_team", build_claims_services_agent_card),
+                    ("member_services_team", build_member_services_agent_card),
+                    ("pa_services_team", build_pa_services_agent_card),
+                    ("provider_services_team", build_provider_services_agent_card),
+                    ("search_services_team", build_search_services_agent_card),
+                ]:
+                    try:
+                        card = builder()
+                        registry.register_card(name, card)
+                    except Exception:
+                        pass
+                cards = registry.get_all_cards()
+
+            # Map agent_name → friendly service label
+            service_labels = {
+                "claims_services_team":   "Claims Services",
+                "member_services_team":   "Member Services",
+                "pa_services_team":       "PA Services",
+                "provider_services_team": "Provider Services",
+                "search_services_team":   "Search Services",
+            }
+
+            for agent_name, card in cards.items():
+                service = service_labels.get(agent_name, agent_name)
+                for skill in card.skills:
+                    catalog[skill.id] = {
+                        "name": skill.name,
+                        "service": service,
+                        "description": skill.description,
+                        "tags": skill.tags,
+                    }
+        except Exception as cat_exc:
+            logger.warning("A2A card enrichment unavailable for tool-catalog, using built-in map: %s", cat_exc)
 
         return {"catalog": catalog}
 
@@ -1348,8 +1501,13 @@ async def get_tool_permissions(
             detail="Tool permission management requires CSR_SUPERVISOR role",
         )
     try:
-        # ── Build catalog from A2A agent cards ──────────────────────────
+        # ── Build catalog: start with authoritative map, overlay A2A cards ──
         catalog = {}
+        for tool_name, svc in TOOL_SERVICE_MAP.items():
+            catalog[tool_name] = {
+                "service": svc,
+                "description": TOOL_DESCRIPTION_MAP.get(tool_name, ""),
+            }
         try:
             from agents.core.a2a_agent_card import get_agent_card_registry
             registry = get_agent_card_registry()
@@ -1389,7 +1547,7 @@ async def get_tool_permissions(
                         "description": skill.description,
                     }
         except Exception as cat_exc:
-            logger.warning("Could not build tool catalog for permissions enrichment: %s", cat_exc)
+            logger.warning("A2A card enrichment unavailable for permissions, using built-in map: %s", cat_exc)
 
         # ── Fetch permissions from MySQL ────────────────────────────────
         from databases.connections import get_mysql
