@@ -48,7 +48,7 @@ if "vectorstore" not in globals():
         embedding_function=embeddings,
     )
     vectorstore.add_documents(docs)
-    print(">>> Vectorstore initialised with", vectorstore._collection.count(), "docs")
+    print(">>> Vectorstore initialized with", vectorstore._collection.count(), "docs")
 
 # Three filtered retrievers (one per “lane”)
 plan_retriever = vectorstore.as_retriever(search_kwargs={"k": 3, "filter": {"lane": "plan"}})
