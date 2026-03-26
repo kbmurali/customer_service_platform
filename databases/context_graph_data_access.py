@@ -364,7 +364,52 @@ class ContextGraphDataAccess:
         except Exception as e:
             logger.error(f"Error updating execution status {execution_id}: {e}")
             return False
+
+    def set_langfuse_trace_id(self, execution_id: str, langfuse_trace_id: str) -> None:
+        """
+        Store the LangFuse trace ID on an AgentExecution node.
+
+        The LangFuse CallbackHandler auto-generates a trace ID that differs
+        from the CG executionId.  This method writes it back to the CG node
+        so the webapp CG Explorer can look up the LangFuse trace by reading
+        the node's langfuseTraceId property.
+
+        Args:
+            execution_id:     CG AgentExecution.executionId
+            langfuse_trace_id: Auto-generated trace ID from
+                               CallbackHandler.get_trace_id()
+        """
+        query = """
+        MATCH (e:AgentExecution {executionId: $executionId})
+        SET e.langfuseTraceId = $langfuseTraceId
+        """
+        try:
+            self.conn.execute_query(query, {
+                "executionId": execution_id,
+                "langfuseTraceId": langfuse_trace_id,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to set langfuse trace ID on {execution_id} (non-fatal): {e}")
     
+    def link_router_to_worker(self, router_execution_id: str, worker_execution_id: str) -> None:
+        """
+        Create (router AgentExecution)-[:DISPATCHED_TO]->(worker AgentExecution).
+
+        Links the team supervisor's routing decision node to the actual
+        worker execution node.  The worker node owns the CALLED_TOOL edges.
+        """
+        try:
+            self.conn.execute_query("""
+                MATCH (router:AgentExecution {executionId: $routerId})
+                MATCH (worker:AgentExecution {executionId: $workerId})
+                MERGE (router)-[:DISPATCHED_TO]->(worker)
+            """, {
+                "routerId": router_execution_id,
+                "workerId": worker_execution_id,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to link router to worker (non-fatal): {e}")
+
     def get_execution_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Retrieve execution history for a session.
@@ -721,6 +766,34 @@ class ContextGraphDataAccess:
         except Exception as e:
             logger.warning(f"Failed to link step to execution (non-fatal): {e}")
 
+    def set_langfuse_trace_id(self, execution_id: str, langfuse_trace_id: str) -> bool:
+        """
+        Store the LangFuse trace ID on an AgentExecution node.
+
+        After an LLM invocation with a LangFuse CallbackHandler, the handler
+        auto-generates a trace ID.  This method writes that ID as a direct
+        property on the CG node so the CG Explorer can link each
+        AgentExecution to its corresponding LangFuse trace.
+
+        Args:
+            execution_id:     CG AgentExecution.executionId
+            langfuse_trace_id: The trace ID returned by callback_handler.get_trace_id()
+        Returns:
+            True if the property was set successfully.
+        """
+        try:
+            self.conn.execute_query("""
+                MATCH (e:AgentExecution {executionId: $executionId})
+                SET e.langfuseTraceId = $langfuseTraceId
+            """, {
+                "executionId":     execution_id,
+                "langfuseTraceId": langfuse_trace_id,
+            })
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to set langfuse trace id (non-fatal): {e}")
+            return False
+
     def track_tool_execution(self,
                             session_id: str,
                             tool_name: str,
@@ -849,6 +922,35 @@ class ContextGraphDataAccess:
             logger.debug(f"Linked a2a_server -> plan {plan_id} for task {a2a_task_id}")
         except Exception as e:
             logger.warning(f"Failed to link a2a server to plan (non-fatal): {e}")
+
+    def link_a2a_server_to_planner(self, a2a_task_id: str, plan_id: str) -> None:
+        """
+        Create (a2a_server)-[:HAS_EXECUTION]->(team_planner) and remove
+        the direct (a2a_server)-[:HAS_PLAN]->(Plan) edge.
+
+        The team_planner node is found via reverse HAS_PLAN from the Plan.
+        This produces the correct CG structure:
+            a2a_server -[:HAS_EXECUTION]-> team_planner -[:HAS_PLAN]-> Plan
+
+        If no team_planner exists (legacy sessions), falls back to the
+        direct (a2a_server)-[:HAS_PLAN]->(Plan) link which remains intact.
+        """
+        try:
+            self.conn.execute_query("""
+                MATCH (server:AgentExecution {agentType: "a2a_server"})
+                WHERE server.metadata CONTAINS $taskId
+                MATCH (planner:AgentExecution {agentType: "team_planner"})-[:HAS_PLAN]->(plan:Plan {planId: $planId})
+                MERGE (server)-[:HAS_EXECUTION]->(planner)
+                WITH server, plan
+                OPTIONAL MATCH (server)-[old:HAS_PLAN]->(plan)
+                DELETE old
+            """, {
+                "planId":  plan_id,
+                "taskId":  a2a_task_id,
+            })
+            logger.debug(f"Linked a2a_server -> planner -> plan {plan_id} for task {a2a_task_id}")
+        except Exception as e:
+            logger.warning(f"Failed to link a2a_server to planner (non-fatal): {e}")
 
     def create_tool_error(
         self,

@@ -758,27 +758,33 @@ async def get_cg_session(
         MATCH (s:Session {sessionId: $sessionId})
         OPTIONAL MATCH (s)-[:HAS_EXECUTION]->(topExec:AgentExecution)
         OPTIONAL MATCH (topExec)-[:HAS_PLAN]->(centralPlan:Plan)
+        OPTIONAL MATCH (topExec)-[:HAS_EXECUTION]->(consolidator:AgentExecution {agentType: 'consolidator'})
         OPTIONAL MATCH (centralPlan)-[:HAS_GOAL]->(cGoal:Goal)
         OPTIONAL MATCH (cGoal)-[:HAS_STEP]->(cStep:Step)
         OPTIONAL MATCH (cStep)-[:EXECUTED_BY]->(cStepExec:AgentExecution)
 
-        WITH s, topExec, centralPlan, cGoal, cStep, cStepExec
+        WITH s, topExec, centralPlan, consolidator, cGoal, cStep, cStepExec
 
         OPTIONAL MATCH (cStepExec)-[:CALLED_AGENT]->(a2aClient:AgentExecution {agentType: 'a2a_client'})
         OPTIONAL MATCH (a2aClient)-[:CALLED_AGENT]->(a2aServer:AgentExecution {agentType: 'a2a_server'})
-        OPTIONAL MATCH (a2aServer)-[:HAS_PLAN]->(teamPlan:Plan)
+        OPTIONAL MATCH (a2aServer)-[:HAS_EXECUTION|HAS_PLAN*1..2]->(teamPlan:Plan)
+        OPTIONAL MATCH (teamPlan)<-[:HAS_PLAN]-(teamPlanner:AgentExecution {agentType: 'team_planner'})
         OPTIONAL MATCH (teamPlan)-[:HAS_GOAL]->(tGoal:Goal)
         OPTIONAL MATCH (tGoal)-[:HAS_STEP]->(tStep:Step)
         OPTIONAL MATCH (tStep)-[:EXECUTED_BY]->(tStepExec:AgentExecution)
-        OPTIONAL MATCH (tStepExec)-[:CALLED_TOOL]->(tTool:ToolExecution)
+        OPTIONAL MATCH (tStepExec)-[:DISPATCHED_TO]->(tWorker:AgentExecution)
+        OPTIONAL MATCH (tStepExec)-[:DISPATCHED_TO*0..1]->(tToolOwner)-[:CALLED_TOOL]->(tTool:ToolExecution)
         OPTIONAL MATCH (tTool)-[:HAD_ERROR]->(tToolErr:ToolError)
-        OPTIONAL MATCH (tStepExec)-[:HAD_ERROR]->(tAgentErr:AgentError)
+        OPTIONAL MATCH (tStepExec)-[:DISPATCHED_TO*0..1]->(tErrOwner)-[:HAD_ERROR]->(tAgentErr:AgentError)
 
         RETURN
             s { .sessionId, .userId, .startTime, .endTime, .status } AS session,
             collect(DISTINCT topExec {
-                .executionId, .agentName, .agentType, .status, .startTime, .endTime, .duration
+                .executionId, .agentName, .agentType, .status, .startTime, .endTime, .duration, .langfuseTraceId
             }) AS topExecutions,
+            collect(DISTINCT consolidator {
+                .executionId, .agentName, .agentType, .status, .duration, .langfuseTraceId
+            }) AS consolidators,
             collect(DISTINCT centralPlan {
                 .planId, .planType, .teamName, .status, .totalGoals
             }) AS centralPlans,
@@ -789,17 +795,21 @@ async def get_cg_session(
                 .stepId, .action, .worker, .status, goalId: cGoal.goalId
             }) AS centralSteps,
             collect(DISTINCT cStepExec {
-                .executionId, .agentName, .agentType, .status, .duration,
+                .executionId, .agentName, .agentType, .status, .duration, .langfuseTraceId,
                 stepId: cStep.stepId, teamName: cStepExec.agentName
             }) AS centralStepExecs,
             collect(DISTINCT a2aClient {
-                .executionId, .agentName, .agentType, .status, .duration,
+                .executionId, .agentName, .agentType, .status, .duration, .langfuseTraceId,
                 parentStepExecId: cStepExec.executionId
             }) AS a2aClients,
             collect(DISTINCT a2aServer {
-                .executionId, .agentName, .agentType, .status, .duration,
+                .executionId, .agentName, .agentType, .status, .duration, .langfuseTraceId,
                 clientExecId: a2aClient.executionId
             }) AS a2aServers,
+            collect(DISTINCT teamPlanner {
+                .executionId, .agentName, .agentType, .status, .duration, .langfuseTraceId,
+                planId: teamPlan.planId
+            }) AS teamPlanners,
             collect(DISTINCT teamPlan {
                 .planId, .planType, .teamName, .status, .totalGoals,
                 serverExecId: a2aServer.executionId
@@ -811,11 +821,15 @@ async def get_cg_session(
                 .stepId, .action, .worker, .status, goalId: tGoal.goalId
             }) AS teamSteps,
             collect(DISTINCT tStepExec {
-                .executionId, .agentName, .agentType, .status, .duration, stepId: tStep.stepId
+                .executionId, .agentName, .agentType, .status, .duration, .langfuseTraceId, stepId: tStep.stepId
             }) AS teamStepExecs,
+            collect(DISTINCT tWorker {
+                .executionId, .agentName, .agentType, .status, .duration, .langfuseTraceId,
+                routerExecId: tStepExec.executionId
+            }) AS teamWorkers,
             collect(DISTINCT tTool {
                 .toolName, .status, .executionTime, .inputData, .outputSummary,
-                .toolExecutionId, execId: tStepExec.executionId
+                .toolExecutionId, execId: tToolOwner.executionId
             }) AS teamTools,
             collect(DISTINCT tToolErr {
                 .errorId, .errorType, .message, .timestamp,
@@ -823,7 +837,7 @@ async def get_cg_session(
             }) AS teamToolErrors,
             collect(DISTINCT tAgentErr {
                 .errorId, .errorType, .message, .timestamp,
-                agentExecId: tStepExec.executionId
+                agentExecId: tErrOwner.executionId
             }) AS teamAgentErrors
         """
         tree_result = cg.execute_custom_query(tree_query, {"sessionId": session_id})
@@ -838,21 +852,27 @@ async def get_cg_session(
                 return [x for x in (lst or []) if x and any(v is not None for v in x.values())]
 
             top_execs = clean(row.get("topExecutions"))
+            consolidators = clean(row.get("consolidators"))
             central_plans = clean(row.get("centralPlans"))
             central_goals = clean(row.get("centralGoals"))
             central_steps = clean(row.get("centralSteps"))
             central_step_execs = clean(row.get("centralStepExecs"))
             a2a_clients = clean(row.get("a2aClients"))
             a2a_servers = clean(row.get("a2aServers"))
+            team_planners = clean(row.get("teamPlanners"))
             team_plans = clean(row.get("teamPlans"))
             team_goals = clean(row.get("teamGoals"))
             team_steps = clean(row.get("teamSteps"))
             team_step_execs = clean(row.get("teamStepExecs"))
+            team_workers = clean(row.get("teamWorkers"))
             team_tools = clean(row.get("teamTools"))
             team_tool_errors = clean(row.get("teamToolErrors"))
             team_agent_errors = clean(row.get("teamAgentErrors"))
 
-            # Build central plan subtree with full A2A → team → worker → tool chain
+            # Build central plan subtree with full A2A → team → worker → tool chain.
+            # Insert the planner AgentExecution node between Session and Plan
+            # so it is visible and clickable in CG Explorer (with LangFuse trace card).
+            plan_children = []
             for plan in central_plans:
                 plan_node = {"type": "Plan", "id": plan.get("planId", ""), "status": plan.get("status", ""), "props": plan, "children": []}
                 for goal in [g for g in central_goals if g.get("goalId")]:
@@ -860,11 +880,11 @@ async def get_cg_session(
                     for step in [s for s in central_steps if s.get("goalId") == goal.get("goalId")]:
                         step_node = {"type": "Step", "id": step.get("stepId", ""), "status": step.get("status", ""), "props": step, "children": []}
 
-                        # Central step exec (e.g. claims_services_team routing)
+                        # Central step exec (e.g. central_supervisor_router)
                         for ex in [e for e in central_step_execs if e.get("stepId") == step.get("stepId")]:
                             exec_node = {"type": "AgentExecution", "id": ex.get("executionId", ""), "status": ex.get("status", ""), "props": ex, "children": []}
 
-                            # A2A chain: step exec → a2a_client → a2a_server → team plan
+                            # A2A chain: step exec → a2a_server → team planner → team plan
                             for server in a2a_servers:
                                 server_node = {"type": "AgentExecution", "id": server.get("executionId", ""), "status": server.get("status", ""), "props": {**server, "agentType": "a2a_server"}, "children": []}
 
@@ -877,24 +897,51 @@ async def get_cg_session(
                                             for tex in [e for e in team_step_execs if e.get("stepId") == tstep.get("stepId")]:
                                                 texec_node = {"type": "AgentExecution", "id": tex.get("executionId", ""), "status": tex.get("status", ""), "props": tex, "children": []}
 
-                                                # Agent errors on the worker execution
-                                                for aerr in [e for e in team_agent_errors if e.get("agentExecId") == tex.get("executionId")]:
-                                                    texec_node["children"].append({"type": "AgentError", "id": aerr.get("errorId", ""), "status": "error", "props": aerr, "children": []})
+                                                # Check if a separate worker node exists (router → worker split)
+                                                worker = next((w for w in team_workers if w.get("routerExecId") == tex.get("executionId")), None)
 
-                                                # Tool executions under this worker
-                                                for ttool in [t for t in team_tools if t.get("execId") == tex.get("executionId")]:
+                                                # The node that owns tools and agent errors
+                                                tool_owner_node = None
+                                                tool_owner_id = None
+
+                                                if worker:
+                                                    # New path: router → DISPATCHED_TO → worker → CALLED_TOOL → tool
+                                                    worker_node = {"type": "AgentExecution", "id": worker.get("executionId", ""), "status": worker.get("status", ""), "props": worker, "children": []}
+                                                    tool_owner_node = worker_node
+                                                    tool_owner_id = worker.get("executionId", "")
+                                                    texec_node["children"].append(worker_node)
+                                                else:
+                                                    # Legacy path: single node owns both routing and tools
+                                                    tool_owner_node = texec_node
+                                                    tool_owner_id = tex.get("executionId", "")
+
+                                                # Agent errors on the tool owner
+                                                for aerr in [e for e in team_agent_errors if e.get("agentExecId") == tool_owner_id]:
+                                                    tool_owner_node["children"].append({"type": "AgentError", "id": aerr.get("errorId", ""), "status": "error", "props": aerr, "children": []})
+
+                                                # Tool executions under the tool owner
+                                                for ttool in [t for t in team_tools if t.get("execId") == tool_owner_id]:
                                                     tool_node = {"type": "ToolExecution", "id": ttool.get("toolName", ""), "status": ttool.get("status", ""), "props": ttool, "children": []}
 
                                                     # Tool errors
                                                     for terr in [e for e in team_tool_errors if e.get("toolExecId") == ttool.get("toolExecutionId")]:
                                                         tool_node["children"].append({"type": "ToolError", "id": terr.get("errorId", ""), "status": "error", "props": terr, "children": []})
 
-                                                    texec_node["children"].append(tool_node)
+                                                    tool_owner_node["children"].append(tool_node)
 
                                                 tstep_node["children"].append(texec_node)
                                             tgoal_node["children"].append(tstep_node)
                                         tplan_node["children"].append(tgoal_node)
-                                    server_node["children"].append(tplan_node)
+
+                                    # Insert team planner between a2a_server and team plan.
+                                    # (a2a_server) → (team_planner) → (team plan)
+                                    # If no planner exists, attach plan directly (legacy sessions).
+                                    tp = next((p for p in team_planners if p.get("planId") == tplan.get("planId", "")), None)
+                                    if tp:
+                                        tp_node = {"type": "AgentExecution", "id": tp.get("executionId", ""), "status": tp.get("status", ""), "props": tp, "children": [tplan_node]}
+                                        server_node["children"].append(tp_node)
+                                    else:
+                                        server_node["children"].append(tplan_node)
 
                                 if server_node["children"]:
                                     exec_node["children"].append(server_node)
@@ -902,12 +949,29 @@ async def get_cg_session(
                             step_node["children"].append(exec_node)
                         goal_node["children"].append(step_node)
                     plan_node["children"].append(goal_node)
-                tree["children"].append(plan_node)
+                plan_children.append(plan_node)
 
-            # If no plans found, attach raw executions
-            if not tree["children"] and top_execs:
-                for ex in top_execs:
-                    tree["children"].append({"type": "AgentExecution", "id": ex.get("executionId", ""), "status": ex.get("status", ""), "props": ex, "children": []})
+            # Insert planner AgentExecution between Session and Plan.
+            # (Session)-[:HAS_EXECUTION]->(planner AE)-[:HAS_PLAN]->(Plan)
+            # If planner node exists, wrap plans inside it; otherwise attach
+            # plans directly (backward compat with pre-deployment sessions).
+            # Only include the planner AgentExecution (the one with HAS_PLAN
+            # to the central plan).  The consolidator is linked to the planner
+            # via HAS_EXECUTION and rendered as a sibling of the Plan node,
+            # carrying its own LangFuse trace card for the consolidation LLM call.
+            planner_execs = [ex for ex in top_execs if 'planner' in (ex.get('agentName') or '')]
+            if planner_execs:
+                for ex in planner_execs:
+                    planner_children = list(plan_children)
+                    # Add response consolidator as sibling of Plan under planner
+                    for con in consolidators:
+                        if con.get("executionId"):
+                            planner_children.append({"type": "AgentExecution", "id": con.get("executionId", ""), "status": con.get("status", ""), "props": con, "children": []})
+                    planner_node = {"type": "AgentExecution", "id": ex.get("executionId", ""), "status": ex.get("status", ""), "props": ex, "children": planner_children}
+                    tree["children"].append(planner_node)
+            elif plan_children:
+                # No planner AgentExecution — attach plans directly (legacy)
+                tree["children"].extend(plan_children)
 
         return {
             "session": session,
@@ -1665,6 +1729,223 @@ async def update_tool_permission(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update tool permission",
         )
+
+
+# ── LangFuse Trace Proxy ─────────────────────────────────────────────────────
+# Proxies the LangFuse public API so the CG Explorer can display inline
+# LLM trace summaries without needing LangFuse credentials in the browser.
+
+def _extract_prompt_preview(value, max_len: int = 4000) -> Optional[str]:
+    """
+    Extract a readable prompt preview from a LangFuse generation input.
+
+    LangChain's CallbackHandler stores input in various formats:
+      - {"messages": [{"role": "system", "content": "..."}, {"role": "human", "content": "..."}]}
+      - [{"role": "system", "content": "..."}]  (list of messages directly)
+      - "plain string"
+      - {"content": "..."}
+    This function extracts the most useful text for a preview.
+    """
+    if value is None:
+        return None
+    try:
+        # Plain string
+        if isinstance(value, str):
+            return value[:max_len] + "..." if len(value) > max_len else value
+
+        # Dict with "messages" key (most common from LangChain CallbackHandler)
+        if isinstance(value, dict):
+            messages = value.get("messages") or value.get("kwargs", {}).get("messages")
+            if messages and isinstance(messages, list):
+                parts = []
+                for msg in messages:
+                    role = msg.get("role", msg.get("type", ""))
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        # Handle content blocks (e.g. Anthropic format)
+                        content = " ".join(
+                            c.get("text", str(c)) for c in content if isinstance(c, dict)
+                        ) or str(content)
+                    if content:
+                        label = role.upper() if role else "MSG"
+                        parts.append(f"[{label}] {content}")
+                combined = "\n".join(parts)
+                return combined[:max_len] + "..." if len(combined) > max_len else combined
+
+            # Dict with direct "content" key
+            content = value.get("content", "")
+            if content:
+                s = str(content)
+                return s[:max_len] + "..." if len(s) > max_len else s
+
+        # List of messages directly
+        if isinstance(value, list):
+            parts = []
+            for msg in value:
+                if isinstance(msg, dict):
+                    role = msg.get("role", msg.get("type", ""))
+                    content = msg.get("content", "")
+                    if content:
+                        label = role.upper() if role else "MSG"
+                        parts.append(f"[{label}] {content}")
+                elif isinstance(msg, str):
+                    parts.append(msg)
+            combined = "\n".join(parts)
+            return combined[:max_len] + "..." if len(combined) > max_len else combined
+
+        # Last resort: stringify
+        s = str(value)
+        return s[:max_len] + "..." if len(s) > max_len else s
+    except Exception:
+        return str(value)[:max_len]
+
+
+def _extract_completion_preview(value, max_len: int = 4000) -> Optional[str]:
+    """
+    Extract a readable completion preview from a LangFuse generation output.
+
+    LangChain's CallbackHandler stores output in various formats:
+      - "plain string"
+      - {"content": "..."}
+      - {"generations": [[{"text": "..."}]]}
+      - {"kwargs": {"content": "..."}}
+    """
+    if value is None:
+        return None
+    try:
+        # Plain string
+        if isinstance(value, str):
+            return value[:max_len] + "..." if len(value) > max_len else value
+
+        # Dict with "content" key
+        if isinstance(value, dict):
+            content = (
+                value.get("content")
+                or value.get("text")
+                or value.get("kwargs", {}).get("content")
+            )
+            if content:
+                if isinstance(content, list):
+                    content = " ".join(
+                        c.get("text", str(c)) for c in content if isinstance(c, dict)
+                    ) or str(content)
+                s = str(content)
+                return s[:max_len] + "..." if len(s) > max_len else s
+
+            # Generations format: {"generations": [[{"text": "..."}]]}
+            gens = value.get("generations")
+            if gens and isinstance(gens, list) and gens[0]:
+                first_gen = gens[0]
+                if isinstance(first_gen, list) and first_gen:
+                    text = first_gen[0].get("text", "") if isinstance(first_gen[0], dict) else str(first_gen[0])
+                    return text[:max_len] + "..." if len(text) > max_len else text
+
+        # Last resort: stringify
+        s = str(value)
+        return s[:max_len] + "..." if len(s) > max_len else s
+    except Exception:
+        return str(value)[:max_len]
+
+
+@app.get("/api/cg/langfuse-trace/{trace_id}")
+async def get_langfuse_trace_summary(
+    trace_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    Fetch a minified LangFuse trace summary for inline CG Explorer display.
+
+    Calls the LangFuse public API (GET /api/public/traces/{traceId}) using
+    server-side credentials, extracts generation observations (one per LLM
+    call), and returns a compact JSON payload with model, tokens, latency,
+    cost, and prompt/completion previews.
+
+    The trace_id must match exactly — it is the CG AgentExecution.executionId
+    passed as trace_id to the LangFuse CallbackHandler at LLM invocation time.
+    If the node was not linked to a LangFuse trace, returns available=false.
+    """
+    import httpx
+
+    _settings = get_settings()
+    langfuse_host = _settings.LANGFUSE_HOST or "http://langfuse:3000"
+    public_key    = _settings.LANGFUSE_PUBLIC_KEY
+    secret_key    = _settings.LANGFUSE_SECRET_KEY
+
+    # The browser-facing URL for "Open in LangFuse" links.
+    # LANGFUSE_HOST is the Docker-internal address (e.g. http://langfuse:3000)
+    # used for server-side API calls.  The browser needs the externally
+    # accessible address instead.
+    langfuse_browser_url = _settings.LANGFUSE_BROWSER_URL
+
+    # Docker Swarm mounts secrets as files, not env vars.
+    # Fall back to reading /run/secrets/ if settings are empty.
+    if not public_key:
+        try:
+            with open("/run/secrets/LANGFUSE_PUBLIC_KEY") as f:
+                public_key = f.read().strip()
+        except Exception:
+            pass
+    if not secret_key:
+        try:
+            with open("/run/secrets/LANGFUSE_SECRET_KEY") as f:
+                secret_key = f.read().strip()
+        except Exception:
+            pass
+
+    if not all([langfuse_host, public_key, secret_key]):
+        return {"available": False, "reason": "LangFuse not configured"}
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{langfuse_host}/api/public/traces/{trace_id}",
+                auth=(public_key, secret_key),
+            )
+            if resp.status_code == 404:
+                return {"available": False, "reason": "No LangFuse trace linked to this node"}
+            resp.raise_for_status()
+            trace = resp.json()
+
+        # Extract generation observations (each = one LLM call)
+        observations = trace.get("observations", [])
+
+        generations = []
+        for obs in observations:
+            if obs.get("type") == "GENERATION":
+                usage = obs.get("usage") or {}
+                generations.append({
+                    "model":              obs.get("model"),
+                    "input_tokens":       usage.get("input")
+                                          or obs.get("promptTokens"),
+                    "output_tokens":      usage.get("output")
+                                          or obs.get("completionTokens"),
+                    "total_tokens":       usage.get("total")
+                                          or obs.get("totalTokens"),
+                    "latency_ms":         obs.get("latency"),
+                    "cost_usd":           obs.get("calculatedTotalCost"),
+                    "status":             obs.get("statusMessage")
+                                          or obs.get("level"),
+                    "prompt_preview":     _extract_prompt_preview(
+                                              obs.get("input"), 4000),
+                    "completion_preview": _extract_completion_preview(
+                                              obs.get("output"), 4000),
+                })
+
+        return {
+            "available":        True,
+            "trace_id":         trace_id,
+            "langfuse_url":     f"{langfuse_browser_url}/trace/{trace_id}",
+            "trace_name":       trace.get("name"),
+            "total_latency_ms": trace.get("latency"),
+            "total_cost_usd":   trace.get("totalCost"),
+            "generations":      generations,
+        }
+
+    except httpx.TimeoutException:
+        return {"available": False, "reason": "LangFuse request timed out"}
+    except Exception as exc:
+        logger.warning("get_langfuse_trace_summary failed for %s: %s", trace_id, exc)
+        return {"available": False, "reason": str(exc)}
 
 
 if __name__ == "__main__":

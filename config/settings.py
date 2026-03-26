@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
     LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
     LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", "http://langfuse:3000")
+    LANGFUSE_BROWSER_URL: str = os.getenv("LANGFUSE_BROWSER_URL", "http://localhost:3001")
     
     # Prometheus
     PROMETHEUS_PORT: int = 9090

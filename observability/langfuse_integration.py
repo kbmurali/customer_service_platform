@@ -16,6 +16,25 @@ logger = logging.getLogger(__name__)
 
 settings: Settings = get_settings()
 
+def _read_swarm_secret(name: str) -> str:
+    """
+    Read a Docker Swarm secret from /run/secrets/{name}.
+
+    Docker Swarm mounts secrets as files, but settings.py reads env vars.
+    If the env var is empty (common in Swarm deployments), fall back to
+    reading the secret file directly.
+    """
+    import os
+    path = f"/run/secrets/{name}"
+    try:
+        if os.path.isfile(path):
+            with open(path, "r") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return ""
+
+
 class LangFuseTracer:
     """
     LangFuse tracer for capturing LLM and agent invocations.
@@ -27,10 +46,18 @@ class LangFuseTracer:
         self.langfuse = None
         
         try:
-            # Initialize LangFuse client
-            public_key = settings.LANGFUSE_PUBLIC_KEY
-            secret_key = settings.LANGFUSE_SECRET_KEY
-            host = settings.LANGFUSE_HOST
+            # Initialize LangFuse client.
+            # Settings reads from env vars, but in Docker Swarm deployments
+            # credentials are mounted as secret files.  Fall back to reading
+            # /run/secrets/ if settings returns empty strings.
+            public_key = settings.LANGFUSE_PUBLIC_KEY or _read_swarm_secret("LANGFUSE_PUBLIC_KEY")
+            secret_key = settings.LANGFUSE_SECRET_KEY or _read_swarm_secret("LANGFUSE_SECRET_KEY")
+            host = settings.LANGFUSE_HOST or "http://langfuse:3000"
+            
+            # Store resolved credentials for use by get_session_callback_handler()
+            self._public_key = public_key
+            self._secret_key = secret_key
+            self._host = host
             
             if public_key and secret_key:
                 self.langfuse = Langfuse(
@@ -65,6 +92,49 @@ class LangFuseTracer:
         if self.enabled:
             return self.callback_handler
         return None
+    
+    def get_session_callback_handler(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[CallbackHandler]:
+        """
+        Create a per-request CallbackHandler tagged with session and user.
+
+        Unlike get_callback_handler() which returns a shared global instance,
+        this creates a fresh handler so each LLM invocation gets its own
+        trace scoped to the correct session.
+
+        After .invoke() completes, call handler.get_trace_id() to retrieve
+        the auto-generated LangFuse trace ID for cross-linking with the
+        Context Graph.
+
+        Args:
+            session_id: CSIP session UUID — becomes a filterable dimension
+                        in LangFuse.
+            user_id:    Application-level user identifier (e.g. CSR email).
+                        Stored as a LangFuse analytics tag, not used for
+                        LangFuse authentication.
+
+        Returns:
+            A fresh CallbackHandler instance, or None if LangFuse is
+            not enabled.
+        """
+        if not self.enabled:
+            return None
+        try:
+            kwargs = {
+                "public_key": self._public_key,
+                "secret_key": self._secret_key,
+                "host": self._host,
+                "session_id": session_id,
+            }
+            if user_id is not None:
+                kwargs["user_id"] = user_id
+            return CallbackHandler(**kwargs)
+        except Exception as e:
+            logger.error(f"Failed to create session callback handler: {e}")
+            return None
     
     def trace_llm_call(
         self,

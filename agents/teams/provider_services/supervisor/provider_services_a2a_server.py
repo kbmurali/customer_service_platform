@@ -470,6 +470,13 @@ async def a2a_tasks_send(request: Request):
                     a2a_task_id=task_id,
                     plan_id=_plan_id,
                 )
+                # Then route through the team planner if it exists:
+                # a2a_server→HAS_EXECUTION→planner→HAS_PLAN→plan
+                # This also removes the direct HAS_PLAN edge above.
+                cg.link_a2a_server_to_planner(
+                    a2a_task_id=task_id,
+                    plan_id=_plan_id,
+                )
         except Exception as e:
             logger.warning("Failed to link a2a_server to plan (non-fatal): %s", e)
 

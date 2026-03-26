@@ -201,8 +201,24 @@ Return JSON only (no markdown fences, no explanation):
                 ("human", self.planning_prompt)
             ])
 
-            # Trace plan creation
-            callback_handler = tracer.get_callback_handler() if tracer.enabled else None
+            # ── CG: Create team planner AgentExecution node ─────────────────
+            planner_execution_id = None
+            try:
+                planner_execution_id = self.cg_manager.track_agent_execution(
+                    session_id=session_id,
+                    agent_name=f"{self.name}_planner",
+                    agent_type="team_planner",
+                    status="running",
+                )
+            except Exception:
+                pass
+
+            # Trace plan creation — session-aware handler so LangFuse traces
+            # are tagged with the CSIP session and user for correlation.
+            callback_handler = tracer.get_session_callback_handler(
+                session_id=session_id,
+                user_id=state.get("user_id"),
+            ) if tracer.enabled else None
 
             # Call LLM to create plan
             inputs = {
@@ -215,16 +231,21 @@ Return JSON only (no markdown fences, no explanation):
             else:
                 result = (prompt | self.llm).invoke(inputs)
 
+            # Write LangFuse trace ID back to the planner CG node
+            if callback_handler and planner_execution_id:
+                try:
+                    lf_trace_id = callback_handler.get_trace_id()
+                    if lf_trace_id:
+                        self.cg_manager.set_langfuse_trace_id(planner_execution_id, lf_trace_id)
+                except Exception:
+                    pass
+
             # Parse plan
             raw = result.content
             plan_text = re.sub(r"```json|```", "", str(raw)).strip()
             plan = json.loads(plan_text)
 
             # Store plan in CG as a team plan.
-            # store_plan returns {"plan_id": ..., "step_map": {step_id: step_id}}.
-            # The central_step_id is received from the central supervisor via A2A
-            # but DELEGATED_TO is not created — the chain is traversable via
-            # EXECUTED_BY → CALLED_AGENT → HAS_PLAN without a shortcut edge.
             plan_result = self.cg_manager.store_plan(
                 session_id=session_id,
                 plan=plan,
@@ -234,6 +255,16 @@ Return JSON only (no markdown fences, no explanation):
             )
             plan_id  = plan_result.get("plan_id")  if plan_result else None
             step_map = plan_result.get("step_map") if plan_result else {}
+
+            # Link (planner)-[:HAS_PLAN]->(teamPlan) and mark planner completed
+            if planner_execution_id and plan_id:
+                try:
+                    self.cg_manager.link_planner_to_plan(planner_execution_id, plan_id)
+                    self.cg_manager.update_execution_status(
+                        execution_id=planner_execution_id, status="completed",
+                    )
+                except Exception:
+                    pass
 
             # Update state
             state["plan_id"]            = plan_id
@@ -346,8 +377,8 @@ Return JSON only (no markdown fences, no explanation):
             conversation_history = self.cg_manager.get_conversation_history(session_id, limit=5) or []
             execution_id         = self.cg_manager.track_agent_execution(
                 session_id=session_id,
-                agent_name=f"{step_worker}_worker",
-                agent_type="worker",
+                agent_name=f"{self.name}_router",
+                agent_type="team_router",
                 status="running",
             )
         except Exception as e:
@@ -402,7 +433,10 @@ Return JSON only (no markdown fences, no explanation):
         )))
 
         # ── LLM routing call ─────────────────────────────────────────────────
-        callback_handler = tracer.get_callback_handler() if tracer.enabled else None
+        callback_handler = tracer.get_session_callback_handler(
+            session_id=session_id,
+            user_id=user_id,
+        ) if tracer.enabled else None
         chain = self.create_routing_chain()
         try:
             llm_result  = chain.invoke(
@@ -411,9 +445,15 @@ Return JSON only (no markdown fences, no explanation):
             )
             next_worker = llm_result.get("next", "SKIP")
             reasoning   = llm_result.get("reasoning", "")
+            if callback_handler and execution_id:
+                try:
+                    lf_trace_id = callback_handler.get_trace_id()
+                    if lf_trace_id:
+                        self.cg_manager.set_langfuse_trace_id(execution_id, lf_trace_id)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"{self.name}: LLM routing failed: {e}")
-            # Fall back to the step-assigned worker
             next_worker = step_worker if step_worker in VALID_WORKERS else "SKIP"
             reasoning   = f"LLM error fallback: {e}"
 
@@ -508,8 +548,20 @@ Return JSON only (no markdown fences, no explanation):
                 self.cg_manager.update_execution_status(
                     execution_id, "completed",
                     routing_note=f"Routing: {next_worker} — {reasoning}",
-                    worker_name=f"{next_worker}_worker",
                 )
+        except Exception:
+            pass
+
+        worker_execution_id = None
+        try:
+            worker_execution_id = self.cg_manager.track_agent_execution(
+                session_id=session_id,
+                agent_name=f"{next_worker}_worker",
+                agent_type="worker",
+                status="running",
+            )
+            if execution_id and worker_execution_id:
+                self.cg_manager.link_router_to_worker(execution_id, worker_execution_id)
         except Exception:
             pass
 
@@ -523,9 +575,7 @@ Return JSON only (no markdown fences, no explanation):
         return {
             "next":                 next_worker,
             "execution_path":       execution_path,
-            # Stored so worker_node can pass it to the MCP tool, completing:
-            #   (AgentExecution)-[:CALLED_TOOL]->(ToolExecution)
-            "current_execution_id": execution_id or "",
+            "current_execution_id": worker_execution_id or execution_id or "",
         }
 
     def _advance_step(self, state: SupervisorState) -> SupervisorState:

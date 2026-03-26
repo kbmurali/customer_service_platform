@@ -440,6 +440,20 @@ class ContextGraphManager:
         """Create (Step)-[:EXECUTED_BY]->(AgentExecution) scoped by planId."""
         self.cg_data_access.link_step_to_execution(plan_id, step_id, execution_id)
 
+    def set_langfuse_trace_id(self, execution_id: str, langfuse_trace_id: str) -> None:
+        """
+        Store the LangFuse trace ID on an AgentExecution node.
+
+        Delegates to the underlying DAL method.  Called after each LLM
+        .invoke() to write the auto-generated LangFuse trace ID back to
+        the CG node so the CG Explorer can render inline trace cards.
+        """
+        self.cg_data_access.set_langfuse_trace_id(execution_id, langfuse_trace_id)
+
+    def link_router_to_worker(self, router_execution_id: str, worker_execution_id: str) -> None:
+        """Create (router)-[:DISPATCHED_TO]->(worker)."""
+        self.cg_data_access.link_router_to_worker(router_execution_id, worker_execution_id)
+
 
     def link_supervisor_to_a2a_client(
         self,
@@ -492,6 +506,13 @@ class ContextGraphManager:
     def link_a2a_server_to_plan(self, session_id: str, a2a_task_id: str, plan_id: str) -> None:
         """Create (a2a_server)-[:HAS_PLAN]->(Plan)."""
         self.cg_data_access.link_a2a_server_to_plan(session_id, a2a_task_id, plan_id)
+
+    def link_a2a_server_to_planner(self, a2a_task_id: str, plan_id: str) -> None:
+        """
+        Create (a2a_server)-[:HAS_EXECUTION]->(team_planner) and remove
+        the direct (a2a_server)-[:HAS_PLAN]->(Plan) edge.
+        """
+        self.cg_data_access.link_a2a_server_to_planner(a2a_task_id, plan_id)
 
     def store_plan(
         self,

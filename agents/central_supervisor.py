@@ -585,14 +585,11 @@ class CentralSupervisor:
         # strings reach the LLM unchanged.
         planning_chain = self._llm | JsonOutputParser()
 
-        # Obtain a Langfuse callback handler for this invocation.
-        # Called fresh per node (not cached) so each LLM call gets its own trace span.
-        tracer = get_langfuse_tracer()
-        callback_handler = tracer.get_callback_handler() if tracer.enabled else None
-
-        # Open an AgentExecution node for the planning LLM call.
+        # Open an AgentExecution node for the planning LLM call FIRST,
+        # so its ID can be passed as the LangFuse trace_id (shared key).
         # Named "central_supervisor_planner" so it is distinguishable in the CG
         # from routing executions (which are named "central_supervisor").
+        tracer = get_langfuse_tracer()
         planning_execution_id: Optional[str] = None
         try:
             planning_execution_id = self._cg.track_agent_execution(
@@ -610,6 +607,14 @@ class CentralSupervisor:
                 self._cg.link_session_to_execution(session_id, planning_execution_id)
         except Exception as exc:
             logger.warning("CentralSupervisor: CG track planning execution (non-fatal): %s", exc)
+
+        # Obtain a session-aware Langfuse callback handler.
+        # After .invoke(), we read the auto-generated trace ID back and
+        # store it on the CG AgentExecution node for CG Explorer linking.
+        callback_handler = tracer.get_session_callback_handler(
+            session_id=session_id,
+            user_id=user_id,
+        ) if tracer.enabled else None
 
         # Build the message list for the planning LLM.
         # Prior messages restored by the checkpointer sit in state["messages"].
@@ -632,6 +637,18 @@ class CentralSupervisor:
                 config={**thread_config,
                         "callbacks": [callback_handler] if callback_handler else []},
             )
+            # Write the auto-generated LangFuse trace ID back to the CG node
+            # so the CG Explorer can link to the correct LangFuse trace.
+            if callback_handler and planning_execution_id:
+                try:
+                    lf_trace_id = callback_handler.get_trace_id()
+                    if lf_trace_id:
+                        self._cg.set_langfuse_trace_id(planning_execution_id, lf_trace_id)
+                        logger.debug("CentralSupervisor: linked LangFuse trace %s to planner exec %s", lf_trace_id, planning_execution_id)
+                    else:
+                        logger.debug("CentralSupervisor: callback_handler.get_trace_id() returned None for planner exec %s", planning_execution_id)
+                except Exception as _lf_exc:
+                    logger.warning("CentralSupervisor: LangFuse trace writeback failed (non-fatal): %s", _lf_exc)
             # Validate plan schema before any CG writes
             try:
                 validate_central_plan(plan)
@@ -722,6 +739,7 @@ class CentralSupervisor:
             "start_time":         datetime.now(timezone.utc).isoformat(),
             "plan_type":          "central",
             "team_name":          "",
+            "planning_execution_id": planning_execution_id or "",
         }
 
     # -----------------------------------------------------------------------
@@ -739,6 +757,7 @@ class CentralSupervisor:
             next, current_execution_id
         """
         session_id = state.get("session_id", "default")
+        user_id    = state.get("user_id", "unknown")
         plan       = state.get("plan") or {}
         steps      = sorted(plan.get("steps", []), key=lambda s: s.get("order", 1))
         goals      = plan.get("goals", [])
@@ -760,14 +779,14 @@ class CentralSupervisor:
         goal_desc    = goal.get("description", "")
 
         # Track this routing decision in the CG.
-        # The agent_name encodes the delegation target so each AgentExecution
-        # node in the CG is uniquely identifiable, e.g.:
-        #   "central_supervisor -> member_services_team"
+        # Named "central_supervisor_router" so it identifies the actor (the
+        # routing LLM), not the delegation target.  The target team is stored
+        # in metadata.assigned_agent and in the routingNote.
         execution_id: Optional[str] = None
         try:
             execution_id = self._cg.track_agent_execution(
                 session_id=session_id,
-                agent_name=f"central_supervisor -> {agent_name}",
+                agent_name="central_supervisor_router",
                 agent_type="supervisor",
                 status="running",
                 metadata={"step_index": idx, "assigned_agent": agent_name},
@@ -780,7 +799,10 @@ class CentralSupervisor:
         # response is already a parsed dict — no manual JSON handling needed.
         # Langfuse callback is obtained fresh each invocation for its own span.
         tracer = get_langfuse_tracer()
-        callback_handler = tracer.get_callback_handler() if tracer.enabled else None
+        callback_handler = tracer.get_session_callback_handler(
+            session_id=session_id,
+            user_id=user_id,
+        ) if tracer.enabled else None
 
         routing_response = "SKIP"
         try:
@@ -798,6 +820,15 @@ class CentralSupervisor:
                 config={"callbacks": [callback_handler]} if callback_handler else {},
             )
             routing_response = raw.strip().split()[0] if raw.strip() else "SKIP"
+            # Write LangFuse trace ID back to the CG routing execution node
+            if callback_handler and execution_id:
+                try:
+                    lf_trace_id = callback_handler.get_trace_id()
+                    if lf_trace_id:
+                        self._cg.set_langfuse_trace_id(execution_id, lf_trace_id)
+                        logger.debug("CentralSupervisor: linked LangFuse trace %s to routing exec %s", lf_trace_id, execution_id)
+                except Exception as _lf_exc:
+                    logger.warning("CentralSupervisor: LangFuse routing trace writeback failed: %s", _lf_exc)
         except Exception as exc:
             logger.error("CentralSupervisor: supervisor LLM failed: %s", exc)
             routing_response = "SKIP"
@@ -815,14 +846,15 @@ class CentralSupervisor:
             )
             routing_response = "SKIP"
 
-        # Update CG with the confirmed routing decision
+        # Update CG with the confirmed routing decision.
+        # Do NOT pass worker_name — the node's agentName must stay as
+        # "central_supervisor_router" to identify the actor, not the target.
         if execution_id:
             try:
                 self._cg.update_execution_status(
                     execution_id=execution_id,
                     status="completed" if routing_response != "SKIP" else "skipped",
                     routing_note=f"Routing: {routing_response} — {goal_desc}",
-                    worker_name=routing_response if routing_response != "SKIP" else None,
                 )
                 # Link this routing execution to the step in the CG
                 plan_id  = state.get("plan_id")
@@ -1058,6 +1090,7 @@ class CentralSupervisor:
         always receives something meaningful.
         """
         session_id   = state.get("session_id", "default")
+        user_id      = state.get("user_id", "unknown")
         messages     = state.get("messages", [])
         tool_results = state.get("tool_results", {})
         plan         = state.get("plan") or {}
@@ -1121,7 +1154,57 @@ class CentralSupervisor:
         )
 
         tracer = get_langfuse_tracer()
-        callback_handler = tracer.get_callback_handler() if tracer.enabled else None
+
+        # Track the consolidation LLM call in the CG.
+        # Linked as a child of the planner node (sibling of the Plan) so the
+        # CG Explorer shows it as:
+        #   central_supervisor_planner
+        #     ├── Plan (central)
+        #     └── response_consolidator  ← this node
+        consolidation_execution_id: Optional[str] = None
+        try:
+            consolidation_execution_id = self._cg.track_agent_execution(
+                session_id=session_id,
+                agent_name="response_consolidator",
+                agent_type="consolidator",
+                status="running",
+                metadata={"user_id": user_id},
+            )
+            # Link to planner (not session) so it appears as planner's child.
+            # Look up the planner from CG directly — state.get("planning_execution_id")
+            # may be empty if LangGraph state merge dropped it during routing cycles.
+            if consolidation_execution_id:
+                try:
+                    from databases.context_graph_data_access import get_cg_data_access
+                    cg_dal = get_cg_data_access()
+                    planner_result = cg_dal.conn.execute_query("""
+                        MATCH (s:Session {sessionId: $sessionId})
+                              -[:HAS_EXECUTION]->(planner:AgentExecution {agentName: 'central_supervisor_planner'})
+                        RETURN planner.executionId AS plannerId LIMIT 1
+                    """, {"sessionId": session_id})
+                    planner_exec_id = planner_result[0]["plannerId"] if planner_result else ""
+                    if planner_exec_id:
+                        cg_dal.conn.execute_query("""
+                            MATCH (planner:AgentExecution {executionId: $plannerId})
+                            MATCH (consolidator:AgentExecution {executionId: $consolidatorId})
+                            MERGE (planner)-[:HAS_EXECUTION]->(consolidator)
+                        """, {
+                            "plannerId": planner_exec_id,
+                            "consolidatorId": consolidation_execution_id,
+                        })
+                    else:
+                        logger.warning("CentralSupervisor: planner not found in CG — consolidator linked to session")
+                        self._cg.link_session_to_execution(session_id, consolidation_execution_id)
+                except Exception as _link_exc:
+                    logger.warning("CentralSupervisor: failed to link consolidator to planner: %s", _link_exc)
+                    self._cg.link_session_to_execution(session_id, consolidation_execution_id)
+        except Exception as exc:
+            logger.warning("CentralSupervisor: CG track consolidation execution (non-fatal): %s", exc)
+
+        callback_handler = tracer.get_session_callback_handler(
+            session_id=session_id,
+            user_id=user_id,
+        ) if tracer.enabled else None
 
         try:
             from langchain_core.output_parsers import StrOutputParser
@@ -1133,6 +1216,15 @@ class CentralSupervisor:
                 ],
                 config={"callbacks": [callback_handler]} if callback_handler else {},
             )
+            # Write LangFuse trace ID back to the CG consolidation execution node
+            if callback_handler and consolidation_execution_id:
+                try:
+                    lf_trace_id = callback_handler.get_trace_id()
+                    if lf_trace_id:
+                        self._cg.set_langfuse_trace_id(consolidation_execution_id, lf_trace_id)
+                        logger.debug("CentralSupervisor: linked LangFuse trace %s to consolidation exec %s", lf_trace_id, consolidation_execution_id)
+                except Exception as _lf_exc:
+                    logger.warning("CentralSupervisor: LangFuse consolidation trace writeback failed: %s", _lf_exc)
             logger.info(
                 "CentralSupervisor: consolidation complete for session=%s", session_id
             )

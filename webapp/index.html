@@ -2085,10 +2085,100 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
   const currentChainItem = followUpChain.find(s => s.id === selectedSession);
   const currentIndex = followUpChain.findIndex(s => s.id === selectedSession);
 
+  const LangFuseTraceCard = ({ data, loading, traceExpanded, onToggle }) => {
+    if (loading) return (
+      <div style={{marginTop:8,padding:8,fontSize:11,color:'var(--text-muted)',fontStyle:'italic'}}>
+        Loading LLM trace…
+      </div>
+    );
+    if (!data || !data.available) return null;
+
+    return (
+      <div style={{
+        marginTop:8, borderRadius:6,
+        background:'var(--bg-secondary)', border:'1px solid var(--border)',
+        fontSize:11
+      }} onClick={e => e.stopPropagation()}>
+        {/* Collapsible header */}
+        <div
+          style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', cursor:'pointer'}}
+          onClick={() => onToggle && onToggle()}
+        >
+          <div style={{display:'flex', alignItems:'center', gap:8}}>
+            <span style={{fontSize:10, color:'var(--text-muted)', transition:'transform 0.2s', transform:traceExpanded?'rotate(90deg)':'rotate(0deg)', display:'inline-block'}}>▶</span>
+            <span style={{fontWeight:600, color:'#EC4899'}}>
+              LLM Trace{data.trace_name ? `: ${data.trace_name}` : ''}
+            </span>
+            {data.total_latency_ms != null && <span style={{color:'var(--text-muted)'}}>⏱ {data.total_latency_ms}ms</span>}
+            {data.generations && data.generations.length > 0 &&
+              <span style={{color:'var(--text-muted)'}}>{data.generations.length} LLM call{data.generations.length > 1 ? 's' : ''}</span>}
+          </div>
+          <a href={data.langfuse_url} target="_blank" rel="noopener noreferrer"
+             onClick={e => e.stopPropagation()}
+             style={{color:'#8B5CF6', textDecoration:'none', fontWeight:500, fontSize:11}}>
+            Open in LangFuse →
+          </a>
+        </div>
+
+        {/* Collapsible body */}
+        {traceExpanded && (
+          <div style={{padding:'0 10px 10px'}}>
+            {(data.generations || []).map((gen, i) => (
+              <div key={i} style={{
+                padding:6, marginTop:4, borderRadius:4,
+                background:'var(--bg-primary)', border:'1px solid var(--border)'
+              }}>
+                <div style={{display:'flex', gap:12, flexWrap:'wrap', alignItems:'center'}}>
+                  <span className="badge" style={{background:'#8B5CF620', color:'#8B5CF6', fontSize:10}}>
+                    {gen.model || 'unknown'}
+                  </span>
+                  {gen.input_tokens != null && <span>In: {gen.input_tokens} tok</span>}
+                  {gen.output_tokens != null && <span>Out: {gen.output_tokens} tok</span>}
+                  {gen.latency_ms != null && <span>⏱ {gen.latency_ms}ms</span>}
+                  {gen.cost_usd != null && <span>${gen.cost_usd.toFixed(4)}</span>}
+                </div>
+                {gen.prompt_preview && (
+                  <div style={{marginTop:6, padding:8, borderRadius:4, background:'var(--bg-secondary)', wordBreak:'break-word', whiteSpace:'pre-wrap', fontSize:11, lineHeight:'1.5', color:'var(--text-muted)', maxHeight:400, overflowY:'auto'}}>
+                    <strong style={{color:'var(--text-primary)'}}>Prompt:</strong>{'\n'}{gen.prompt_preview}
+                  </div>
+                )}
+                {gen.completion_preview && (
+                  <div style={{marginTop:4, padding:8, borderRadius:4, background:'var(--bg-secondary)', wordBreak:'break-word', whiteSpace:'pre-wrap', fontSize:11, lineHeight:'1.5', color:'var(--text-muted)', maxHeight:400, overflowY:'auto'}}>
+                    <strong style={{color:'var(--text-primary)'}}>Response:</strong>{'\n'}{gen.completion_preview}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const TreeNode = ({ node, depth=0 }) => {
     const [expanded, setExpanded] = useState(depth < 4);
+    const [traceData, setTraceData] = useState(null);
+    const [traceLoading, setTraceLoading] = useState(false);
+    const [traceExpanded, setTraceExpanded] = useState(true);
     const typeColors = { Session:'#0EA5E9', Plan:'#8B5CF6', Goal:'#F59E0B', Step:'#10B981', AgentExecution:'#EC4899', ToolExecution:'#EF4444', ToolError:'#DC2626', AgentError:'#DC2626' };
     const hasChildren = node.children?.length > 0;
+
+    // Lazy-load LangFuse trace when an AgentExecution node is expanded.
+    // Uses the langfuseTraceId property written back to the CG node after
+    // each LLM .invoke() — this is the auto-generated LangFuse trace ID,
+    // not the CG executionId.
+    const langfuseTraceId = node.props?.langfuseTraceId;
+    useEffect(() => {
+      if (expanded && node.type === 'AgentExecution' && langfuseTraceId
+          && !traceData && !traceLoading && !DEMO_MODE && token) {
+        setTraceLoading(true);
+        apiCall('GET', `/api/cg/langfuse-trace/${encodeURIComponent(langfuseTraceId)}`, null, token)
+          .then(data => setTraceData(data))
+          .catch(() => setTraceData({ available: false }))
+          .finally(() => setTraceLoading(false));
+      }
+    }, [expanded, node.type, langfuseTraceId, traceData, traceLoading]);
+
     return (
       <div>
         <div className={`cg-tree-node status-${node.status}`} onClick={()=>hasChildren&&setExpanded(!expanded)} style={{borderLeftColor:typeColors[node.type]||'var(--border)',cursor:hasChildren?'pointer':'default'}}>
@@ -2106,6 +2196,9 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
                 <span key={k} style={{fontSize:11,color:'var(--text-muted)'}}><strong>{k}:</strong> <span className="mono">{String(v)}</span></span>
               ))}
             </div>
+          )}
+          {node.type === 'AgentExecution' && expanded && (
+            <LangFuseTraceCard data={traceData} loading={traceLoading} traceExpanded={traceExpanded} onToggle={() => setTraceExpanded(!traceExpanded)} />
           )}
         </div>
         {expanded && hasChildren && (

@@ -99,7 +99,11 @@ class MemberPriorAuthWorker:
 
                 agent_inputs = {"messages": [("user", contextualized_query)]}
 
-                callback_handler = tracer.get_callback_handler()
+                # Execute agent with LangFuse callback — session-aware handler
+                callback_handler = tracer.get_session_callback_handler(
+                    session_id=session_id,
+                    user_id=user_id,
+                ) if tracer.enabled else None
                 if callback_handler:
                     result = self.agent.invoke(
                         agent_inputs,
@@ -107,6 +111,16 @@ class MemberPriorAuthWorker:
                     )
                 else:
                     result = self.agent.invoke(agent_inputs)
+
+                # Write LangFuse trace ID back to the worker's CG node
+                if callback_handler and execution_id:
+                    try:
+                        from databases.context_graph_data_access import get_cg_data_access
+                        lf_trace_id = callback_handler.get_trace_id()
+                        if lf_trace_id:
+                            get_cg_data_access().set_langfuse_trace_id(execution_id, lf_trace_id)
+                    except Exception:
+                        pass
 
                 output_text = result["messages"][-1].content
 
