@@ -317,7 +317,7 @@ const demoResponse = (path, body) => {
     return Promise.resolve({
       access_token: 'demo-jwt-' + Date.now(),
       token_type: 'bearer',
-      user: { sub: user, username: user, role: roles[user] || 'CSR_TIER2', full_name: user === 'supervisor' ? 'Lisa Nguyen' : user === 'csr1' ? 'John Miller' : 'Alex CSR' }
+      user: { sub: user, username: user, role: roles[user] || 'CSR_TIER2', first_name: user === 'supervisor' ? 'Lisa' : user === 'csr1' ? 'John' : 'Alex', last_name: user === 'supervisor' ? 'Nguyen' : user === 'csr1' ? 'Miller' : 'CSR' }
     });
   }
   if (path === '/api/agent/query') {
@@ -1857,7 +1857,7 @@ const PerformanceDashboard = ({ token }) => {
 // ═══════════════════════════════════════════════════════════════
 // CONTEXT GRAPH EXPLORER
 // ═══════════════════════════════════════════════════════════════
-const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
+const CGExplorer = ({ token, targetSession, onTargetConsumed, role }) => {
   const [searchId, setSearchId] = useState('');
 
   // Auto-search when navigated from workspace with a target session
@@ -1871,6 +1871,26 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
   const [cgTrees, setCgTrees] = useState({});
   const [followUpChain, setFollowUpChain] = useState([]);
   const chainScrollRef = useRef(null);
+  const [removingExperience, setRemovingExperience] = useState(false);
+  const [removeResult, setRemoveResult] = useState(null); // {success:bool, msg:string}
+
+  const handleRemoveExperience = async (sessionId) => {
+    if (!confirm(`Remove experience for session ${sessionId} from the Experience Store? This cannot be undone.`)) return;
+    setRemovingExperience(true);
+    setRemoveResult(null);
+    try {
+      const resp = await apiCall('DELETE', `/api/experience/${sessionId}`, null, token);
+      if (resp.deleted) {
+        setRemoveResult({success:true, msg:'Experience removed successfully.'});
+      } else {
+        setRemoveResult({success:false, msg:'Experience not found in store.'});
+      }
+    } catch (exc) {
+      setRemoveResult({success:false, msg:`Failed: ${exc.message || exc}`});
+    }
+    setRemovingExperience(false);
+    setTimeout(() => setRemoveResult(null), 5000);
+  };
 
   // Demo CG trees — one per session in the chain, each with different content
   const demoCGTrees = {
@@ -2298,7 +2318,15 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
                       <span style={{fontSize:12,color:'var(--text-muted)'}}>Query: </span>
                       <span style={{fontSize:13,fontWeight:500}}>{currentChainItem.query}</span>
                     </div>
-                    <span className="mono" style={{fontSize:11,color:'var(--text-muted)'}}>chainDepth: {currentChainItem.depth} • rootSession: {followUpChain[0].id}</span>
+                    <div style={{display:'flex',gap:12,alignItems:'center'}}>
+                      <span className="mono" style={{fontSize:11,color:'var(--text-muted)'}}>chainDepth: {currentChainItem.depth} • rootSession: {followUpChain[0].id}</span>
+                      {role === 'CSR_SUPERVISOR' && (
+                        <span>
+                          <a href="#" onClick={e=>{e.preventDefault();handleRemoveExperience(selectedSession);}} style={{fontSize:11,color:'var(--error)',textDecoration:'none',whiteSpace:'nowrap',opacity:removingExperience?0.5:1,pointerEvents:removingExperience?'none':'auto'}}>{removingExperience ? 'Removing…' : 'Remove from Experience Store'}</a>
+                          {removeResult && <span style={{fontSize:11,marginLeft:6,color:removeResult.success?'var(--success)':'var(--error)'}}>{removeResult.msg}</span>}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
                 <TreeNode node={currentTree}/>
@@ -2322,12 +2350,38 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
 // ═══════════════════════════════════════════════════════════════
 // FEEDBACK LEARNING DASHBOARD
 // ═══════════════════════════════════════════════════════════════
-const FeedbackDashboard = ({ token }) => {
+const FeedbackDashboard = ({ token, role }) => {
   const [patterns, setPatterns] = useState([]);
   const [improvements, setImprovements] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [funnelData, setFunnelData] = useState([]);
   const [storeStats, setStoreStats] = useState([]);
+  const [showLogForm, setShowLogForm] = useState(false);
+  const [submittingLog, setSubmittingLog] = useState(false);
+  const [logForm, setLogForm] = useState({change_type:'planning_rule',component:'',description:'',baseline_key:'',baseline_val:'',post_key:'',post_val:''});
+
+  const handleLogSubmit = async () => {
+    if (!logForm.component.trim() || !logForm.description.trim()) return;
+    setSubmittingLog(true);
+    try {
+      const body = {
+        change_type: logForm.change_type,
+        component: logForm.component.trim(),
+        description: logForm.description.trim(),
+        baseline_metrics: logForm.baseline_key ? {[logForm.baseline_key.trim()]: logForm.baseline_val.trim()} : {},
+        post_change_metrics: logForm.post_key ? {[logForm.post_key.trim()]: logForm.post_val.trim()} : {},
+      };
+      await apiCall('POST', '/api/feedback/improvements', body, token);
+      setShowLogForm(false);
+      setLogForm({change_type:'planning_rule',component:'',description:'',baseline_key:'',baseline_val:'',post_key:'',post_val:''});
+      // Refresh improvements
+      const imp = await apiCall('GET', '/api/feedback/improvements', null, token);
+      setImprovements(imp);
+    } catch (exc) {
+      alert('Failed to log change: ' + (exc.message || exc));
+    }
+    setSubmittingLog(false);
+  };
 
   // Demo data
   const demoFunnel = [
@@ -2454,7 +2508,35 @@ const FeedbackDashboard = ({ token }) => {
         </div>
 
         <div className="card fade-in">
-          <div className="card-header"><h3>Improvement Timeline</h3></div>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h3>Improvement Timeline</h3>
+            {role === 'CSR_SUPERVISOR' && (
+              <button className="btn btn-secondary btn-sm" onClick={()=>setShowLogForm(!showLogForm)}>{showLogForm ? 'Cancel' : '+ Log Change'}</button>
+            )}
+          </div>
+          {showLogForm && (
+            <div style={{padding:'14px 18px',borderBottom:'1px solid var(--border)',background:'var(--bg-secondary)'}}>
+              <div style={{display:'flex',gap:10,marginBottom:10,flexWrap:'wrap'}}>
+                <select className="input" style={{width:160}} value={logForm.change_type} onChange={e=>setLogForm({...logForm,change_type:e.target.value})}>
+                  <option value="planning_rule">Planning Rule</option>
+                  <option value="routing_rule">Routing Rule</option>
+                  <option value="agent_card">Agent Card</option>
+                  <option value="retrieval_update">Retrieval Update</option>
+                </select>
+                <input className="input" style={{flex:1,minWidth:160}} placeholder="Component (e.g. central_supervisor)" value={logForm.component} onChange={e=>setLogForm({...logForm,component:e.target.value})}/>
+              </div>
+              <input className="input" style={{width:'100%',marginBottom:10}} placeholder="Description of the change" value={logForm.description} onChange={e=>setLogForm({...logForm,description:e.target.value})}/>
+              <div style={{display:'flex',gap:10,marginBottom:10,flexWrap:'wrap',alignItems:'center'}}>
+                <span style={{fontSize:12,color:'var(--text-muted)',minWidth:55}}>Baseline:</span>
+                <input className="input" style={{width:120}} placeholder="Metric name" value={logForm.baseline_key} onChange={e=>setLogForm({...logForm,baseline_key:e.target.value})}/>
+                <input className="input" style={{width:80}} placeholder="Value" value={logForm.baseline_val} onChange={e=>setLogForm({...logForm,baseline_val:e.target.value})}/>
+                <span style={{fontSize:12,color:'var(--text-muted)',minWidth:35}}>Post:</span>
+                <input className="input" style={{width:120}} placeholder="Metric name" value={logForm.post_key} onChange={e=>setLogForm({...logForm,post_key:e.target.value})}/>
+                <input className="input" style={{width:80}} placeholder="Value" value={logForm.post_val} onChange={e=>setLogForm({...logForm,post_val:e.target.value})}/>
+              </div>
+              <button className="btn btn-primary btn-sm" onClick={handleLogSubmit} disabled={submittingLog || !logForm.component.trim() || !logForm.description.trim()}>{submittingLog ? 'Saving…' : 'Save Change'}</button>
+            </div>
+          )}
           <div className="card-body">
             {!loaded ? <div style={{textAlign:'center',padding:24}}><span className="loading-spinner"/></div> :
             improvements.length === 0 ? <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No improvements logged yet.</div></div> :
@@ -2615,9 +2697,9 @@ const App = () => {
         </nav>
         <div className="sidebar-user">
           <div className="sidebar-user-info">
-            <div className="sidebar-avatar">{(user?.full_name||user?.username||'?')[0].toUpperCase()}</div>
+            <div className="sidebar-avatar">{(user?.first_name||user?.username||'?')[0].toUpperCase()}</div>
             <div>
-              <div className="sidebar-user-name">{user?.full_name || user?.username}</div>
+              <div className="sidebar-user-name">{user?.first_name && user?.last_name ? `${user.first_name} ${user.last_name}` : user?.username}</div>
               <div className="sidebar-user-role">{role}</div>
             </div>
           </div>
@@ -2650,10 +2732,10 @@ const App = () => {
             <PerformanceDashboard key={`pd-${sessionKey}`} token={auth.access_token}/>
           </div>
           <div style={{display: view === 'cg-explorer' ? 'block' : 'none'}}>
-            <CGExplorer key={`cg-${sessionKey}`} token={auth.access_token} targetSession={cgTargetSession} onTargetConsumed={()=>setCgTargetSession(null)}/>
+            <CGExplorer key={`cg-${sessionKey}`} token={auth.access_token} targetSession={cgTargetSession} onTargetConsumed={()=>setCgTargetSession(null)} role={role}/>
           </div>
           <div style={{display: view === 'feedback' ? 'block' : 'none'}}>
-            <FeedbackDashboard key={`fb-${sessionKey}`} token={auth.access_token}/>
+            <FeedbackDashboard key={`fb-${sessionKey}`} token={auth.access_token} role={role}/>
           </div>
         </div>
       </div>

@@ -627,6 +627,64 @@ async def get_improvements(
         )
 
 
+class LogImprovementRequest(BaseModel):
+    change_type: str  # planning_rule, routing_rule, agent_card, retrieval_update
+    component: str
+    description: str
+    baseline_metrics: Optional[Dict[str, Any]] = None
+    post_change_metrics: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/feedback/improvements")
+async def log_improvement(
+    req: LogImprovementRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    Record a prompt or retrieval change with before/after metrics.
+    Requires CSR_SUPERVISOR role.
+    """
+    user_role: str = str(current_user.get("role", ""))
+    if user_role != "CSR_SUPERVISOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Logging improvements requires CSR_SUPERVISOR role",
+        )
+    valid_types = {"planning_rule", "routing_rule", "agent_card", "retrieval_update"}
+    if req.change_type not in valid_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"change_type must be one of: {', '.join(sorted(valid_types))}",
+        )
+    try:
+        import uuid as _uuid
+        from databases.feedback_data_access import get_feedback_data_access
+        change = {
+            "change_id": str(_uuid.uuid4()),
+            "changed_by": current_user.get("username", current_user.get("user_id", "")),
+            "change_type": req.change_type,
+            "component": req.component,
+            "description": req.description,
+            "baseline_metrics": req.baseline_metrics or {},
+            "post_change_metrics": req.post_change_metrics or {},
+        }
+        success = get_feedback_data_access().log_prompt_change(change)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store improvement log entry",
+            )
+        return {"change_id": change["change_id"], "stored": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("log_improvement failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to log improvement",
+        )
+
+
 @app.delete("/api/experience/{session_id}")
 async def delete_experience(
     session_id: str,
@@ -884,8 +942,10 @@ async def get_cg_session(
                         for ex in [e for e in central_step_execs if e.get("stepId") == step.get("stepId")]:
                             exec_node = {"type": "AgentExecution", "id": ex.get("executionId", ""), "status": ex.get("status", ""), "props": ex, "children": []}
 
-                            # A2A chain: step exec → a2a_server → team planner → team plan
-                            for server in a2a_servers:
+                            # A2A chain: step exec → a2a_client → a2a_server → team planner → team plan
+                            # Filter: only servers whose a2a_client links back to THIS step exec
+                            _client_ids_for_step = {c.get("executionId") for c in a2a_clients if c.get("parentStepExecId") == ex.get("executionId")}
+                            for server in [sv for sv in a2a_servers if sv.get("clientExecId") in _client_ids_for_step]:
                                 server_node = {"type": "AgentExecution", "id": server.get("executionId", ""), "status": server.get("status", ""), "props": {**server, "agentType": "a2a_server"}, "children": []}
 
                                 for tplan in [p for p in team_plans if p.get("serverExecId") == server.get("executionId")]:

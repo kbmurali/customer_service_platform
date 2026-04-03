@@ -778,6 +778,14 @@ Return JSON only (no markdown fences, no explanation):
                 }
 
             # Success path
+            # Mark the worker AgentExecution as completed
+            try:
+                _exec_id = state.get("current_execution_id", "")
+                if _exec_id:
+                    self.cg_manager.update_execution_status(_exec_id, "completed")
+            except Exception:
+                pass
+
             return {
                 "messages":       [AIMessage(content=result.get("output", ""))],
                 "error":          None,

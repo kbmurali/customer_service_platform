@@ -1225,6 +1225,12 @@ class CentralSupervisor:
                         logger.debug("CentralSupervisor: linked LangFuse trace %s to consolidation exec %s", lf_trace_id, consolidation_execution_id)
                 except Exception as _lf_exc:
                     logger.warning("CentralSupervisor: LangFuse consolidation trace writeback failed: %s", _lf_exc)
+            # Mark consolidator as completed
+            if consolidation_execution_id:
+                try:
+                    self._cg.update_execution_status(consolidation_execution_id, "completed")
+                except Exception:
+                    pass
             logger.info(
                 "CentralSupervisor: consolidation complete for session=%s", session_id
             )
@@ -1233,6 +1239,12 @@ class CentralSupervisor:
                 "CentralSupervisor: consolidation LLM failed (falling back to concatenation): %s",
                 exc,
             )
+            # Mark consolidator as failed
+            if consolidation_execution_id:
+                try:
+                    self._cg.update_execution_status(consolidation_execution_id, "failed", error=str(exc))
+                except Exception:
+                    pass
             # Graceful fallback — concatenate outputs so CSR still gets an answer
             consolidated = "\n\n".join(p.split("\n", 1)[-1] for p in results_parts)
 

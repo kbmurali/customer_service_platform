@@ -90,7 +90,7 @@ class PlanStep(BaseModel):
     def agent_valid(cls, v: str) -> str:
         if v not in VALID_CENTRAL_AGENTS:
             raise ValueError(
-                f"agent '{v}' is not a recognised team. "
+                f"agent '{v}' is not a recognized team. "
                 f"Must be one of: {sorted(VALID_CENTRAL_AGENTS)}"
             )
         return v

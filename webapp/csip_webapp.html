@@ -1529,13 +1529,15 @@ const PerformanceDashboard = ({ token }) => {
   const demoSecurity = [
     {name:'NeMo Blocks',count:23},{name:'RBAC Denials',count:5},{name:'Rate Limited',count:12},
     {name:'NH3 Sanitized',count:89},{name:'Presidio Vaulted',count:156},{name:'Output Validation',count:3},
-    {name:'DLP Flags',count:1},{name:'Replay Rejected',count:0},
+    {name:'Approval Requests',count:7},{name:'Replay Rejected',count:0},
   ];
   const demoTeams = [{name:'Member',count:2100},{name:'Claims',count:3200},{name:'PA',count:2800},{name:'Provider',count:1900},{name:'Search',count:1500}];
   const demoProviders = [
-    {name:'OpenAI (GPT-4o-mini)',status:'active',failures:0,lastSuccess:'2s ago',avgMs:1200},
-    {name:'Anthropic (Claude)',status:'active',failures:0,lastSuccess:'45s ago',avgMs:1450},
-    {name:'Amazon Bedrock',status:'cooldown',failures:3,lastSuccess:'12m ago',avgMs:2100},
+    {name:'Neo4j',status:'active',failures:0,lastSuccess:'via /health',avgMs:0},
+    {name:'MySQL',status:'active',failures:0,lastSuccess:'via /health',avgMs:0},
+    {name:'Redis',status:'active',failures:0,lastSuccess:'via /health',avgMs:0},
+    {name:'Chroma',status:'active',failures:0,lastSuccess:'via /health',avgMs:0},
+    {name:'LangFuse',status:'active',failures:0,lastSuccess:'via /health',avgMs:0},
   ];
   const serviceColors = {
     'Member Services':'#3B82F6','Claims Services':'#8B5CF6','PA Services':'#F59E0B',
@@ -1759,7 +1761,7 @@ const PerformanceDashboard = ({ token }) => {
           </div>
         </div>
         <div className="card fade-in">
-          <div className="card-header"><h3>Security Controls {DEMO_MODE?'(demo)':'(last 24h)'}</h3></div>
+          <div className="card-header"><h3>Security Controls (last 24h)</h3></div>
           <div className="card-body">
             {securityData.map(d => (
               <div className="heatmap-bar" key={d.name}>
@@ -1791,7 +1793,7 @@ const PerformanceDashboard = ({ token }) => {
           </div>
         </div>
         <div className="card fade-in">
-          <div className="card-header"><h3>{DEMO_MODE ? 'LLM Provider Health' : 'Infrastructure Health'}</h3></div>
+          <div className="card-header"><h3>Infrastructure Health</h3></div>
           <div className="card-body">
             {providers.length > 0 ? providers.map(p => (
               <div className="provider-card" key={p.name}>
@@ -1805,7 +1807,7 @@ const PerformanceDashboard = ({ token }) => {
                 </span>
               </div>
             )) : !loading && <div className="empty-state" style={{padding:16}}><div className="empty-state-desc">Provider status unavailable.</div></div>}
-            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:12}}>Provider circuit breaker threshold: 5 consecutive failures → 60s cooldown.</div>
+            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:12}}>Service health polled from the API gateway /health endpoint every 30 seconds.</div>
           </div>
         </div>
       </div>
@@ -1813,7 +1815,7 @@ const PerformanceDashboard = ({ token }) => {
       {/* Tool Usage Heatmap — per-tool invocation counts colored by service */}
       <div className="card fade-in" style={{marginTop:24}}>
         <div className="card-header">
-          <h3>Tool Usage Across All Agents {DEMO_MODE?'(demo)':'(last 24h)'}</h3>
+          <h3>Tool Usage Across All Agents (last 24h)</h3>
           <span className="badge badge-gray" style={{fontSize:10}}>22 tools × 5 service teams</span>
         </div>
         <div className="card-body" style={{padding:'16px 20px'}}>
@@ -1857,7 +1859,7 @@ const PerformanceDashboard = ({ token }) => {
 // ═══════════════════════════════════════════════════════════════
 // CONTEXT GRAPH EXPLORER
 // ═══════════════════════════════════════════════════════════════
-const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
+const CGExplorer = ({ token, targetSession, onTargetConsumed, role }) => {
   const [searchId, setSearchId] = useState('');
 
   // Auto-search when navigated from workspace with a target session
@@ -1871,6 +1873,26 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
   const [cgTrees, setCgTrees] = useState({});
   const [followUpChain, setFollowUpChain] = useState([]);
   const chainScrollRef = useRef(null);
+  const [removingExperience, setRemovingExperience] = useState(false);
+  const [removeResult, setRemoveResult] = useState(null); // {success:bool, msg:string}
+
+  const handleRemoveExperience = async (sessionId) => {
+    if (!confirm(`Remove experience for session ${sessionId} from the Experience Store? This cannot be undone.`)) return;
+    setRemovingExperience(true);
+    setRemoveResult(null);
+    try {
+      const resp = await apiCall('DELETE', `/api/experience/${sessionId}`, null, token);
+      if (resp.deleted) {
+        setRemoveResult({success:true, msg:'Experience removed successfully.'});
+      } else {
+        setRemoveResult({success:false, msg:'Experience not found in store.'});
+      }
+    } catch (exc) {
+      setRemoveResult({success:false, msg:`Failed: ${exc.message || exc}`});
+    }
+    setRemovingExperience(false);
+    setTimeout(() => setRemoveResult(null), 5000);
+  };
 
   // Demo CG trees — one per session in the chain, each with different content
   const demoCGTrees = {
@@ -2085,100 +2107,10 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
   const currentChainItem = followUpChain.find(s => s.id === selectedSession);
   const currentIndex = followUpChain.findIndex(s => s.id === selectedSession);
 
-  const LangFuseTraceCard = ({ data, loading, traceExpanded, onToggle }) => {
-    if (loading) return (
-      <div style={{marginTop:8,padding:8,fontSize:11,color:'var(--text-muted)',fontStyle:'italic'}}>
-        Loading LLM trace…
-      </div>
-    );
-    if (!data || !data.available) return null;
-
-    return (
-      <div style={{
-        marginTop:8, borderRadius:6,
-        background:'var(--bg-secondary)', border:'1px solid var(--border)',
-        fontSize:11
-      }} onClick={e => e.stopPropagation()}>
-        {/* Collapsible header */}
-        <div
-          style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', cursor:'pointer'}}
-          onClick={() => onToggle && onToggle()}
-        >
-          <div style={{display:'flex', alignItems:'center', gap:8}}>
-            <span style={{fontSize:10, color:'var(--text-muted)', transition:'transform 0.2s', transform:traceExpanded?'rotate(90deg)':'rotate(0deg)', display:'inline-block'}}>▶</span>
-            <span style={{fontWeight:600, color:'#EC4899'}}>
-              LLM Trace{data.trace_name ? `: ${data.trace_name}` : ''}
-            </span>
-            {data.total_latency_ms != null && <span style={{color:'var(--text-muted)'}}>⏱ {data.total_latency_ms}ms</span>}
-            {data.generations && data.generations.length > 0 &&
-              <span style={{color:'var(--text-muted)'}}>{data.generations.length} LLM call{data.generations.length > 1 ? 's' : ''}</span>}
-          </div>
-          <a href={data.langfuse_url} target="_blank" rel="noopener noreferrer"
-             onClick={e => e.stopPropagation()}
-             style={{color:'#8B5CF6', textDecoration:'none', fontWeight:500, fontSize:11}}>
-            Open in LangFuse →
-          </a>
-        </div>
-
-        {/* Collapsible body */}
-        {traceExpanded && (
-          <div style={{padding:'0 10px 10px'}}>
-            {(data.generations || []).map((gen, i) => (
-              <div key={i} style={{
-                padding:6, marginTop:4, borderRadius:4,
-                background:'var(--bg-primary)', border:'1px solid var(--border)'
-              }}>
-                <div style={{display:'flex', gap:12, flexWrap:'wrap', alignItems:'center'}}>
-                  <span className="badge" style={{background:'#8B5CF620', color:'#8B5CF6', fontSize:10}}>
-                    {gen.model || 'unknown'}
-                  </span>
-                  {gen.input_tokens != null && <span>In: {gen.input_tokens} tok</span>}
-                  {gen.output_tokens != null && <span>Out: {gen.output_tokens} tok</span>}
-                  {gen.latency_ms != null && <span>⏱ {gen.latency_ms}ms</span>}
-                  {gen.cost_usd != null && <span>${gen.cost_usd.toFixed(4)}</span>}
-                </div>
-                {gen.prompt_preview && (
-                  <div style={{marginTop:6, padding:8, borderRadius:4, background:'var(--bg-secondary)', wordBreak:'break-word', whiteSpace:'pre-wrap', fontSize:11, lineHeight:'1.5', color:'var(--text-muted)', maxHeight:400, overflowY:'auto'}}>
-                    <strong style={{color:'var(--text-primary)'}}>Prompt:</strong>{'\n'}{gen.prompt_preview}
-                  </div>
-                )}
-                {gen.completion_preview && (
-                  <div style={{marginTop:4, padding:8, borderRadius:4, background:'var(--bg-secondary)', wordBreak:'break-word', whiteSpace:'pre-wrap', fontSize:11, lineHeight:'1.5', color:'var(--text-muted)', maxHeight:400, overflowY:'auto'}}>
-                    <strong style={{color:'var(--text-primary)'}}>Response:</strong>{'\n'}{gen.completion_preview}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const TreeNode = ({ node, depth=0 }) => {
     const [expanded, setExpanded] = useState(depth < 4);
-    const [traceData, setTraceData] = useState(null);
-    const [traceLoading, setTraceLoading] = useState(false);
-    const [traceExpanded, setTraceExpanded] = useState(true);
     const typeColors = { Session:'#0EA5E9', Plan:'#8B5CF6', Goal:'#F59E0B', Step:'#10B981', AgentExecution:'#EC4899', ToolExecution:'#EF4444', ToolError:'#DC2626', AgentError:'#DC2626' };
     const hasChildren = node.children?.length > 0;
-
-    // Lazy-load LangFuse trace when an AgentExecution node is expanded.
-    // Uses the langfuseTraceId property written back to the CG node after
-    // each LLM .invoke() — this is the auto-generated LangFuse trace ID,
-    // not the CG executionId.
-    const langfuseTraceId = node.props?.langfuseTraceId;
-    useEffect(() => {
-      if (expanded && node.type === 'AgentExecution' && langfuseTraceId
-          && !traceData && !traceLoading && !DEMO_MODE && token) {
-        setTraceLoading(true);
-        apiCall('GET', `/api/cg/langfuse-trace/${encodeURIComponent(langfuseTraceId)}`, null, token)
-          .then(data => setTraceData(data))
-          .catch(() => setTraceData({ available: false }))
-          .finally(() => setTraceLoading(false));
-      }
-    }, [expanded, node.type, langfuseTraceId, traceData, traceLoading]);
-
     return (
       <div>
         <div className={`cg-tree-node status-${node.status}`} onClick={()=>hasChildren&&setExpanded(!expanded)} style={{borderLeftColor:typeColors[node.type]||'var(--border)',cursor:hasChildren?'pointer':'default'}}>
@@ -2196,9 +2128,6 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
                 <span key={k} style={{fontSize:11,color:'var(--text-muted)'}}><strong>{k}:</strong> <span className="mono">{String(v)}</span></span>
               ))}
             </div>
-          )}
-          {node.type === 'AgentExecution' && expanded && (
-            <LangFuseTraceCard data={traceData} loading={traceLoading} traceExpanded={traceExpanded} onToggle={() => setTraceExpanded(!traceExpanded)} />
           )}
         </div>
         {expanded && hasChildren && (
@@ -2298,7 +2227,15 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
                       <span style={{fontSize:12,color:'var(--text-muted)'}}>Query: </span>
                       <span style={{fontSize:13,fontWeight:500}}>{currentChainItem.query}</span>
                     </div>
-                    <span className="mono" style={{fontSize:11,color:'var(--text-muted)'}}>chainDepth: {currentChainItem.depth} • rootSession: {followUpChain[0].id}</span>
+                    <div style={{display:'flex',gap:12,alignItems:'center'}}>
+                      <span className="mono" style={{fontSize:11,color:'var(--text-muted)'}}>chainDepth: {currentChainItem.depth} • rootSession: {followUpChain[0].id}</span>
+                      {role === 'CSR_SUPERVISOR' && (
+                        <span>
+                          <a href="#" onClick={e=>{e.preventDefault();handleRemoveExperience(selectedSession);}} style={{fontSize:11,color:'var(--error)',textDecoration:'none',whiteSpace:'nowrap',opacity:removingExperience?0.5:1,pointerEvents:removingExperience?'none':'auto'}}>{removingExperience ? 'Removing…' : 'Remove from Experience Store'}</a>
+                          {removeResult && <span style={{fontSize:11,marginLeft:6,color:removeResult.success?'var(--success)':'var(--error)'}}>{removeResult.msg}</span>}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
                 <TreeNode node={currentTree}/>
@@ -2322,26 +2259,52 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed }) => {
 // ═══════════════════════════════════════════════════════════════
 // FEEDBACK LEARNING DASHBOARD
 // ═══════════════════════════════════════════════════════════════
-const FeedbackDashboard = ({ token }) => {
+const FeedbackDashboard = ({ token, role }) => {
   const [patterns, setPatterns] = useState([]);
   const [improvements, setImprovements] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [funnelData, setFunnelData] = useState([]);
   const [storeStats, setStoreStats] = useState([]);
+  const [showLogForm, setShowLogForm] = useState(false);
+  const [submittingLog, setSubmittingLog] = useState(false);
+  const [logForm, setLogForm] = useState({change_type:'planning_rule',component:'',description:'',baseline_key:'',baseline_val:'',post_key:'',post_val:''});
+
+  const handleLogSubmit = async () => {
+    if (!logForm.component.trim() || !logForm.description.trim()) return;
+    setSubmittingLog(true);
+    try {
+      const body = {
+        change_type: logForm.change_type,
+        component: logForm.component.trim(),
+        description: logForm.description.trim(),
+        baseline_metrics: logForm.baseline_key ? {[logForm.baseline_key.trim()]: logForm.baseline_val.trim()} : {},
+        post_change_metrics: logForm.post_key ? {[logForm.post_key.trim()]: logForm.post_val.trim()} : {},
+      };
+      await apiCall('POST', '/api/feedback/improvements', body, token);
+      setShowLogForm(false);
+      setLogForm({change_type:'planning_rule',component:'',description:'',baseline_key:'',baseline_val:'',post_key:'',post_val:''});
+      // Refresh improvements
+      const imp = await apiCall('GET', '/api/feedback/improvements', null, token);
+      setImprovements(imp);
+    } catch (exc) {
+      alert('Failed to log change: ' + (exc.message || exc));
+    }
+    setSubmittingLog(false);
+  };
 
   // Demo data
   const demoFunnel = [
-    { label:'Total Queries', value:5000, pct:100 },
-    { label:'With Feedback', value:1850, pct:37 },
-    { label:'Low Rated', value:234, pct:4.7 },
-    { label:'Classified', value:142, pct:2.8 },
-    { label:'Led to Improvement', value:23, pct:0.46 },
+    { label:'Total Agent Invocations', value:5000, pct:100 },
+    { label:'Positive Feedback Rate', value:'87.3%', pct:87 },
+    { label:'Failure Classifications', value:142, pct:2.8 },
+    { label:'Pattern Reports Generated', value:8, pct:0.16 },
+    { label:'Experiences Extracted', value:23, pct:0.46 },
   ];
   const demoStore = [
     { label:'Total Experiences', value:'142', sub:'Chroma collection: successful_experiences' },
-    { label:'Extracted This Week', value:'23', sub:'From correct-rated sessions' },
+    { label:'Total Extracted', value:'23', sub:'From correct-rated sessions' },
     { label:'Hit Rate', value:'78%', sub:'Planning calls with ≥1 matching experience' },
-    { label:'Seed Experiences', value:'25', sub:'Curated cold-start examples' },
+    { label:'Collection', value:'active', sub:'successful_experiences' },
   ];
 
   useEffect(() => {
@@ -2415,7 +2378,7 @@ const FeedbackDashboard = ({ token }) => {
   return (
     <div style={{maxWidth:1200,margin:'0 auto'}}>
       <div className="card fade-in" style={{marginBottom:24}}>
-        <div className="card-header"><h3>Feedback Funnel {DEMO_MODE?'(demo)':'(live)'}</h3></div>
+        <div className="card-header"><h3>Feedback Funnel (live)</h3></div>
         <div className="card-body">
           {funnelData.length > 0 ? funnelData.map((d,i) => (
             <div className="funnel-step" key={d.label}>
@@ -2454,7 +2417,35 @@ const FeedbackDashboard = ({ token }) => {
         </div>
 
         <div className="card fade-in">
-          <div className="card-header"><h3>Improvement Timeline</h3></div>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h3>Improvement Timeline</h3>
+            {role === 'CSR_SUPERVISOR' && (
+              <button className="btn btn-secondary btn-sm" onClick={()=>setShowLogForm(!showLogForm)}>{showLogForm ? 'Cancel' : '+ Log Change'}</button>
+            )}
+          </div>
+          {showLogForm && (
+            <div style={{padding:'14px 18px',borderBottom:'1px solid var(--border)',background:'var(--bg-secondary)'}}>
+              <div style={{display:'flex',gap:10,marginBottom:10,flexWrap:'wrap'}}>
+                <select className="input" style={{width:160}} value={logForm.change_type} onChange={e=>setLogForm({...logForm,change_type:e.target.value})}>
+                  <option value="planning_rule">Planning Rule</option>
+                  <option value="routing_rule">Routing Rule</option>
+                  <option value="agent_card">Agent Card</option>
+                  <option value="retrieval_update">Retrieval Update</option>
+                </select>
+                <input className="input" style={{flex:1,minWidth:160}} placeholder="Component (e.g. central_supervisor)" value={logForm.component} onChange={e=>setLogForm({...logForm,component:e.target.value})}/>
+              </div>
+              <input className="input" style={{width:'100%',marginBottom:10}} placeholder="Description of the change" value={logForm.description} onChange={e=>setLogForm({...logForm,description:e.target.value})}/>
+              <div style={{display:'flex',gap:10,marginBottom:10,flexWrap:'wrap',alignItems:'center'}}>
+                <span style={{fontSize:12,color:'var(--text-muted)',minWidth:55}}>Baseline:</span>
+                <input className="input" style={{width:120}} placeholder="Metric name" value={logForm.baseline_key} onChange={e=>setLogForm({...logForm,baseline_key:e.target.value})}/>
+                <input className="input" style={{width:80}} placeholder="Value" value={logForm.baseline_val} onChange={e=>setLogForm({...logForm,baseline_val:e.target.value})}/>
+                <span style={{fontSize:12,color:'var(--text-muted)',minWidth:35}}>Post:</span>
+                <input className="input" style={{width:120}} placeholder="Metric name" value={logForm.post_key} onChange={e=>setLogForm({...logForm,post_key:e.target.value})}/>
+                <input className="input" style={{width:80}} placeholder="Value" value={logForm.post_val} onChange={e=>setLogForm({...logForm,post_val:e.target.value})}/>
+              </div>
+              <button className="btn btn-primary btn-sm" onClick={handleLogSubmit} disabled={submittingLog || !logForm.component.trim() || !logForm.description.trim()}>{submittingLog ? 'Saving…' : 'Save Change'}</button>
+            </div>
+          )}
           <div className="card-body">
             {!loaded ? <div style={{textAlign:'center',padding:24}}><span className="loading-spinner"/></div> :
             improvements.length === 0 ? <div className="empty-state" style={{padding:24}}><div className="empty-state-desc">No improvements logged yet.</div></div> :
@@ -2489,7 +2480,7 @@ const FeedbackDashboard = ({ token }) => {
       </div>
 
       <div className="card fade-in">
-        <div className="card-header"><h3>Experience Store Status {DEMO_MODE?'(demo)':'(live)'}</h3></div>
+        <div className="card-header"><h3>Experience Store Status (live)</h3></div>
         <div className="card-body">
           <div style={{display:'flex',gap:32,flexWrap:'wrap'}}>
             {storeStats.length > 0 ? storeStats.map(s => (
@@ -2650,10 +2641,10 @@ const App = () => {
             <PerformanceDashboard key={`pd-${sessionKey}`} token={auth.access_token}/>
           </div>
           <div style={{display: view === 'cg-explorer' ? 'block' : 'none'}}>
-            <CGExplorer key={`cg-${sessionKey}`} token={auth.access_token} targetSession={cgTargetSession} onTargetConsumed={()=>setCgTargetSession(null)}/>
+            <CGExplorer key={`cg-${sessionKey}`} token={auth.access_token} targetSession={cgTargetSession} onTargetConsumed={()=>setCgTargetSession(null)} role={role}/>
           </div>
           <div style={{display: view === 'feedback' ? 'block' : 'none'}}>
-            <FeedbackDashboard key={`fb-${sessionKey}`} token={auth.access_token}/>
+            <FeedbackDashboard key={`fb-${sessionKey}`} token={auth.access_token} role={role}/>
           </div>
         </div>
       </div>

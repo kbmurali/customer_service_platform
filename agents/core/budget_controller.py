@@ -1,7 +1,7 @@
 """
 Token Budget Controller.
 
-Enforces per-user and per-organisation daily token spend limits before
+Enforces per-user and per-organization daily token spend limits before
 the CentralSupervisor is invoked.  Sits as Control 3.5 in the
 RequestProcessor pipeline — between rate limiting and input sanitization.
 

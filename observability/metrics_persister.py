@@ -156,6 +156,83 @@ class MetricsPersister:
         except Exception as e:
             logger.error("Failed to store aggregated metrics: %s", e)
 
+        # Persist security control counters from audit_logs to MySQL
+        # so the security heatmap survives Prometheus TSDB expiry.
+        self._persist_security_counters()
+
+    def _persist_security_counters(self):
+        """
+        Aggregate security events from audit_logs by action type for the
+        current hour and store them in Redis with a ``security_hourly:``
+        prefix.  This provides a permanent audit-log-backed source for the
+        security heatmap that does not depend on in-process Prometheus
+        counters or their 15-day TSDB retention.
+
+        Throttled to once per hour via a Redis key.
+        """
+        _THROTTLE_KEY = "metrics:security_counters:last_persist"
+        try:
+            if self.redis_client.exists(_THROTTLE_KEY):
+                return
+        except Exception:
+            pass  # Redis unavailable — skip
+
+        try:
+            from databases.connections import get_mysql
+            from datetime import datetime, timezone, timedelta
+
+            mysql = get_mysql()
+            now = datetime.now(timezone.utc)
+            hour_start = now.replace(minute=0, second=0, microsecond=0)
+            hour_end = hour_start + timedelta(hours=1)
+            date_str = hour_start.strftime("%Y-%m-%d")
+            hour_val = hour_start.hour
+
+            # Map audit_log actions to security heatmap categories
+            action_map = {
+                "INPUT_VALIDATION_BLOCK":   "nemo_blocks",
+                "AUTHORIZATION_DENIED":     "rbac_denials",
+                "RATE_LIMIT_EXCEEDED":      "rate_limited",
+                "INPUT_SANITIZED":          "nh3_sanitized",
+                "PII_SCRUBBED":             "presidio_vaulted",
+                "OUTPUT_VALIDATION_BLOCK":  "output_validation",
+                "APPROVAL_REQUESTED":       "approval_requests",
+                "REPLAY_REJECTED":          "replay_rejected",
+            }
+
+            rows = mysql.execute_query("""
+                SELECT action, COUNT(*) AS cnt
+                FROM audit_logs
+                WHERE timestamp >= %s AND timestamp < %s
+                  AND action IN (%s)
+                GROUP BY action
+            """.replace(
+                "IN (%s)",
+                "IN (" + ",".join(["%s"] * len(action_map)) + ")"
+            ), (hour_start, hour_end, *action_map.keys()))
+
+            counters = {v: 0 for v in action_map.values()}
+            for row in (rows or []):
+                action = row.get("action", "")
+                mapped = action_map.get(action)
+                if mapped:
+                    counters[mapped] = int(row.get("cnt", 0))
+
+            # Store hourly counters in Redis (permanent key, no TTL — accumulates)
+            redis_key = f"security_hourly:{date_str}:{hour_val:02d}"
+            import json
+            self.redis_client.set(redis_key, json.dumps(counters))
+
+            # Set throttle
+            self.redis_client.setex(_THROTTLE_KEY, 3600, "1")
+
+            logger.debug("Persisted security counters for %s hour %d", date_str, hour_val)
+
+        except ImportError:
+            logger.debug("MySQL not available for security counter persistence")
+        except Exception as exc:
+            logger.error("Failed to persist security counters: %s", exc)
+
     def update_user_token_tallies(self):
         """Update per-user token usage counters in Redis for budget enforcement."""
         try:

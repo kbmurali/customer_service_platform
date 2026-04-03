@@ -112,6 +112,12 @@ def run_evaluation_cycle(redis_client=None) -> None:
     # Experience extraction (may not be available in A2A containers)
     _run_experience_extraction(redis_client)
 
+    # Feedback pattern analysis (daily, throttled via Redis TTL)
+    _run_pattern_analysis(redis_client)
+
+    # Persist aggregated metrics to MySQL (hourly, throttled via Redis TTL)
+    _persist_metrics_to_mysql(redis_client)
+
 
 # ---------------------------------------------------------------------------
 # Individual metric computations
@@ -555,3 +561,291 @@ def _run_experience_extraction(redis_client=None) -> None:
 
     except Exception as exc:
         logger.error("EvaluationPipeline._run_experience_extraction failed: %s", exc)
+
+
+def _run_pattern_analysis(redis_client=None) -> None:
+    """
+    Run feedback pattern analysis once per day.
+
+    Uses a Redis key with 24h TTL as a throttle — if the key exists,
+    the analysis was already run today and this call is a no-op.
+
+    Non-fatal — any failure is caught and logged without affecting
+    the other metrics in the evaluation cycle.
+
+    In A2A server containers, the feedback_pattern_analyzer module
+    is not present (intentionally — analysis runs only in the main API).
+    The ImportError is caught at debug level to avoid log spam.
+    """
+    try:
+        from observability.feedback_pattern_analyzer import run_analysis
+    except ImportError:
+        logger.debug("EvaluationPipeline: feedback_pattern_analyzer not available (expected in A2A containers)")
+        return
+
+    # Daily throttle — skip if already run within 24h
+    _THROTTLE_KEY = "eval:pattern_analysis:last_run"
+    try:
+        if redis_client and redis_client.exists(_THROTTLE_KEY):
+            return
+    except Exception:
+        pass  # Redis unavailable — run anyway
+
+    try:
+        reports = run_analysis(window_days=30, min_cluster_size=3)
+
+        if redis_client:
+            try:
+                redis_client.setex(_THROTTLE_KEY, 86400, "1")  # 24h TTL
+            except Exception as r_exc:
+                logger.debug("EvaluationPipeline: Redis throttle write failed: %s", r_exc)
+
+        logger.info("EvaluationPipeline: pattern analysis produced %d reports", len(reports))
+
+    except Exception as exc:
+        logger.error("EvaluationPipeline._run_pattern_analysis failed: %s", exc)
+
+
+def _persist_metrics_to_mysql(redis_client=None) -> None:
+    """
+    Persist aggregated session, agent, and tool metrics to MySQL tables.
+
+    Runs once per hour (throttled via Redis key with 1h TTL).  Queries
+    the Context Graph for execution data from the current hour and upserts
+    into ``session_metrics``, ``agent_metrics``, and ``tool_metrics``.
+
+    These MySQL tables provide a permanent historical record that survives
+    Prometheus TSDB expiry (default 15 days) and container restarts.  The
+    CG remains the source of truth; MySQL is the pre-aggregated summary
+    layer for fast trend queries.
+
+    Non-fatal — any failure is caught and logged without affecting
+    the other steps in the evaluation cycle.
+    """
+    _THROTTLE_KEY = "eval:mysql_metrics_persist:last_run"
+    _THROTTLE_TTL = 3600  # 1 hour
+
+    try:
+        if redis_client and redis_client.exists(_THROTTLE_KEY):
+            return
+    except Exception:
+        pass  # Redis unavailable — run anyway
+
+    try:
+        from databases.connections import get_mysql
+        from databases.context_graph_data_access import get_cg_data_access
+        import hashlib
+        from datetime import datetime, timezone
+
+        mysql = get_mysql()
+        cg = get_cg_data_access()
+        now = datetime.now(timezone.utc)
+        current_date = now.strftime("%Y-%m-%d")
+        current_hour = now.hour
+
+        # ── Session metrics ──────────────────────────────────────────
+        try:
+            session_result = cg.conn.execute_query("""
+                MATCH (s:Session)
+                WHERE s.startTime >= datetime($dayStart)
+                  AND s.startTime < datetime($dayEnd)
+                WITH s,
+                     CASE WHEN s.status = 'completed' THEN 1 ELSE 0 END AS is_completed,
+                     CASE WHEN s.status = 'active'    THEN 1 ELSE 0 END AS is_active,
+                     CASE WHEN s.status = 'error'     THEN 1 ELSE 0 END AS is_error,
+                     CASE WHEN s.status = 'abandoned'  THEN 1 ELSE 0 END AS is_abandoned
+                RETURN
+                    count(s)          AS total,
+                    sum(is_completed) AS completed,
+                    sum(is_active)    AS active,
+                    sum(is_error)     AS errored,
+                    sum(is_abandoned) AS abandoned,
+                    avg(CASE WHEN s.endTime IS NOT NULL
+                         THEN duration.inSeconds(s.startTime, s.endTime).seconds
+                         ELSE null END) AS avg_dur
+            """, {
+                "dayStart": f"{current_date}T{current_hour:02d}:00:00Z",
+                "dayEnd":   f"{current_date}T{(current_hour + 1) % 24:02d}:00:00Z",
+            })
+
+            if session_result and session_result[0]:
+                row = session_result[0]
+                # Deterministic metric_id for upsert
+                metric_id = hashlib.sha256(
+                    f"session:{current_date}:{current_hour}".encode()
+                ).hexdigest()[:36]
+
+                mysql.execute_update("""
+                    INSERT INTO session_metrics
+                        (metric_id, date, hour, total_sessions, active_sessions,
+                         completed_sessions, abandoned_sessions, error_sessions,
+                         avg_duration_seconds)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        total_sessions     = VALUES(total_sessions),
+                        active_sessions    = VALUES(active_sessions),
+                        completed_sessions = VALUES(completed_sessions),
+                        abandoned_sessions = VALUES(abandoned_sessions),
+                        error_sessions     = VALUES(error_sessions),
+                        avg_duration_seconds = VALUES(avg_duration_seconds)
+                """, (
+                    metric_id, current_date, current_hour,
+                    int(row.get("total", 0) or 0),
+                    int(row.get("active", 0) or 0),
+                    int(row.get("completed", 0) or 0),
+                    int(row.get("abandoned", 0) or 0),
+                    int(row.get("errored", 0) or 0),
+                    round(float(row.get("avg_dur", 0) or 0), 2),
+                ))
+            logger.info("EvaluationPipeline: session_metrics persisted for %s hour %d", current_date, current_hour)
+        except Exception as exc:
+            logger.error("EvaluationPipeline: session_metrics persistence failed: %s", exc)
+
+        # ── Agent metrics ────────────────────────────────────────────
+        try:
+            agent_result = cg.conn.execute_query("""
+                MATCH (ae:AgentExecution)
+                WHERE ae.startTime >= datetime($dayStart)
+                  AND ae.startTime < datetime($dayEnd)
+                RETURN
+                    ae.agentName  AS agentName,
+                    ae.agentType  AS agentType,
+                    count(ae)     AS execCount,
+                    sum(CASE WHEN ae.status IN ['completed', 'success'] THEN 1 ELSE 0 END) AS successCount,
+                    sum(CASE WHEN ae.status = 'failed' THEN 1 ELSE 0 END) AS failCount,
+                    avg(ae.duration) AS avgDur,
+                    sum(ae.duration) AS totalDur
+            """, {
+                "dayStart": f"{current_date}T{current_hour:02d}:00:00Z",
+                "dayEnd":   f"{current_date}T{(current_hour + 1) % 24:02d}:00:00Z",
+            })
+
+            for row in (agent_result or []):
+                agent_name = row.get("agentName", "unknown")
+                agent_type = row.get("agentType", "unknown")
+                if not agent_name:
+                    continue
+
+                metric_id = hashlib.sha256(
+                    f"agent:{agent_name}:{current_date}:{current_hour}".encode()
+                ).hexdigest()[:36]
+
+                # Count tool calls for this agent in this hour
+                tool_count_result = cg.conn.execute_query("""
+                    MATCH (ae:AgentExecution {agentName: $agentName})-[:CALLED_TOOL]->(te:ToolExecution)
+                    WHERE ae.startTime >= datetime($dayStart)
+                      AND ae.startTime < datetime($dayEnd)
+                    RETURN count(te) AS toolCalls
+                """, {
+                    "agentName": agent_name,
+                    "dayStart": f"{current_date}T{current_hour:02d}:00:00Z",
+                    "dayEnd":   f"{current_date}T{(current_hour + 1) % 24:02d}:00:00Z",
+                })
+                tool_calls = int((tool_count_result[0].get("toolCalls", 0) or 0)) if tool_count_result else 0
+
+                mysql.execute_update("""
+                    INSERT INTO agent_metrics
+                        (metric_id, agent_name, agent_type, execution_count,
+                         success_count, failure_count, avg_execution_time_ms,
+                         total_execution_time_ms, tool_call_count)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        execution_count       = VALUES(execution_count),
+                        success_count         = VALUES(success_count),
+                        failure_count         = VALUES(failure_count),
+                        avg_execution_time_ms = VALUES(avg_execution_time_ms),
+                        total_execution_time_ms = VALUES(total_execution_time_ms),
+                        tool_call_count       = VALUES(tool_call_count)
+                """, (
+                    metric_id, agent_name, agent_type,
+                    int(row.get("execCount", 0) or 0),
+                    int(row.get("successCount", 0) or 0),
+                    int(row.get("failCount", 0) or 0),
+                    round(float(row.get("avgDur", 0) or 0), 2),
+                    int(row.get("totalDur", 0) or 0),
+                    tool_calls,
+                ))
+            logger.info("EvaluationPipeline: agent_metrics persisted for %s hour %d", current_date, current_hour)
+        except Exception as exc:
+            logger.error("EvaluationPipeline: agent_metrics persistence failed: %s", exc)
+
+        # ── Tool metrics ─────────────────────────────────────────────
+        try:
+            # Map tool names to categories based on team ownership
+            _TOOL_CATEGORIES = {
+                "claim_lookup": "DATABASE", "claim_status": "DATABASE",
+                "claim_payment_info": "DATABASE", "update_claim_status": "DATABASE",
+                "member_lookup": "DATABASE", "check_eligibility": "DATABASE",
+                "coverage_lookup": "DATABASE", "update_member_info": "DATABASE",
+                "pa_lookup": "DATABASE", "pa_status": "DATABASE",
+                "pa_requirements": "API", "approve_prior_auth": "DATABASE",
+                "deny_prior_auth": "DATABASE",
+                "provider_lookup": "DATABASE", "provider_search": "SEARCH",
+                "network_check": "API",
+                "search_policy_info": "SEARCH", "search_medical_codes": "SEARCH",
+                "search_knowledge_base": "SEARCH",
+            }
+
+            tool_result = cg.conn.execute_query("""
+                MATCH (te:ToolExecution)
+                WHERE te.timestamp >= datetime($dayStart)
+                  AND te.timestamp < datetime($dayEnd)
+                RETURN
+                    te.toolName   AS toolName,
+                    count(te)     AS callCount,
+                    sum(CASE WHEN te.status = 'success' THEN 1 ELSE 0 END) AS successCount,
+                    sum(CASE WHEN te.status = 'error'   THEN 1 ELSE 0 END) AS failCount,
+                    avg(te.executionTimeMs) AS avgTime,
+                    sum(te.executionTimeMs) AS totalTime
+            """, {
+                "dayStart": f"{current_date}T{current_hour:02d}:00:00Z",
+                "dayEnd":   f"{current_date}T{(current_hour + 1) % 24:02d}:00:00Z",
+            })
+
+            for row in (tool_result or []):
+                tool_name = row.get("toolName", "unknown")
+                if not tool_name:
+                    continue
+
+                metric_id = hashlib.sha256(
+                    f"tool:{tool_name}:{current_date}:{current_hour}".encode()
+                ).hexdigest()[:36]
+
+                mysql.execute_update("""
+                    INSERT INTO tool_metrics
+                        (metric_id, tool_name, tool_category, call_count,
+                         success_count, failure_count, avg_execution_time_ms,
+                         total_execution_time_ms)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        call_count              = VALUES(call_count),
+                        success_count           = VALUES(success_count),
+                        failure_count           = VALUES(failure_count),
+                        avg_execution_time_ms   = VALUES(avg_execution_time_ms),
+                        total_execution_time_ms = VALUES(total_execution_time_ms)
+                """, (
+                    metric_id, tool_name,
+                    _TOOL_CATEGORIES.get(tool_name, "OTHER"),
+                    int(row.get("callCount", 0) or 0),
+                    int(row.get("successCount", 0) or 0),
+                    int(row.get("failCount", 0) or 0),
+                    round(float(row.get("avgTime", 0) or 0), 2),
+                    int(row.get("totalTime", 0) or 0),
+                ))
+            logger.info("EvaluationPipeline: tool_metrics persisted for %s hour %d", current_date, current_hour)
+        except Exception as exc:
+            logger.error("EvaluationPipeline: tool_metrics persistence failed: %s", exc)
+
+        # ── Set throttle ─────────────────────────────────────────────
+        if redis_client:
+            try:
+                redis_client.setex(_THROTTLE_KEY, _THROTTLE_TTL, "1")
+            except Exception as r_exc:
+                logger.debug("EvaluationPipeline: Redis throttle write failed: %s", r_exc)
+
+        logger.info("EvaluationPipeline: MySQL metrics persistence completed for %s hour %d", current_date, current_hour)
+
+    except ImportError:
+        logger.debug("EvaluationPipeline: MySQL or CG not available for metrics persistence (expected in A2A containers)")
+    except Exception as exc:
+        logger.error("EvaluationPipeline._persist_metrics_to_mysql failed: %s", exc)

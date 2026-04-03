@@ -238,7 +238,7 @@ def process_user_request(
             logger.info("[%s] Control 1 passed", session_id)
 
             # ----------------------------------------------------------------
-            # 2. AUTHORIZATION  (Casbin RBAC)
+            # 2. AUTHORIZATION  (RBAC)
             # ----------------------------------------------------------------
             logger.info("[%s] Control 2: authorization", session_id)
 
