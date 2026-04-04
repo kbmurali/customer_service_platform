@@ -33,34 +33,10 @@ from config.settings import get_settings, Settings
 logger = logging.getLogger(__name__)
 settings: Settings = get_settings()
 
-class ProviderServicesSupervisor:
-    """
-    LangGraph-based supervisor for Provider Services team.
-    Routes queries to appropriate workers using LangGraph state machine.
-    """
 
-    def __init__(self):
-        self.name = "provider_services_supervisor"
-        self.workers = {
-            "provider_lookup":              ProviderLookupWorker(),
-            "provider_network_check":       ProviderNetworkCheckWorker(),
-            "provider_search_by_specialty": ProviderSearchBySpecialtyWorker(),
-        }
+# -- Module-level prompt constants (importable by seed_langfuse_prompts.py) --
 
-        self.rbac = rbac_service
-        self.audit = AuditLogger()
-        self.presidio = get_presidio_security()
-        self.cg_manager = get_context_graph_manager()
-
-        llm_factory: LLMProviderFactory = get_factory()
-        self.llm: ChatModel = llm_factory.get_llm_provider()
-
-        # Routing prompt — called once per step to confirm the assigned worker.
-        # The supervisor node provides the current step and its pre-assigned worker.
-        # The LLM only confirms the worker or returns SKIP if required data is missing.
-        # It must never output FINISH or CONTINUE — step advancement is
-        # handled entirely by Python logic, not the LLM.
-        self.system_prompt = """You are a routing supervisor for a provider services team.
+_ROUTING_PROMPT_TEXT = """You are a routing supervisor for a provider services team.
 
 You will be given ONE specific step with a pre-assigned worker.
 Your ONLY job is to confirm that worker, or respond SKIP if required data is missing.
@@ -80,11 +56,7 @@ STRICT RULES:
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
 
-        # Planning prompt — called once at the start to decompose the query
-        # into an ordered list of goals and steps.
-        # Goals describe intent only — no worker assignment at goal level.
-        # Each step maps to exactly one worker.
-        self.planning_prompt = """You are a planning agent for a health insurance customer service system.
+_PLANNING_PROMPT_TEXT = """You are a planning agent for a health insurance customer service system.
 Analyze the user query and create an ordered execution plan.
 
 User Query: {user_query}
@@ -137,6 +109,49 @@ Return JSON only (no markdown fences, no explanation):
         }}
     ]
 }}"""
+
+
+class ProviderServicesSupervisor:
+    """
+    LangGraph-based supervisor for Provider Services team.
+    Routes queries to appropriate workers using LangGraph state machine.
+    """
+
+    def __init__(self):
+        self.name = "provider_services_supervisor"
+        self.workers = {
+            "provider_lookup":              ProviderLookupWorker(),
+            "provider_network_check":       ProviderNetworkCheckWorker(),
+            "provider_search_by_specialty": ProviderSearchBySpecialtyWorker(),
+        }
+
+        self.rbac = rbac_service
+        self.audit = AuditLogger()
+        self.presidio = get_presidio_security()
+        self.cg_manager = get_context_graph_manager()
+
+        llm_factory: LLMProviderFactory = get_factory()
+        self.llm: ChatModel = llm_factory.get_llm_provider()
+
+
+        # Prompt versioning: fetch from LangFuse if enabled, else use module constants
+        self.system_prompt = _ROUTING_PROMPT_TEXT
+        self.planning_prompt = _PLANNING_PROMPT_TEXT
+        try:
+            from config.settings import get_settings as _gs
+            _s = _gs()
+            if getattr(_s, "LANGFUSE_PROMPT_VERSIONING_ENABLED", False):
+                from observability.langfuse_integration import get_langfuse_tracer
+                _tracer = get_langfuse_tracer()
+                _label = getattr(_s, "LANGFUSE_PROMPT_LABEL", "production")
+                self.system_prompt = _tracer.get_prompt_or_default(
+                    "csip-provider-routing-prompt", _ROUTING_PROMPT_TEXT, label=_label
+                )
+                self.planning_prompt = _tracer.get_prompt_or_default(
+                    "csip-provider-planning-prompt", _PLANNING_PROMPT_TEXT, label=_label
+                )
+        except Exception:
+            pass  # Fall back to hardcoded defaults
 
     def create_routing_chain(self):
         """Create the LangGraph routing chain."""

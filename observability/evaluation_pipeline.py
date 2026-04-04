@@ -513,24 +513,25 @@ def _compute_e2e_latency(redis_client=None) -> None:
 # Experience extraction
 # ---------------------------------------------------------------------------
 
-# Prometheus gauges for experience store health
+# Prometheus metrics for experience store health — defined in
+# prometheus_metrics.py (the single source of truth for all Prometheus
+# metrics).  Imported here so _run_experience_extraction can update them.
 try:
-    _experience_store_size = Gauge(
-        "csip_experience_store_size",
-        "Number of documents in the successful_experiences Chroma collection",
+    from observability.prometheus_metrics import (
+        experience_store_size as _experience_store_size,
+        experience_hit_rate as _experience_hit_rate,
+        experiences_extracted_total as _experiences_extracted_total,
     )
-    _experience_hit_rate = Gauge(
-        "csip_experience_hit_rate",
-        "Fraction of planning calls where at least one experience was retrieved",
-    )
-except Exception:
+except ImportError:
     _experience_store_size = None
     _experience_hit_rate = None
+    _experiences_extracted_total = None
 
 
 def _run_experience_extraction(redis_client=None) -> None:
     """
-    Extract experiences from correct-rated sessions into the Chroma store.
+    Extract experiences from correct-rated sessions into the Chroma store,
+    then update Prometheus gauges for the Feedback Learning dashboard.
 
     Non-fatal — any failure is caught and logged without affecting
     the other metrics in the evaluation cycle.
@@ -539,28 +540,49 @@ def _run_experience_extraction(redis_client=None) -> None:
     is not present (intentionally — extraction runs only in the main API).
     The ImportError is caught at debug level to avoid log spam.
     """
+    # ── Phase 1: Run extraction (may be unavailable in A2A containers) ──
     try:
         from observability.experience_extraction_pipeline import run_extraction
+        try:
+            extracted = run_extraction(redis_client)
+
+            if redis_client:
+                try:
+                    redis_client.setex(
+                        "metrics:experiences_extracted_last_cycle", 86400, str(extracted)
+                    )
+                except Exception as r_exc:
+                    logger.debug("EvaluationPipeline: Redis write failed: %s", r_exc)
+
+            logger.info("EvaluationPipeline: experience extraction completed, extracted=%d", extracted)
+
+        except Exception as exc:
+            logger.error("EvaluationPipeline._run_experience_extraction failed: %s", exc)
+
     except ImportError:
         # Expected in A2A server containers — module not deployed there
         logger.debug("EvaluationPipeline: experience_extraction_pipeline not available (expected in A2A containers)")
-        return
 
+    # ── Phase 2: Update gauges (runs regardless of extraction outcome) ──
     try:
-        extracted = run_extraction(redis_client)
+        from databases.chroma_experience_store import get_experience_store
+        store_size = get_experience_store().get_collection_size()
+        if _experience_store_size is not None:
+            _experience_store_size.set(store_size)
+        # Note: _experiences_extracted_total is a Counter (incremented by
+        # experience_extraction_pipeline on each extraction) — not set here.
+    except Exception as _g_exc:
+        logger.debug("EvaluationPipeline: experience store size gauge failed: %s", _g_exc)
 
-        if redis_client:
-            try:
-                redis_client.setex(
-                    "metrics:experiences_extracted_last_cycle", 86400, str(extracted)
-                )
-            except Exception as r_exc:
-                logger.debug("EvaluationPipeline: Redis write failed: %s", r_exc)
-
-        logger.info("EvaluationPipeline: experience extraction completed, extracted=%d", extracted)
-
-    except Exception as exc:
-        logger.error("EvaluationPipeline._run_experience_extraction failed: %s", exc)
+    # Compute hit rate from Prometheus counters set by central_supervisor
+    try:
+        from prometheus_client import REGISTRY
+        total = REGISTRY.get_sample_value("csip_experience_planning_total_total") or 0
+        hits = REGISTRY.get_sample_value("csip_experience_planning_hits_total") or 0
+        if _experience_hit_rate is not None and total > 0:
+            _experience_hit_rate.set(hits / total)
+    except Exception as _hr_exc:
+        logger.debug("EvaluationPipeline: experience hit rate gauge failed: %s", _hr_exc)
 
 
 def _run_pattern_analysis(redis_client=None) -> None:

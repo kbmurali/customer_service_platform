@@ -316,6 +316,13 @@ async def prometheus_metrics():
             if value is None:
                 continue
 
+            # Skip non-numeric values (e.g. internal keys like leader
+            # election that store string identifiers, not metric values).
+            try:
+                float(value)
+            except (ValueError, TypeError):
+                continue
+
             # Key format: metrics:{metric_name}
             #         or: metrics:{metric_name}:{label_k=v,label_k=v}
             # Strip the leading "metrics:" prefix.

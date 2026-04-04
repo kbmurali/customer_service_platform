@@ -74,6 +74,22 @@ from config.settings import get_settings
 from observability.langfuse_integration import get_langfuse_tracer
 from llm_providers.llm_provider_factory import LLMProviderFactory, get_factory, ChatModel
 
+# Prometheus counters for experience-augmented planning hit rate.
+# Read by the evaluation pipeline to compute csip_experience_hit_rate.
+try:
+    from prometheus_client import Counter as _PromCounter
+    _experience_planning_total = _PromCounter(
+        "csip_experience_planning_total",
+        "Planning calls with experience store enabled",
+    )
+    _experience_planning_hits = _PromCounter(
+        "csip_experience_planning_hits",
+        "Planning calls where at least one experience was retrieved",
+    )
+except Exception:
+    _experience_planning_total = None
+    _experience_planning_hits = None
+
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -536,6 +552,15 @@ class CentralSupervisor:
             logger.warning(
                 "CentralSupervisor: experience retrieval failed (non-fatal): %s", _exp_exc
             )
+
+        # Track experience hit rate for Prometheus dashboard
+        if _experience_planning_total is not None:
+            try:
+                _experience_planning_total.inc()
+                if past_plans_text:
+                    _experience_planning_hits.inc()
+            except Exception:
+                pass
 
         # Prompt versioning: fetch from LangFuse if enabled, else use constant
         try:
@@ -1142,8 +1167,26 @@ class CentralSupervisor:
 
         results_block = "\n\n".join(results_parts)
 
-        # Build the consolidation prompt
-        consolidation_user = CONSOLIDATION_USER_PROMPT.format(
+        # Build the consolidation prompt — fetch from LangFuse if versioning is enabled
+        _consolidation_sys = CONSOLIDATION_SYSTEM_PROMPT
+        _consolidation_usr_tpl = CONSOLIDATION_USER_PROMPT
+        try:
+            from config.settings import get_settings as _gs
+            _s = _gs()
+            if getattr(_s, "LANGFUSE_PROMPT_VERSIONING_ENABLED", False):
+                from observability.langfuse_integration import get_langfuse_tracer as _get_tracer
+                _tracer = _get_tracer()
+                _label = getattr(_s, "LANGFUSE_PROMPT_LABEL", "production")
+                _consolidation_sys = _tracer.get_prompt_or_default(
+                    "csip-consolidation-system-prompt", CONSOLIDATION_SYSTEM_PROMPT, label=_label
+                )
+                _consolidation_usr_tpl = _tracer.get_prompt_or_default(
+                    "csip-consolidation-user-prompt", CONSOLIDATION_USER_PROMPT, label=_label
+                )
+        except Exception:
+            pass  # Fall back to hardcoded defaults
+
+        consolidation_user = _consolidation_usr_tpl.format(
             query=original_query,
             results_block=results_block,
         )
@@ -1211,7 +1254,7 @@ class CentralSupervisor:
             consolidation_chain = self._llm | StrOutputParser()
             consolidated = consolidation_chain.invoke(
                 [
-                    SystemMessage(content=CONSOLIDATION_SYSTEM_PROMPT),
+                    SystemMessage(content=_consolidation_sys),
                     HumanMessage(content=consolidation_user),
                 ],
                 config={"callbacks": [callback_handler]} if callback_handler else {},

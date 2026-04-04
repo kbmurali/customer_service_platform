@@ -28,6 +28,19 @@ from observability.prometheus_metrics import track_memory_security
 logger = logging.getLogger(__name__)
 
 
+
+WORKER_PROMPT = (
+            "You are a claims status specialist for a health insurance company. "
+            "Your role is to check the current status of a claim by claim number. "
+            "You MUST call the claim_status tool to answer — never answer from memory or context. "
+            "Look up the claim status using the claim number provided in the query. "
+            "Note: claim number (e.g. CLM-123456) is different from claim ID. "
+            "You must also use user ID, user role, and session ID to provide accurate details. "
+            "The context includes an 'Execution ID' value. "
+            "Pass it as the execution_id argument when calling the tool "
+            "so the Context Graph can trace this execution."
+        )
+
 class ClaimStatusWorker:
     """Worker agent for claim status check operations."""
 
@@ -47,19 +60,23 @@ class ClaimStatusWorker:
         llm_factory: LLMProviderFactory = get_factory()
         llm: ChatModel = llm_factory.get_llm_provider()
 
-        prompt = (
-            "You are a claims status specialist for a health insurance company. "
-            "Your role is to check the current status of a claim by claim number. "
-            "You MUST call the claim_status tool to answer — never answer from memory or context. "
-            "Look up the claim status using the claim number provided in the query. "
-            "Note: claim number (e.g. CLM-123456) is different from claim ID. "
-            "You must also use user ID, user role, and session ID to provide accurate details. "
-            "The context includes an 'Execution ID' value. "
-            "Pass it as the execution_id argument when calling the tool "
-            "so the Context Graph can trace this execution."
-        )
 
-        self.agent = create_react_agent(llm, [self.tool], prompt=prompt)
+        # Prompt versioning: fetch from LangFuse if enabled, else use module constant
+        _prompt = WORKER_PROMPT
+        try:
+            from config.settings import get_settings as _gs
+            _s = _gs()
+            if getattr(_s, "LANGFUSE_PROMPT_VERSIONING_ENABLED", False):
+                from observability.langfuse_integration import get_langfuse_tracer
+                _tracer = get_langfuse_tracer()
+                _label = getattr(_s, "LANGFUSE_PROMPT_LABEL", "production")
+                _prompt = _tracer.get_prompt_or_default(
+                    "csip-claims-status-worker-prompt", WORKER_PROMPT, label=_label
+                )
+        except Exception:
+            pass  # Fall back to hardcoded default
+
+        self.agent = create_react_agent(llm, [self.tool], prompt=_prompt)
 
     def execute(self, query: str, user_id: str, user_role: str, session_id: str, execution_id: str = "") -> Dict[str, Any]:
         """Execute ClaimStatusWorker task with error handling and retry logic."""

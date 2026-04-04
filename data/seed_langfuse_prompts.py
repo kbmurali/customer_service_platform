@@ -60,6 +60,13 @@ def _seed_prompt(lf, name: str, prompt: str, label: str = "production") -> None:
 
 
 def main() -> None:
+    # Load environment variables
+    try:
+        from dotenv import load_dotenv, find_dotenv
+        load_dotenv(find_dotenv())
+    except ImportError:
+        pass
+    
     lf = _get_langfuse_client()
     logger.info("Connected to LangFuse — seeding prompts...")
 
@@ -81,12 +88,20 @@ def main() -> None:
         logger.warning("Central supervisor prompts skipped: %s", exc)
         skipped += 2
 
+    try:
+        from agents.central_supervisor import CONSOLIDATION_SYSTEM_PROMPT, CONSOLIDATION_USER_PROMPT
+        _try_seed("csip-consolidation-system-prompt", CONSOLIDATION_SYSTEM_PROMPT)
+        _try_seed("csip-consolidation-user-prompt",   CONSOLIDATION_USER_PROMPT)
+    except (ImportError, AttributeError) as exc:
+        logger.warning("Consolidation prompts skipped: %s", exc)
+        skipped += 2
+
     # ── Claims Services ─────────────────────────────────────────────────
     # Team supervisor modules are only available if the full source tree
     # is present. In the agentic-access-api container (which only has
     # agent card files), these imports will fail gracefully.
     try:
-        from agents.teams.claims_services.claims_services_supervisor import (
+        from agents.teams.claims_services.supervisor.claims_services_supervisor import (
             _PLANNING_PROMPT_TEXT as claims_planning,
             _ROUTING_PROMPT_TEXT  as claims_routing,
         )
@@ -101,17 +116,20 @@ def main() -> None:
         from agents.teams.claims_services.supervisor.claim_status_worker      import WORKER_PROMPT as clm_status_p
         from agents.teams.claims_services.supervisor.claim_payment_info_worker import WORKER_PROMPT as clm_payment_p
         from agents.teams.claims_services.supervisor.update_claim_status_worker import WORKER_PROMPT as clm_update_p
+        from agents.teams.claims_services.supervisor.member_claims_worker       import WORKER_PROMPT as clm_mc_p
+        
         _try_seed("csip-claims-lookup-worker-prompt",        clm_lookup_p)
         _try_seed("csip-claims-status-worker-prompt",        clm_status_p)
         _try_seed("csip-claims-payment-worker-prompt",       clm_payment_p)
         _try_seed("csip-claims-update-status-worker-prompt", clm_update_p)
+        _try_seed("csip-member-claims-worker-prompt",        clm_mc_p)
     except (ImportError, AttributeError) as exc:
         logger.warning("Claims worker prompts skipped: %s", exc)
         skipped += 4
 
     # ── Member Services ─────────────────────────────────────────────────
     try:
-        from agents.teams.member_services.member_services_supervisor import (
+        from agents.teams.member_services.supervisor.member_services_supervisor import (
             _PLANNING_PROMPT_TEXT as ms_planning,
             _ROUTING_PROMPT_TEXT  as ms_routing,
         )
@@ -126,17 +144,19 @@ def main() -> None:
         from agents.teams.member_services.supervisor.check_eligibility_worker import WORKER_PROMPT as el_p
         from agents.teams.member_services.supervisor.coverage_lookup_worker   import WORKER_PROMPT as cl_p
         from agents.teams.member_services.supervisor.update_member_info_worker import WORKER_PROMPT as um_p
+        from agents.teams.member_services.supervisor.member_policy_lookup_worker import WORKER_PROMPT as mpl_p
         _try_seed("csip-member-lookup-worker-prompt",      ml_p)
         _try_seed("csip-member-eligibility-worker-prompt", el_p)
         _try_seed("csip-member-coverage-worker-prompt",    cl_p)
         _try_seed("csip-member-update-worker-prompt",      um_p)
+        _try_seed("csip-member-policy-lookup-worker-prompt", mpl_p)
     except (ImportError, AttributeError) as exc:
         logger.warning("Member worker prompts skipped: %s", exc)
         skipped += 4
 
     # ── PA Services ─────────────────────────────────────────────────────
     try:
-        from agents.teams.pa_services.pa_services_supervisor import (
+        from agents.teams.pa_services.supervisor.pa_services_supervisor import (
             _PLANNING_PROMPT_TEXT as pa_planning,
             _ROUTING_PROMPT_TEXT  as pa_routing,
         )
@@ -152,18 +172,20 @@ def main() -> None:
         from agents.teams.pa_services.supervisor.pa_requirements_worker   import WORKER_PROMPT as par_p
         from agents.teams.pa_services.supervisor.approve_prior_auth_worker import WORKER_PROMPT as paa_p
         from agents.teams.pa_services.supervisor.deny_prior_auth_worker    import WORKER_PROMPT as pad_p
+        from agents.teams.pa_services.supervisor.member_prior_auth_worker   import WORKER_PROMPT as mpa_p
         _try_seed("csip-pa-lookup-worker-prompt",       pal_p)
         _try_seed("csip-pa-status-worker-prompt",       pas_p)
         _try_seed("csip-pa-requirements-worker-prompt", par_p)
         _try_seed("csip-pa-approve-worker-prompt",      paa_p)
         _try_seed("csip-pa-deny-worker-prompt",         pad_p)
+        _try_seed("csip-member-prior-auth-worker-prompt",    mpa_p)
     except (ImportError, AttributeError) as exc:
         logger.warning("PA worker prompts skipped: %s", exc)
         skipped += 5
 
     # ── Provider Services ───────────────────────────────────────────────
     try:
-        from agents.teams.provider_services.provider_services_supervisor import (
+        from agents.teams.provider_services.supervisor.provider_services_supervisor import (
             _PLANNING_PROMPT_TEXT as prov_planning,
             _ROUTING_PROMPT_TEXT  as prov_routing,
         )
@@ -186,7 +208,7 @@ def main() -> None:
 
     # ── Search Services ─────────────────────────────────────────────────
     try:
-        from agents.teams.search_services.search_services_supervisor import (
+        from agents.teams.search_services.supervisor.search_services_supervisor import (
             _PLANNING_PROMPT_TEXT as search_planning,
             _ROUTING_PROMPT_TEXT  as search_routing,
         )

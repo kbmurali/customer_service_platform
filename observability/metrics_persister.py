@@ -11,7 +11,7 @@ access.  Supports uvicorn multi-worker deployments via:
 
   2. **Redis leader election** — only one worker pushes metrics to Redis
      and runs the evaluation pipeline.  The leader acquires a short-lived
-     Redis lock (``metrics:leader``) each cycle.  If a leader dies, another
+     Redis lock (``internal:metrics_leader``) each cycle.  If a leader dies, another
      worker picks up the lock within one cycle (30s).
 """
 
@@ -48,7 +48,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Leader lock config
-_LEADER_KEY = "metrics:leader"
+_LEADER_KEY = "internal:metrics_leader"
 _LEADER_TTL = 45   # seconds — slightly longer than push interval
 
 

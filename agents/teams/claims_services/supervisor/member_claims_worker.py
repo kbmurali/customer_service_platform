@@ -63,7 +63,22 @@ class MemberClaimsWorker:
         llm_factory: LLMProviderFactory = get_factory()
         llm: ChatModel = llm_factory.get_llm_provider()
 
-        self.agent = create_react_agent(llm, [self.tool], prompt=WORKER_PROMPT)
+        # Prompt versioning: fetch from LangFuse if enabled, else use module constant
+        _prompt = WORKER_PROMPT
+        try:
+            from config.settings import get_settings as _gs
+            _s = _gs()
+            if getattr(_s, "LANGFUSE_PROMPT_VERSIONING_ENABLED", False):
+                from observability.langfuse_integration import get_langfuse_tracer
+                _tracer = get_langfuse_tracer()
+                _label = getattr(_s, "LANGFUSE_PROMPT_LABEL", "production")
+                _prompt = _tracer.get_prompt_or_default(
+                    "csip-member-claims-worker-prompt", WORKER_PROMPT, label=_label
+                )
+        except Exception:
+            pass  # Fall back to hardcoded default
+
+        self.agent = create_react_agent(llm, [self.tool], prompt=_prompt)
 
     def execute(self, query: str, user_id: str, user_role: str, session_id: str, execution_id: str = "") -> Dict[str, Any]:
         """Execute MemberClaimsWorker task with error handling and retry logic."""

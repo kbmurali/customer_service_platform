@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+
+# Add project root to path so imports work when run from any directory
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logger = logging.getLogger(__name__)
 
