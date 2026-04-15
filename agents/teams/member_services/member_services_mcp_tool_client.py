@@ -13,6 +13,8 @@ Tools registered:
     coverage_lookup    — get coverage details from the member's active policy
     update_member_info — Update a member's information field. HIGH-IMPACT: requires human approval.
                          Updatable fields: phone, email, address_street, address_city, address_state, address_zip, enrollmentDate, status
+    member_policy_lookup — look up member with associated policy details
+    treatment_history  — retrieve treatment history for a member (PT sessions, medication trials, etc.)
 
 """
 
@@ -40,6 +42,7 @@ class MemberServicesMCPToolClient(MCPToolClient):
         self.register_tool("coverage_lookup")
         self.register_tool("update_member_info")
         self.register_tool("member_policy_lookup")
+        self.register_tool("treatment_history")
         
         logger.info(
             "MemberServicesMCPToolClient ready (%s) — tools: %s",

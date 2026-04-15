@@ -42,9 +42,11 @@ def build_claims_services_agent_card(base_url: str) -> A2AAgentCard:
         name="claims_services_team",
         description=(
             "Health insurance claims services agent. Handles claim lookup, "
-            "claim status checks, and payment information retrieval. "
+            "claim status checks, payment information retrieval, and "
+            "claim adjudication recommendations. "
             "Routes queries to specialized workers: claim_lookup, "
-            "claim_status, claim_payment_info, update_claim_status, member_claims."
+            "claim_status, claim_payment_info, update_claim_status, "
+            "member_claims, claim_adjudication."
         ),
         url=f"{base_url}/a2a",
         capabilities=A2ACapabilities(
@@ -124,6 +126,25 @@ def build_claims_services_agent_card(base_url: str) -> A2AAgentCard:
                     "What claims does member M-12345 have?",
                     "Show me all claims for member M-67890",
                     "List pending claims for member M-11111",
+                ],
+            ),
+            A2ASkill(
+                id="claim_adjudication",
+                name="Claim Adjudication",
+                description=(
+                    "Evaluate whether a claim should be approved, denied, or sent "
+                    "for review based on coverage rules. Decision agent — does not "
+                    "call MCP tools. Requires evidence from prior steps: claim_lookup "
+                    "(claim details), check_eligibility (member eligibility on service "
+                    "date), and provider_network_check (in-network status). Produces "
+                    "a structured recommendation with justification persisted in the "
+                    "Context Graph."
+                ),
+                tags=["claim", "adjudication", "decision", "approve", "deny", "review"],
+                examples=[
+                    "Is claim CLM-123456 valid?",
+                    "Should this claim be approved based on the evidence gathered?",
+                    "Evaluate claim eligibility and coverage for adjudication",
                 ],
             ),
         ],

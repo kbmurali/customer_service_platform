@@ -18,6 +18,7 @@ from agents.teams.pa_services.supervisor.pa_requirements_worker import PARequire
 from agents.teams.pa_services.supervisor.approve_prior_auth_worker import ApprovePriorAuthWorker
 from agents.teams.pa_services.supervisor.deny_prior_auth_worker import DenyPriorAuthWorker
 from agents.teams.pa_services.supervisor.member_prior_auth_worker import MemberPriorAuthWorker
+from agents.teams.pa_services.supervisor.pa_recommendation_worker import PARecommendationWorker
 from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
@@ -52,13 +53,14 @@ Available workers:
 - approve_prior_auth: Approve a prior authorization — requires PA ID and clinical justification reason
 - deny_prior_auth: Deny a prior authorization — requires PA ID and clinical justification reason
 - member_prior_authorizations: Retrieve all prior authorizations for a member by member ID
+- pa_recommendation: Evaluate whether a PA should be approved or denied based on clinical criteria — receives evidence from prior steps (pa_lookup, pa_requirements, clinical guidelines, treatment_history). Decision agent — does not call MCP tools.
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
    (no PA ID, no member ID, no procedure code, no policy type, no reason for approve/deny), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: pa_lookup, pa_status, pa_requirements, approve_prior_auth, deny_prior_auth, member_prior_authorizations.
+4. Only use exact worker names: pa_lookup, pa_status, pa_requirements, approve_prior_auth, deny_prior_auth, member_prior_authorizations, pa_recommendation.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -79,6 +81,7 @@ Available workers (use EXACT names only):
 - approve_prior_auth: Approves a prior authorization — requires a PA ID and reason
 - deny_prior_auth: Denies a prior authorization — requires a PA ID and reason
 - member_prior_authorizations: Retrieves all prior authorizations for a member — requires a member ID
+- pa_recommendation: Evaluates whether a PA should be approved or denied based on clinical criteria — requires prior results from pa_lookup, pa_requirements, search_knowledge_base (clinical guidelines), and treatment_history. Must be ordered AFTER evidence-gathering steps.
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -143,6 +146,7 @@ class PAServicesSupervisor:
             "approve_prior_auth":  ApprovePriorAuthWorker(),
             "deny_prior_auth":              DenyPriorAuthWorker(),
             "member_prior_authorizations":  MemberPriorAuthWorker(),
+            "pa_recommendation":            PARecommendationWorker(),
         }
 
         self.rbac = rbac_service
@@ -338,7 +342,7 @@ class PAServicesSupervisor:
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth", "member_prior_authorizations"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth", "member_prior_authorizations", "pa_recommendation"}
 
         user_id    = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -861,6 +865,7 @@ class PAServicesSupervisor:
                     → pa_requirements    → goal_advance → supervisor
                     → approve_prior_auth → goal_advance → supervisor
                     → deny_prior_auth    → goal_advance → supervisor
+                    → pa_recommendation  → goal_advance → supervisor
                     → error_handler → END
                     → END  (when FINISH)
         """
@@ -898,13 +903,13 @@ class PAServicesSupervisor:
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth", "member_prior_authorizations"}
+        VALID_WORKERS = {"pa_lookup", "pa_status", "pa_requirements", "approve_prior_auth", "deny_prior_auth", "member_prior_authorizations", "pa_recommendation"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["pa_lookup", "pa_status", "pa_requirements",
                      "approve_prior_auth", "deny_prior_auth",
-                     "member_prior_authorizations",
+                     "member_prior_authorizations", "pa_recommendation",
                      "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
@@ -939,6 +944,7 @@ class PAServicesSupervisor:
                 "approve_prior_auth": "approve_prior_auth",
                 "deny_prior_auth":              "deny_prior_auth",
                 "member_prior_authorizations": "member_prior_authorizations",
+                "pa_recommendation":          "pa_recommendation",
                 "error_handler":               "error_handler",
                 "__end__":            END,
             },

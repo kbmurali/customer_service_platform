@@ -40,3 +40,4 @@ pinecone/
 
 */chroma_store/
 */chroma_test_store/
+data/sample_data.json

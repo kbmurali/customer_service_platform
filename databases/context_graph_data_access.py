@@ -77,6 +77,7 @@ class ContextGraphDataAccess:
             .startTime,
             .endTime,
             .status,
+            .conversationMessages,
             .metadata
         } AS session
         """
@@ -564,7 +565,10 @@ class ContextGraphDataAccess:
     
     def get_active_plan(self, session_id: str) -> Optional[Dict[str, Any]]:
         """
-        Retrieve active plan, reconstructing goals and steps from their nodes.
+        Retrieve the central plan for a session, reconstructing goals and steps.
+
+        Finds the central plan regardless of status (active, completed, etc.)
+        so that completed sessions can be used for experience extraction.
 
         Returns:
             Plan dict with goals and steps lists, or None
@@ -572,8 +576,7 @@ class ContextGraphDataAccess:
         try:
             result = self.conn.execute_query("""
                 MATCH (:Session {sessionId: $sessionId})-[:HAS_EXECUTION]->
-                      (:AgentExecution)-[:HAS_PLAN|CALLED_AGENT*1..4]->
-                      (:AgentExecution {agentType: 'a2a_server'})-[:HAS_PLAN]->(p:Plan {status: 'active'})
+                      (:AgentExecution)-[:HAS_PLAN]->(p:Plan {planType: 'central'})
                 OPTIONAL MATCH (p)-[:HAS_GOAL]->(g:Goal)
                 OPTIONAL MATCH (g)-[:HAS_STEP]->(st:Step)
                 WITH p,

@@ -1,46 +1,38 @@
 import logging
 import json
 import re
-
 from typing import Literal
 from datetime import datetime
 from functools import lru_cache
-
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, RemoveMessage
-
-        
 from agents.teams.member_services.supervisor.member_lookup_worker import MemberLookupWorker
 from agents.teams.member_services.supervisor.check_eligibility_worker import EligibilityCheckWorker
 from agents.teams.member_services.supervisor.coverage_lookup_worker import CoverageLookupWorker
 from agents.teams.member_services.supervisor.update_member_info_worker import UpdateMemberInfoWorker
 from agents.teams.member_services.supervisor.member_policy_lookup_worker import MemberPolicyLookupWorker
+from agents.teams.member_services.supervisor.treatment_history_worker import TreatmentHistoryWorker
 from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
 from agents.core.error_handling import get_error_metrics, create_error_record, format_error_for_user
-
 from databases.chroma_vector_data_access import get_chroma_data_access
 from observability.langfuse_integration import get_langfuse_tracer
 from llm_providers.llm_provider_factory import LLMProviderFactory, get_factory, ChatModel
 from security.approval_workflow import get_approval_workflow
 from security.presidio_memory_security import get_presidio_security
 from security.nh3_sanitization import sanitize_html
-
 from config.settings import get_settings, Settings
-
 logger = logging.getLogger(__name__)
 settings: Settings = get_settings()
-
 
 # -- Module-level prompt constants (importable by seed_langfuse_prompts.py) --
 
 _ROUTING_PROMPT_TEXT = """You are a routing supervisor for a member services team.
-
 You will be given ONE specific step with a pre-assigned worker.
 Your ONLY job is to confirm that worker, or respond SKIP if required data is missing.
 
@@ -50,13 +42,14 @@ Available workers:
 - coverage_lookup: Get detailed coverage and benefits for a procedure code
 - update_member_info: Update a member information field — requires member ID, field, new value, and reason
 - member_policy_lookup: Look up member information with their associated insurance policy by member ID
+- treatment_history: Retrieve treatment history for a member — optional filters by treatment_type or procedure_code
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
    (no member ID, no service date, no procedure code, no field or new value for update), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: member_lookup, check_eligibility, coverage_lookup, update_member_info, member_policy_lookup.
+4. Only use exact worker names: member_lookup, check_eligibility, coverage_lookup, update_member_info, member_policy_lookup, treatment_history.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -75,6 +68,7 @@ Available workers (use EXACT names only):
 - coverage_lookup: Gets coverage details — requires a procedure code
 - update_member_info: Updates a member information field — requires member ID, field, new value, and reason
 - member_policy_lookup: Looks up member with their associated insurance policy by member ID
+- treatment_history: Retrieves treatment history for a member — optional filters by treatment_type (e.g. PHYSICAL_THERAPY, MEDICATION_TRIAL, INJECTION) or procedure_code (CPT code)
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -126,7 +120,7 @@ class MemberServicesSupervisor:
     LangGraph-based supervisor for Member Services team.
     Routes queries to appropriate workers using LangGraph state machine.
     """
-    
+
     def __init__(self):
         self.name = "member_services_supervisor"
         self.workers = {
@@ -135,16 +129,14 @@ class MemberServicesSupervisor:
             "coverage_lookup":    CoverageLookupWorker(),
             "update_member_info": UpdateMemberInfoWorker(),
             "member_policy_lookup": MemberPolicyLookupWorker(),
+            "treatment_history":   TreatmentHistoryWorker(),
         }
-        
         self.rbac = rbac_service
         self.audit = AuditLogger()
         self.presidio = get_presidio_security()
         self.cg_manager = get_context_graph_manager()
-        
         llm_factory: LLMProviderFactory = get_factory()
         self.llm: ChatModel = llm_factory.get_llm_provider()
-        
 
         # Prompt versioning: fetch from LangFuse if enabled, else use module constants
         self.system_prompt = _ROUTING_PROMPT_TEXT
@@ -164,16 +156,14 @@ class MemberServicesSupervisor:
                 )
         except Exception:
             pass  # Fall back to hardcoded defaults
-    
+
     def create_routing_chain(self):
         """Create the LangGraph routing chain."""
         prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             ("human", "{messages}")
         ])
-        
         return prompt | self.llm | JsonOutputParser()
-    
 
     def create_plan_node(self, state: SupervisorState) -> SupervisorState:
         """
@@ -182,22 +172,21 @@ class MemberServicesSupervisor:
         # Check if plan already exists
         if state.get("plan"):
             return state
-        
+
         tracer = get_langfuse_tracer()
         session_id = state.get("session_id", "default")
-        
+
         try:
             # Get user query
             user_query = state["messages"][-1].content if state["messages"] else "No query"
-            
+
             # Enrich planning with semantic search from Chroma vector DB
             semantic_context_json = {}
-            
             try:
                 chroma = get_chroma_data_access()
                 policy_context = chroma.search_policies( query=user_query, n_results=2)
                 faq_context = chroma.search_faqs(query=user_query, n_results=2)
-                
+
                 # Compress Chroma documents before injecting into planning prompt
                 # to reduce token usage while preserving domain-critical terms.
                 _semantic_compressor = get_semantic_compressor()
@@ -209,6 +198,7 @@ class MemberServicesSupervisor:
                     [{'content': r['document']} for r in faq_context],
                     query=user_query,
                 )
+
                 semantic_context_json = {
                     'relevant_policies': [d['content'] for d in _compressed_policies],
                     'relevant_faqs':     [d['content'] for d in _compressed_faqs]
@@ -217,13 +207,12 @@ class MemberServicesSupervisor:
                 semantic_context = {}
 
             semantic_context = json.dumps(semantic_context_json, indent=2) if semantic_context_json else 'No additional context available.'
-            
+
             # Create planning prompt
             prompt = ChatPromptTemplate.from_messages([
                 ("system", "You are a planning agent. Create structured execution plans in JSON format."),
                 ("human", self.planning_prompt)
             ])
-            
 
             # ── CG: Create team planner AgentExecution node ─────────────────
             planner_execution_id = None
@@ -243,13 +232,12 @@ class MemberServicesSupervisor:
                 session_id=session_id,
                 user_id=state.get("user_id"),
             ) if tracer.enabled else None
-            
+
             # Call LLM to create plan
             inputs = {
                 "user_query" : user_query,
                 "semantic_context" : semantic_context
             }
-            
             if callback_handler:
                 result = (prompt | self.llm).invoke( inputs, config={"callbacks": [callback_handler]})
             else:
@@ -263,14 +251,12 @@ class MemberServicesSupervisor:
                         self.cg_manager.set_langfuse_trace_id(planner_execution_id, lf_trace_id)
                 except Exception:
                     pass
-            
+
             # Parse plan
             raw = result.content
-            
             plan_text = re.sub(r"```json|```", "", str(raw)).strip()
-            
             plan = json.loads( plan_text )
-            
+
             # Store plan in CG as a team plan.
             plan_result = self.cg_manager.store_plan(
                 session_id=session_id,
@@ -298,14 +284,12 @@ class MemberServicesSupervisor:
             state["step_map"]            = step_map
             state["current_step_index"]  = 0
             state["completed_goals"]     = []
-            
+
             logger.info(f"{self.name}: Created plan with {len(plan.get('goals', []))} goals")
-            
             return state
-            
+
         except Exception as e:
             logger.error(f"{self.name}: Error creating plan: {e}")
-            
             # Fallback plan
             state["plan"] = {
                 "goals": [{"id": "goal_1", "description": "Handle user query",
@@ -317,24 +301,12 @@ class MemberServicesSupervisor:
             state["completed_goals"]    = []
             state["step_map"]           = {}
             return state
-        
+
     def supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """
         Orchestrator node — iterates steps directly, one LLM call per step.
-
-        Flow per invocation:
-          1. Check circuit breaker.
-          2. Read current_step_index from state.
-          3. Build sorted steps list from plan; if all steps done → FINISH.
-          4. Read step["worker"] — authoritative, no ambiguity.
-          5. Call LLM only to confirm worker / detect SKIP for missing data.
-          6. Create AgentExecution, link Step->AgentExecution, store execution_id.
-          7. Return next=<worker> or next=FINISH/CONTINUE.
-
-        Step advancement happens in _advance_step (goal_advance node).
-        Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info", "member_policy_lookup"}
+        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info", "member_policy_lookup", "treatment_history"}
 
         user_id = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -421,17 +393,12 @@ class MemberServicesSupervisor:
             )))
 
         if conversation_history:
-            # Compress older turns via LLMLingua; keep the most recent 2 verbatim.
-            # Returns ready-to-use list[BaseMessage] — no manual role_map needed.
             conversation_compressor = get_conversation_compressor()
             routing_messages.extend(
                 conversation_compressor.compress_history(conversation_history)
             )
 
-        # Inject results from previously completed steps so the routing LLM
-        # can confirm the assigned worker has the data it needs.
-        # tool_raw_output is the unredacted structured JSON from the MCP server —
-        # preferred over 'output' which may have PII scrubbed.
+        # Inject results from previously completed steps
         tool_results = state.get("tool_results", {})
         if tool_results and current_step_idx > 0:
             prior_context_parts = []
@@ -442,12 +409,13 @@ class MemberServicesSupervisor:
                     display = raw if raw else tool_results[w].get("output", "")
                     if display:
                         prior_context_parts.append(f"- {w}: {display}")
+
             if prior_context_parts:
                 routing_messages.append(SystemMessage(content=(
                     "Results from prior steps:\n" + "\n".join(prior_context_parts)
                 )))
 
-        # Inject the current step — worker is pre-assigned, LLM only confirms or SKIPs
+        # Inject the current step
         routing_messages.append(SystemMessage(content=(
             f"CURRENT STEP ({current_step_idx + 1}/{len(all_steps)}): "
             f"{current_step.get('action', '')}\n"
@@ -460,6 +428,7 @@ class MemberServicesSupervisor:
             session_id=session_id,
             user_id=user_id,
         ) if tracer.enabled else None
+
         chain = self.create_routing_chain()
         try:
             llm_result = chain.invoke(
@@ -468,6 +437,7 @@ class MemberServicesSupervisor:
             )
             next_worker = llm_result.get("next", "SKIP")
             reasoning   = llm_result.get("reasoning", "")
+
             if callback_handler and execution_id:
                 try:
                     lf_trace_id = callback_handler.get_trace_id()
@@ -475,6 +445,7 @@ class MemberServicesSupervisor:
                         self.cg_manager.set_langfuse_trace_id(execution_id, lf_trace_id)
                 except Exception:
                     pass
+
         except Exception as e:
             logger.error(f"{self.name}: LLM routing failed: {e}")
             next_worker = step_worker if step_worker in VALID_WORKERS else "SKIP"
@@ -483,7 +454,6 @@ class MemberServicesSupervisor:
         logger.info(f"{self.name}: LLM chose '{next_worker}' — {reasoning}")
 
         # ── Validate LLM output ──────────────────────────────────────────────
-        # If LLM returned something invalid, fall back to the step-assigned worker
         if next_worker not in VALID_WORKERS and next_worker != "SKIP":
             logger.warning(
                 f"{self.name}: LLM returned invalid worker '{next_worker}', "
@@ -491,15 +461,11 @@ class MemberServicesSupervisor:
             )
             next_worker = step_worker if step_worker in VALID_WORKERS else "SKIP"
 
-        # ── Handle SKIP — advance step without calling a worker ──────────────
+        # ── Handle SKIP ──────────────────────────────────────────────────────
         if next_worker == "SKIP":
             logger.info(f"{self.name}: Skipping step {step_id} ({reasoning})")
             execution_path.append(f"{self.name} -> SKIP step {step_id}")
 
-            # Link Step->AgentExecution before marking skipped, mirroring the
-            # valid-worker path. Without this the AgentExecution node is orphaned
-            # — no (Step)-[:EXECUTED_BY]->(AgentExecution) edge exists for the
-            # skipped step, breaking CG traversal and audit queries.
             try:
                 if execution_id and plan_id:
                     self.cg_manager.link_step_to_execution(
@@ -516,14 +482,12 @@ class MemberServicesSupervisor:
             except Exception:
                 pass
 
-            # Check if this was the last step for its goal
             next_step_idx = current_step_idx + 1
             remaining_goal_steps = [
                 s for s in all_steps[next_step_idx:]
                 if s.get("goal_id") == goal_id
             ]
             if not remaining_goal_steps:
-                # Last step of this goal — mark goal skipped
                 completed_goals.append(goal_id)
                 try:
                     self.cg_manager.update_plan_progress(
@@ -533,17 +497,18 @@ class MemberServicesSupervisor:
                 except Exception:
                     pass
 
-            if next_step_idx >= len(all_steps):
-                try:
-                    self.cg_manager.complete_plan(session_id, plan_id)
-                except Exception:
-                    pass
-                return {
-                    "next": "FINISH",
-                    "current_step_index": next_step_idx,
-                    "completed_goals": completed_goals,
-                    "execution_path": execution_path + [f"{self.name} -> FINISH"],
-                }
+                if next_step_idx >= len(all_steps):
+                    try:
+                        self.cg_manager.complete_plan(session_id, plan_id)
+                    except Exception:
+                        pass
+                    return {
+                        "next": "FINISH",
+                        "current_step_index": next_step_idx,
+                        "completed_goals": completed_goals,
+                        "execution_path": execution_path + [f"{self.name} -> FINISH"],
+                    }
+
             return {
                 "next": "CONTINUE",
                 "current_step_index": next_step_idx,
@@ -551,8 +516,7 @@ class MemberServicesSupervisor:
                 "execution_path": execution_path,
             }
 
-        # ── Valid worker — link Step->AgentExecution before worker fires ─────
-        # Scoped by planId+stepId — no cross-session ambiguity possible.
+        # ── Valid worker — link Step->AgentExecution ─────────────────────────
         try:
             if execution_id and plan_id:
                 self.cg_manager.link_step_to_execution(
@@ -598,16 +562,12 @@ class MemberServicesSupervisor:
         return {
             "next":                 next_worker,
             "execution_path":       execution_path,
-            # Stored so worker_node can pass it to the MCP tool, completing:
-            #   (AgentExecution)-[:CALLED_TOOL]->(ToolExecution)
             "current_execution_id": worker_execution_id or execution_id or "",
         }
 
     def _advance_step(self, state: SupervisorState) -> SupervisorState:
         """
         Called after each successful worker execution (via goal_advance node).
-        Advances current_step_index. When the last step of a goal completes,
-        marks that goal complete as a side effect.
         """
         plan             = state.get("plan", {})
         all_steps        = sorted(
@@ -624,7 +584,6 @@ class MemberServicesSupervisor:
             goal_id      = current_step.get("goal_id", "")
             next_step_idx = current_step_idx + 1
 
-            # Detect if this was the last step for its goal
             remaining_goal_steps = [
                 s for s in all_steps[next_step_idx:]
                 if s.get("goal_id") == goal_id
@@ -653,26 +612,18 @@ class MemberServicesSupervisor:
             worker = self.workers[worker_name]
             metrics = get_error_metrics()
             start_time = datetime.now()
-            
+
             # Sanitize input
             messages = state.get( 'messages' )
-            
             if messages:
                 user_message: BaseMessage = messages[0]
                 query = sanitize_html( str( user_message.content ) )
             else:
                 query = "Query not specified"
-            
-            # Inject execution_id so the ReAct agent passes it to the MCP tool,
-            # completing: (AgentExecution)-[:CALLED_TOOL]->(ToolExecution)
-            # EXECUTED_BY is already linked in the routing block above via
-            # link_step_to_execution(planId, stepId, executionId).
+
             _exec_id = state.get("current_execution_id", "")
 
-            # Append results from prior steps so the ReAct agent has upstream
-            # data available (e.g. member ID returned by member_lookup).
-            # tool_raw_output is the unredacted structured JSON from the MCP server —
-            # preferred over 'output' which may have PII scrubbed.
+            # Append results from prior steps
             tool_results = state.get("tool_results", {})
             if tool_results:
                 all_steps_sorted = sorted(
@@ -680,6 +631,7 @@ class MemberServicesSupervisor:
                     key=lambda s: s.get("step_id", "")
                 )
                 current_step_idx = state.get("current_step_index", 0)
+
                 prior_parts = []
                 for prior_step in all_steps_sorted[:current_step_idx]:
                     w = prior_step.get("worker", "")
@@ -688,6 +640,7 @@ class MemberServicesSupervisor:
                         display = raw if raw else tool_results[w].get("output", "")
                         if display:
                             prior_parts.append(f"- {w} result: {display}")
+
                 if prior_parts:
                     query += "\nPrior step results:\n" + "\n".join(prior_parts)
 
@@ -699,38 +652,31 @@ class MemberServicesSupervisor:
                 session_id=state.get("session_id", "default"),
                 execution_id=_exec_id
             )
-            
+
             # Calculate duration
             duration_ms = (datetime.now() - start_time).total_seconds() * 1000
-            
+
             # Check for errors
             if "error" in result:
                 error_msg = result["error"]
                 error_type = result.get("error_type", "unknown")
                 is_retryable = result.get("is_retryable", False)
                 retry_count = result.get("retry_count", 0)
-                
-                # Create error record
+
                 error_record = create_error_record(
                     worker_name=worker_name,
                     error_message=error_msg,
                     error_type=error_type,
                     is_retryable=is_retryable
                 )
-                
                 error_record["retry_count"] = retry_count
                 error_record["duration_ms"] = duration_ms
-                
-                # Update error history
+
                 error_history = state.get("error_history", [])
                 error_history.append(error_record)
-                
-                # Record error duration metric
+
                 metrics.record_error_duration(worker_name, error_type, duration_ms / 1000)
 
-                # Mark the AgentExecution node as failed — it was set to
-                # "completed" when the supervisor routed to this worker, but
-                # the worker itself failed, so the status must be corrected.
                 try:
                     _exec_id = state.get("current_execution_id", "")
                     if _exec_id:
@@ -741,8 +687,6 @@ class MemberServicesSupervisor:
                 except Exception:
                     pass
 
-                # Mark the current step's goal as failed and cancel all
-                # remaining pending goals so no nodes are left orphaned.
                 try:
                     plan          = state.get("plan", {})
                     all_steps     = sorted(
@@ -752,6 +696,7 @@ class MemberServicesSupervisor:
                     current_idx   = state.get("current_step_index", 0)
                     plan_id_cg    = state.get("plan_id", "")
                     session_id_cg = state.get("session_id", "default")
+
                     if current_idx < len(all_steps):
                         goal_id = all_steps[current_idx].get("goal_id", "")
                         if goal_id:
@@ -761,13 +706,10 @@ class MemberServicesSupervisor:
                                 goal_id=goal_id,
                                 goal_result="failed",
                             )
-                    # Cancel every goal still pending — downstream goals that
-                    # will never run because this step failed.
                     self.cg_manager.cancel_remaining_goals(
                         session_id=session_id_cg,
                         plan_id=plan_id_cg,
                     )
-                    # Mark the plan itself as incomplete.
                     self.cg_manager.fail_plan(
                         session_id=session_id_cg,
                         plan_id=plan_id_cg,
@@ -776,7 +718,6 @@ class MemberServicesSupervisor:
                     pass
 
                 logger.error(f"Worker {worker_name} failed: {error_msg}")
-                
                 return {
                     "messages": [RemoveMessage(id=msg.id) for msg in state["messages"] if msg.id ],
                     "error": error_msg,
@@ -787,9 +728,8 @@ class MemberServicesSupervisor:
                     "execution_path": state.get("execution_path", []) + [f"{worker_name}_failed"],
                     "duration_ms": duration_ms
                 }
-            
+
             # Success path
-            # Mark the worker AgentExecution as completed
             try:
                 _exec_id = state.get("current_execution_id", "")
                 if _exec_id:
@@ -799,7 +739,7 @@ class MemberServicesSupervisor:
 
             return {
                 "messages": [AIMessage(content=result.get("output", ""))],
-                "error": None,  # Clear any previous errors
+                "error": None,
                 "execution_path": state.get("execution_path", []) + [f"{worker_name}_executed"],
                 "tool_results": {
                     **state.get("tool_results", {}),
@@ -807,30 +747,26 @@ class MemberServicesSupervisor:
                 },
                 "duration_ms": duration_ms
             }
-        
         return node
-    
+
     def error_handler_node(self, state: SupervisorState) -> SupervisorState:
         """Handle errors and determine if recovery is possible."""
         error_history = state.get("error_history", [])
         error_count = state.get("error_count", 0)
         current_error = state.get("error" ) or "Unknown error"
         is_recoverable = state.get("is_recoverable", False)
-        
+
         logger.error(f"{self.name} error handler: {error_count} errors, recoverable={is_recoverable}")
-        
-        # Log aggregated error information
+
         self.audit.log_action(
             user_id=state.get("user_id", "unknown"),
             action="supervisor_workflow_error",
             resource_type="AGENT",
             resource_id=""
         )
-        
-        # Format user-friendly error message
+
         user_message = format_error_for_user(current_error)
-        
-        # Record final error metrics
+
         metrics = get_error_metrics()
         for error_record in error_history:
             metrics.record_error(
@@ -838,28 +774,17 @@ class MemberServicesSupervisor:
                 error_record.get("error_type", "unknown"),
                 error_record.get("is_retryable", False)
             )
-        
+
         return {
             "messages": [SystemMessage(content=user_message)],
             "next": "FINISH",
             "error": current_error,
             "execution_path": state.get("execution_path", []) + ["error_handler"]
         }
-        
+
     def create_graph(self) -> CompiledStateGraph:
         """
         Create LangGraph state machine for the team.
-
-        Flow:
-            create_plan
-                → supervisor
-                    → member_lookup          → goal_advance → supervisor
-                    → check_eligibility      → goal_advance → supervisor
-                    → coverage_lookup        → goal_advance → supervisor
-                    → update_member_info     → goal_advance → supervisor
-                    → member_policy_lookup   → goal_advance → supervisor
-                    → error_handler → END
-                    → END  (when FINISH)
         """
         workflow = StateGraph(SupervisorState)
 
@@ -875,9 +800,7 @@ class MemberServicesSupervisor:
         workflow.add_edge("create_plan", "supervisor")
 
         # workers → goal_advance → supervisor (success path)
-        # workers → error_handler             (error path, skips goal_advance
-        #                                      so the failed goal is never
-        #                                      marked completed or advanced)
+        # workers → error_handler             (error path)
         def worker_router(state: SupervisorState) -> Literal["goal_advance", "error_handler"]:
             return "error_handler" if state.get("error") else "goal_advance"
 
@@ -890,34 +813,32 @@ class MemberServicesSupervisor:
                     "error_handler": "error_handler",
                 },
             )
+
         workflow.add_edge("goal_advance", "supervisor")
 
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info", "member_policy_lookup"}
+        VALID_WORKERS = {"member_lookup", "check_eligibility", "coverage_lookup", "update_member_info", "member_policy_lookup", "treatment_history"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["member_lookup", "check_eligibility", "coverage_lookup",
-                     "update_member_info", "member_policy_lookup", "error_handler", "supervisor", "__end__"]:
+                      "update_member_info", "member_policy_lookup", "treatment_history",
+                      "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
                 return "error_handler"
 
             next_node = state.get("next", "FINISH")
-
             if next_node == "FINISH":
                 return "__end__"
-
             if next_node == "CONTINUE":
-                # Supervisor decided to skip a goal and loop back
                 return "supervisor"
 
             if next_node in VALID_WORKERS:
                 return next_node  # type: ignore[return-value]
 
-            # Anything else (bad LLM output that slipped through) → end safely
             logger.warning(
                 f"Router received unexpected next='{next_node}', terminating."
             )
@@ -933,6 +854,7 @@ class MemberServicesSupervisor:
                 "coverage_lookup":     "coverage_lookup",
                 "update_member_info":  "update_member_info",
                 "member_policy_lookup": "member_policy_lookup",
+                "treatment_history":   "treatment_history",
                 "error_handler":       "error_handler",
                 "__end__":             END,
             },
@@ -941,9 +863,9 @@ class MemberServicesSupervisor:
         workflow.set_entry_point("create_plan")
         return workflow.compile()
 
+
 @lru_cache
 def get_member_services_graph():
     """Get or create member services LangGraph."""
     member_services_supervisor = MemberServicesSupervisor()
-    
     return member_services_supervisor.create_graph()

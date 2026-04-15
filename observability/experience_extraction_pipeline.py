@@ -15,7 +15,6 @@ Flow:
   4. Store the experience in Chroma.
   5. Mark the session as processed in ``experience_extraction_log``.
 """
-
 from __future__ import annotations
 
 import json
@@ -36,6 +35,33 @@ try:
     _PROM = True
 except ImportError:
     _PROM = False
+
+
+def _extract_first_human_query(conv_raw: str) -> str:
+    """
+    Extract the first human message content from conversationMessages.
+
+    conversationMessages is stored as a JSON array of message objects:
+        [{"type": "human", "data": {"content": "user query..."}}, ...]
+
+    Returns the content string (truncated to 1000 chars to stay well
+    within embedding model token limits), or empty string on failure.
+    """
+    if not conv_raw or not isinstance(conv_raw, str):
+        return ""
+    try:
+        messages = json.loads(conv_raw)
+        if not isinstance(messages, list):
+            return ""
+        for msg in messages:
+            if msg.get("type") == "human":
+                content = msg.get("data", {}).get("content", "")
+                if content:
+                    return content[:1000]
+        return ""
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        # Fallback: if it's plain text (not JSON), take first 500 chars
+        return conv_raw[:500]
 
 
 def run_extraction(redis_client=None) -> int:
@@ -69,6 +95,7 @@ def run_extraction(redis_client=None) -> int:
         unprocessed = feedback_da.get_unprocessed_correct_sessions(
             limit=50,
         )
+
         if not unprocessed:
             logger.debug("ExperienceExtraction: no unprocessed correct sessions")
             _update_store_size(store)
@@ -97,6 +124,7 @@ def run_extraction(redis_client=None) -> int:
 
                 goals = plan.get("goals", [])
                 steps = plan.get("steps", [])
+
                 if not goals or not steps:
                     feedback_da.mark_session_extracted(session_id, "skipped_empty_plan")
                     continue
@@ -104,19 +132,22 @@ def run_extraction(redis_client=None) -> int:
                 # ── Step 3: Extract the original query ────────────────
                 session_info = cg.get_session(session_id)
                 query_text = ""
+
                 if session_info:
-                    # conversationMessages may contain the original query
+                    # conversationMessages is a JSON array of message
+                    # objects. Parse it and extract the first human
+                    # message's content — NOT the raw JSON string,
+                    # which can exceed embedding model token limits.
                     conv = session_info.get("conversationMessages", "")
                     if conv:
-                        # Take the first user message as the query
-                        query_text = conv.split("\n")[0] if isinstance(conv, str) else str(conv)[:500]
+                        query_text = _extract_first_human_query(conv)
 
                 if not query_text:
-                    # Fallback: use the first step's query field
+                    # Fallback: use the first step's action field
                     for step in steps:
                         q = step.get("action", "") or step.get("query", "")
                         if q:
-                            query_text = q
+                            query_text = q[:1000]
                             break
 
                 if not query_text:

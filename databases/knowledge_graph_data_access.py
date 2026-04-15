@@ -956,6 +956,91 @@ class KnowledgeGraphDataAccess:
             logger.error(f"Error checking eligibility for member {member_id}: {e}")
             return {"isEligible": False, "reason": f"Error: {str(e)}"}
     
+    # ==================== Treatment History Operations ====================
+    # (Decision agent enhancements — M2)
+
+    def get_member_treatment_history(
+        self,
+        member_id: str,
+        treatment_type: Optional[str] = None,
+        procedure_code: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve treatment history for a member.
+
+        Used by the PA recommendation decision agent to verify whether
+        conservative treatment requirements have been met before
+        recommending approval of a surgical prior authorization.
+
+        Uses relationships:
+            (Member)-[:HAS_TREATMENT]->(TreatmentRecord)
+            (TreatmentRecord)-[:PERFORMED_BY]->(Provider)
+
+        Args:
+            member_id:      Member ID
+            treatment_type: Optional filter — PHYSICAL_THERAPY, MEDICATION_TRIAL,
+                            INJECTION, IMAGING, WEIGHT_COUNSELING, etc.
+            procedure_code: Optional CPT code filter
+            limit:          Max records to return (default 20)
+
+        Returns:
+            List of treatment records with provider info, sorted by
+            startDate descending (most recent first)
+        """
+        where_clauses = ["m.memberId = $memberId"]
+        params: Dict[str, Any] = {"memberId": member_id, "limit": limit}
+
+        if treatment_type:
+            where_clauses.append("t.treatmentType = $treatmentType")
+            params["treatmentType"] = treatment_type
+
+        if procedure_code:
+            where_clauses.append("t.procedureCode = $procedureCode")
+            params["procedureCode"] = procedure_code
+
+        where_str = " AND ".join(where_clauses)
+
+        query = f"""
+        MATCH (m:Member)-[:HAS_TREATMENT]->(t:TreatmentRecord)
+        OPTIONAL MATCH (t)-[:PERFORMED_BY]->(prov:Provider)
+        WHERE {where_str}
+        RETURN t {{
+            .treatmentId,
+            .treatmentType,
+            .description,
+            .procedureCode,
+            .startDate,
+            .endDate,
+            .sessions,
+            .outcome,
+            .notes
+        }} AS treatment,
+        prov {{
+            .providerId,
+            .providerType,
+            .organizationName,
+            .firstName,
+            .lastName,
+            .specialty
+        }} AS provider
+        ORDER BY t.startDate DESC
+        LIMIT $limit
+        """
+
+        try:
+            result = self.conn.execute_query(query, params)
+            treatments = []
+            for row in (result or []):
+                tx = row.get("treatment")
+                if tx:
+                    tx["provider"] = row.get("provider")
+                    treatments.append(tx)
+            return treatments
+        except Exception as e:
+            logger.error(f"Error retrieving treatment history for member {member_id}: {e}")
+            return []
+
     # ==================== Cross-Domain Queries ====================
     
     def get_member_summary(self, member_id: str) -> Optional[Dict[str, Any]]:

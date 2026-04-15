@@ -316,13 +316,6 @@ async def prometheus_metrics():
             if value is None:
                 continue
 
-            # Skip non-numeric values (e.g. internal keys like leader
-            # election that store string identifiers, not metric values).
-            try:
-                float(value)
-            except (ValueError, TypeError):
-                continue
-
             # Key format: metrics:{metric_name}
             #         or: metrics:{metric_name}:{label_k=v,label_k=v}
             # Strip the leading "metrics:" prefix.
@@ -908,7 +901,11 @@ async def get_cg_session(
         tree_result = cg.execute_custom_query(tree_query, {"sessionId": session_id})
 
         # 4. Assemble hierarchical tree from flat query results
-        tree = {"type": "Session", "id": session_id, "status": session.get("status", "unknown"), "props": session, "children": []}
+        # Strip conversationMessages from tree props — it's a huge JSON blob
+        # that clutters the CG Explorer display. It remains available via
+        # get_session() for the extraction pipeline.
+        session_props = {k: v for k, v in session.items() if k != 'conversationMessages'}
+        tree = {"type": "Session", "id": session_id, "status": session.get("status", "unknown"), "props": session_props, "children": []}
         if tree_result:
             row = tree_result[0]
 

@@ -1,46 +1,39 @@
 import logging
 import json
 import re
-
 from typing import Literal
 from datetime import datetime
 from functools import lru_cache
-
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, RemoveMessage
-
 from agents.teams.claims_services.supervisor.claim_lookup_worker import ClaimLookupWorker
 from agents.teams.claims_services.supervisor.claim_status_worker import ClaimStatusWorker
 from agents.teams.claims_services.supervisor.claim_payment_info_worker import ClaimPaymentInfoWorker
 from agents.teams.claims_services.supervisor.update_claim_status_worker import UpdateClaimStatusWorker
 from agents.teams.claims_services.supervisor.member_claims_worker import MemberClaimsWorker
+from agents.teams.claims_services.supervisor.claim_adjudication_worker import ClaimAdjudicationWorker
 from agents.core.context_compressor import get_semantic_compressor, get_conversation_compressor
 from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
 from agents.core.error_handling import get_error_metrics, create_error_record, format_error_for_user
-
 from databases.chroma_vector_data_access import get_chroma_data_access
 from observability.langfuse_integration import get_langfuse_tracer
 from llm_providers.llm_provider_factory import LLMProviderFactory, get_factory, ChatModel
 from security.approval_workflow import get_approval_workflow
 from security.presidio_memory_security import get_presidio_security
 from security.nh3_sanitization import sanitize_html
-
 from config.settings import get_settings, Settings
 
 logger = logging.getLogger(__name__)
 settings: Settings = get_settings()
 
-
-
 # -- Module-level prompt constants (importable by seed_langfuse_prompts.py) --
 
 _ROUTING_PROMPT_TEXT = """You are a routing supervisor for a claims services team.
-
 You will be given ONE specific step with a pre-assigned worker.
 Your ONLY job is to confirm that worker, or respond SKIP if required data is missing.
 
@@ -50,13 +43,14 @@ Available workers:
 - claim_payment_info: Get payment amounts and processing info for a claim by claim ID
 - update_claim_status: Update the status of a claim — requires claim ID, new status, and reason
 - member_claims: Retrieve all claims for a member by member ID
+- claim_adjudication: Evaluate claim validity against coverage rules — receives evidence from prior steps (claim_lookup, check_eligibility, provider_network_check). Decision agent — does not call MCP tools.
 
 STRICT RULES:
 1. Respond with the exact worker name assigned to the current step.
 2. If the step cannot be completed because required information is missing
    (no claim ID, no claim number, no member ID, no new status or reason for update), respond with "SKIP".
 3. NEVER respond with FINISH, CONTINUE, or any value not in the worker list.
-4. Only use exact worker names: claim_lookup, claim_status, claim_payment_info, update_claim_status, member_claims.
+4. Only use exact worker names: claim_lookup, claim_status, claim_payment_info, update_claim_status, member_claims, claim_adjudication.
 
 Respond with JSON only — no markdown, no explanation outside the JSON:
 {{"next": "worker_name_or_SKIP", "reasoning": "one sentence"}}"""
@@ -75,6 +69,7 @@ Available workers (use EXACT names only):
 - claim_payment_info: Retrieves payment amounts and dates — requires a claim ID
 - update_claim_status: Updates a claim status — requires a claim ID, new status, and reason
 - member_claims: Retrieves all claims for a member — requires a member ID
+- claim_adjudication: Evaluates claim validity against coverage rules — requires prior results from claim_lookup, check_eligibility, and provider_network_check. Must be ordered AFTER evidence-gathering steps.
 
 RULES:
 1. Goals describe WHAT to accomplish — no worker assignment at the goal level.
@@ -139,8 +134,8 @@ class ClaimsServicesSupervisor:
             "claim_payment_info":   ClaimPaymentInfoWorker(),
             "update_claim_status":  UpdateClaimStatusWorker(),
             "member_claims":        MemberClaimsWorker(),
+            "claim_adjudication":   ClaimAdjudicationWorker(),
         }
-
         self.rbac = rbac_service
         self.audit = AuditLogger()
         self.presidio = get_presidio_security()
@@ -148,7 +143,6 @@ class ClaimsServicesSupervisor:
 
         llm_factory: LLMProviderFactory = get_factory()
         self.llm: ChatModel = llm_factory.get_llm_provider()
-
 
         # Prompt versioning: fetch from LangFuse if enabled, else use module constants
         self.system_prompt = _ROUTING_PROMPT_TEXT
@@ -175,7 +169,6 @@ class ClaimsServicesSupervisor:
             ("system", self.system_prompt),
             ("human", "{messages}")
         ])
-
         return prompt | self.llm | JsonOutputParser()
 
     def create_plan_node(self, state: SupervisorState) -> SupervisorState:
@@ -195,7 +188,6 @@ class ClaimsServicesSupervisor:
 
             # Enrich planning with semantic search from Chroma vector DB
             semantic_context_json = {}
-
             try:
                 chroma = get_chroma_data_access()
                 policy_context = chroma.search_policies(query=user_query, n_results=2)
@@ -212,6 +204,7 @@ class ClaimsServicesSupervisor:
                     [{'content': r['document']} for r in faq_context],
                     query=user_query,
                 )
+
                 semantic_context_json = {
                     'relevant_policies': [d['content'] for d in _compressed_policies],
                     'relevant_faqs':     [d['content'] for d in _compressed_faqs]
@@ -253,7 +246,6 @@ class ClaimsServicesSupervisor:
                 "user_query":       user_query,
                 "semantic_context": semantic_context,
             }
-
             if callback_handler:
                 result = (prompt | self.llm).invoke(inputs, config={"callbacks": [callback_handler]})
             else:
@@ -302,12 +294,10 @@ class ClaimsServicesSupervisor:
             state["completed_goals"]     = []
 
             logger.info(f"{self.name}: Created plan with {len(plan.get('goals', []))} goals")
-
             return state
 
         except Exception as e:
             logger.error(f"{self.name}: Error creating plan: {e}")
-
             # Fallback plan
             state["plan"] = {
                 "goals": [{"id": "goal_1", "description": "Handle user query",
@@ -323,7 +313,6 @@ class ClaimsServicesSupervisor:
     def supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """
         Orchestrator node — iterates steps directly, one LLM call per step.
-
         Flow per invocation:
           1. Check circuit breaker.
           2. Read current_step_index from state.
@@ -332,11 +321,10 @@ class ClaimsServicesSupervisor:
           5. Call LLM only to confirm worker / detect SKIP for missing data.
           6. Create AgentExecution, link Step->AgentExecution, store execution_id.
           7. Return next=<worker> or next=FINISH/CONTINUE.
-
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
-        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status", "member_claims"}
+        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status", "member_claims", "claim_adjudication"}
 
         user_id    = state.get("user_id", "unknown")
         session_id = state.get("session_id", "default")
@@ -463,6 +451,7 @@ class ClaimsServicesSupervisor:
             session_id=session_id,
             user_id=user_id,
         ) if tracer.enabled else None
+
         chain = self.create_routing_chain()
         try:
             llm_result  = chain.invoke(
@@ -471,6 +460,7 @@ class ClaimsServicesSupervisor:
             )
             next_worker = llm_result.get("next", "SKIP")
             reasoning   = llm_result.get("reasoning", "")
+
             # Write LangFuse trace ID back to the CG execution node
             if callback_handler and execution_id:
                 try:
@@ -479,6 +469,7 @@ class ClaimsServicesSupervisor:
                         self.cg_manager.set_langfuse_trace_id(execution_id, lf_trace_id)
                 except Exception:
                     pass
+
         except Exception as e:
             logger.error(f"{self.name}: LLM routing failed: {e}")
             # Fall back to the step-assigned worker
@@ -527,6 +518,7 @@ class ClaimsServicesSupervisor:
                 s for s in all_steps[next_step_idx:]
                 if s.get("goal_id") == goal_id
             ]
+
             if not remaining_goal_steps:
                 # Last step of this goal — mark goal skipped
                 completed_goals.append(goal_id)
@@ -538,17 +530,18 @@ class ClaimsServicesSupervisor:
                 except Exception:
                     pass
 
-            if next_step_idx >= len(all_steps):
-                try:
-                    self.cg_manager.complete_plan(session_id, plan_id)
-                except Exception:
-                    pass
-                return {
-                    "next": "FINISH",
-                    "current_step_index": next_step_idx,
-                    "completed_goals": completed_goals,
-                    "execution_path": execution_path + [f"{self.name} -> FINISH"],
-                }
+                if next_step_idx >= len(all_steps):
+                    try:
+                        self.cg_manager.complete_plan(session_id, plan_id)
+                    except Exception:
+                        pass
+                    return {
+                        "next": "FINISH",
+                        "current_step_index": next_step_idx,
+                        "completed_goals": completed_goals,
+                        "execution_path": execution_path + [f"{self.name} -> FINISH"],
+                    }
+
             return {
                 "next": "CONTINUE",
                 "current_step_index": next_step_idx,
@@ -629,6 +622,7 @@ class ClaimsServicesSupervisor:
         if current_step_idx < len(all_steps):
             current_step = all_steps[current_step_idx]
             goal_id      = current_step.get("goal_id", "")
+
             next_step_idx = current_step_idx + 1
 
             # Detect if this was the last step for its goal
@@ -663,7 +657,6 @@ class ClaimsServicesSupervisor:
 
             # Sanitize input
             messages = state.get("messages")
-
             if messages:
                 user_message: BaseMessage = messages[0]
                 query = sanitize_html(str(user_message.content))
@@ -724,7 +717,6 @@ class ClaimsServicesSupervisor:
                     error_type=error_type,
                     is_retryable=is_retryable
                 )
-
                 error_record["retry_count"] = retry_count
                 error_record["duration_ms"] = duration_ms
 
@@ -759,6 +751,7 @@ class ClaimsServicesSupervisor:
                     current_idx   = state.get("current_step_index", 0)
                     plan_id_cg    = state.get("plan_id", "")
                     session_id_cg = state.get("session_id", "default")
+
                     if current_idx < len(all_steps):
                         goal_id = all_steps[current_idx].get("goal_id", "")
                         if goal_id:
@@ -768,12 +761,14 @@ class ClaimsServicesSupervisor:
                                 goal_id=goal_id,
                                 goal_result="failed",
                             )
+
                     # Cancel every goal still pending — downstream goals that
                     # will never run because this step failed.
                     self.cg_manager.cancel_remaining_goals(
                         session_id=session_id_cg,
                         plan_id=plan_id_cg,
                     )
+
                     # Mark the plan itself as incomplete.
                     self.cg_manager.fail_plan(
                         session_id=session_id_cg,
@@ -783,7 +778,6 @@ class ClaimsServicesSupervisor:
                     pass
 
                 logger.error(f"Worker {worker_name} failed: {error_msg}")
-
                 return {
                     "messages":       [RemoveMessage(id=msg.id) for msg in state["messages"] if msg.id],
                     "error":          error_msg,
@@ -855,7 +849,6 @@ class ClaimsServicesSupervisor:
     def create_graph(self) -> CompiledStateGraph:
         """
         Create LangGraph state machine for the team.
-
         Flow:
             create_plan
                 → supervisor
@@ -863,6 +856,7 @@ class ClaimsServicesSupervisor:
                     → claim_status         → goal_advance → supervisor
                     → claim_payment_info   → goal_advance → supervisor
                     → update_claim_status  → goal_advance → supervisor
+                    → claim_adjudication   → goal_advance → supervisor
                     → error_handler → END
                     → END  (when FINISH)
         """
@@ -872,7 +866,6 @@ class ClaimsServicesSupervisor:
         workflow.add_node("supervisor",    self.supervisor_node)
         workflow.add_node("error_handler", self.error_handler_node)
         workflow.add_node("goal_advance",  self._advance_step)
-
         for worker_name in self.workers.keys():
             workflow.add_node(worker_name, self.worker_node(worker_name))
 
@@ -895,17 +888,18 @@ class ClaimsServicesSupervisor:
                     "error_handler": "error_handler",
                 },
             )
+
         workflow.add_edge("goal_advance", "supervisor")
 
         # error_handler always terminates
         workflow.add_edge("error_handler", END)
 
-        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status", "member_claims"}
+        VALID_WORKERS = {"claim_lookup", "claim_status", "claim_payment_info", "update_claim_status", "member_claims", "claim_adjudication"}
 
         def router(
             state: SupervisorState,
         ) -> Literal["claim_lookup", "claim_status", "claim_payment_info",
-                     "update_claim_status", "member_claims",
+                     "update_claim_status", "member_claims", "claim_adjudication",
                      "error_handler", "supervisor", "__end__"]:
             # Hard error → error handler
             if state.get("error"):
@@ -915,11 +909,9 @@ class ClaimsServicesSupervisor:
 
             if next_node == "FINISH":
                 return "__end__"
-
             if next_node == "CONTINUE":
                 # Supervisor decided to skip a goal and loop back
                 return "supervisor"
-
             if next_node in VALID_WORKERS:
                 return next_node  # type: ignore[return-value]
 
@@ -939,6 +931,7 @@ class ClaimsServicesSupervisor:
                 "claim_payment_info":  "claim_payment_info",
                 "update_claim_status": "update_claim_status",
                 "member_claims":       "member_claims",
+                "claim_adjudication":  "claim_adjudication",
                 "error_handler":       "error_handler",
                 "__end__":             END,
             },
@@ -952,5 +945,4 @@ class ClaimsServicesSupervisor:
 def get_claims_services_graph():
     """Get or create claims services LangGraph."""
     claims_services_supervisor = ClaimsServicesSupervisor()
-
     return claims_services_supervisor.create_graph()

@@ -473,6 +473,91 @@ def member_policy_lookup(
         return json.dumps({"error": error})
 
 
+@mcp.tool()
+@circuit_breaker
+@validate_user_role
+@require_approvals(action="Read", record_name="treatment", record_id_arg="member_id")
+@require_rate_limits
+@require_permissions("MEMBER", "READ")
+def treatment_history(
+    member_id: str,
+    user_id: str,
+    user_role: str,
+    session_id: str,
+    treatment_type: str = "",
+    procedure_code: str = "",
+    execution_id: str = "",
+) -> str:
+    """
+    Retrieve treatment history for a member.
+
+    Used by the PA recommendation decision agent to verify whether
+    conservative treatment requirements (e.g. physical therapy sessions,
+    medication trials) have been met before recommending approval of a
+    surgical prior authorization.
+
+    Uses the graph relationships:
+        (Member)-[:HAS_TREATMENT]->(TreatmentRecord)-[:PERFORMED_BY]->(Provider)
+
+    Args:
+        member_id:      The member's unique identifier.
+        user_id:        ID of the requesting user (for audit logging).
+        user_role:      RBAC role of the requesting user.
+        session_id:     Session ID for audit and PII scrubbing.
+        treatment_type: Optional filter — PHYSICAL_THERAPY, MEDICATION_TRIAL,
+                        INJECTION, IMAGING, WEIGHT_COUNSELING, etc.
+        procedure_code: Optional CPT code filter.
+        execution_id:   AgentExecution.executionId for CG CALLED_TOOL link.
+
+    Returns:
+        JSON string with treatment records and provider info, or an error payload.
+    """
+    start_time = datetime.now()
+    member_id = sanitize_text(member_id)
+    treatment_type = sanitize_text(treatment_type) if treatment_type else ""
+    procedure_code = sanitize_text(procedure_code) if procedure_code else ""
+
+    try:
+        kg_data_access = get_kg_data_access()
+        treatments = kg_data_access.get_member_treatment_history(
+            member_id=member_id,
+            treatment_type=treatment_type or None,
+            procedure_code=procedure_code or None,
+        )
+
+        output = json.dumps({
+            "member_id": member_id,
+            "treatment_type_filter": treatment_type or "all",
+            "count": len(treatments),
+            "treatments": treatments,
+        }, indent=2)
+        scrubbed_output = scrub_output(output, session_id)
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        inputs = {"member_id": member_id}
+        if treatment_type:
+            inputs["treatment_type"] = treatment_type
+        if procedure_code:
+            inputs["procedure_code"] = procedure_code
+        track_tool_execution_in_cg(
+            session_id, "treatment_history", inputs,
+            status="success", execution_time_ms=execution_time,
+            execution_id=execution_id or None,
+        )
+        return scrubbed_output
+
+    except Exception as e:
+        logger.error(f"treatment_history failed: {e}")
+        error = str(e)
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        track_tool_execution_in_cg(
+            session_id, "treatment_history", {"member_id": member_id},
+            status="failed", execution_time_ms=execution_time, error=error,
+            execution_id=execution_id or None,
+        )
+        return json.dumps({"error": error})
+
+
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────

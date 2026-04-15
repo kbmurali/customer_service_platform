@@ -1,37 +1,218 @@
 #!/usr/bin/env python3
 """
 Seed LangFuse with the current hardcoded prompts from CSIP source files.
-
 Run once after initial deployment (or after adding new prompts) to
 register each prompt in LangFuse under the 'production' label.
 Subsequent updates should be made through the LangFuse UI or API so
 that versioning, rollback, and A/B testing are available.
-
 Usage::
-
-    python scripts/seed_langfuse_prompts.py
-
+    python data/seed_langfuse_prompts.py
 Environment variables required:
     LANGFUSE_PUBLIC_KEY
     LANGFUSE_SECRET_KEY
     LANGFUSE_HOST   (defaults to http://langfuse:3000)
-
 The script is idempotent: running it again updates the prompt text if it
 has changed, preserving the existing version history.
+
+NOTE: This script extracts prompt strings by parsing source files with
+Python's ast module rather than importing the modules directly. This
+avoids triggering transitive dependency chains (langchain, pymysql,
+neo4j, redis, etc.) that may not be installed in the environment where
+the script is run.
 """
-
 from __future__ import annotations
-
+import ast
 import logging
 import os
 import sys
+from pathlib import Path
 
 # Add project root to path so imports work when run from any directory
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# AST-based prompt extraction (no imports, no dependency chains)
+# ---------------------------------------------------------------------------
+
+def _extract_string_constant(filepath: Path, variable_name: str):
+    """
+    Parse a Python source file with the ast module and extract a
+    module-level string constant by variable name.
+
+    Handles:
+      - Simple string assignment: PROMPT = "..."
+      - Parenthesized multi-line strings: PROMPT = ("..." "...")
+      - Triple-quoted strings
+
+    Returns None if the file doesn't exist or the variable is not found.
+    """
+    if not filepath.exists():
+        return None
+    try:
+        source = filepath.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(filepath))
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        logger.warning("Failed to parse %s: %s", filepath, exc)
+        return None
+
+    for node in ast.iter_child_nodes(tree):
+        # Match: VARIABLE = "string" or VARIABLE = ("str1" "str2")
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == variable_name:
+                    try:
+                        value = ast.literal_eval(node.value)
+                        if isinstance(value, str):
+                            return value
+                    except (ValueError, TypeError):
+                        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Prompt registry — maps LangFuse prompt name -> (source file, variable name)
+# ---------------------------------------------------------------------------
+
+_AGENTS = Path("agents")
+_TEAMS = _AGENTS / "teams"
+
+PROMPT_REGISTRY = [
+    # -- Central Supervisor ------------------------------------------------
+    ("csip-central-planning-prompt",
+     _AGENTS / "central_supervisor.py", "PLANNING_SYSTEM_PROMPT"),
+    ("csip-central-routing-prompt",
+     _AGENTS / "central_supervisor.py", "SUPERVISOR_SYSTEM_PROMPT"),
+    ("csip-consolidation-system-prompt",
+     _AGENTS / "central_supervisor.py", "CONSOLIDATION_SYSTEM_PROMPT"),
+    ("csip-consolidation-user-prompt",
+     _AGENTS / "central_supervisor.py", "CONSOLIDATION_USER_PROMPT"),
+
+    # -- Claims Services ---------------------------------------------------
+    ("csip-claims-planning-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "claims_services_supervisor.py",
+     "_PLANNING_PROMPT_TEXT"),
+    ("csip-claims-routing-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "claims_services_supervisor.py",
+     "_ROUTING_PROMPT_TEXT"),
+    ("csip-claims-lookup-worker-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "claim_lookup_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-claims-status-worker-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "claim_status_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-claims-payment-worker-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "claim_payment_info_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-claims-update-status-worker-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "update_claim_status_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-member-claims-worker-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "member_claims_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-claims-adjudication-worker-prompt",
+     _TEAMS / "claims_services" / "supervisor" / "claim_adjudication_worker.py",
+     "WORKER_PROMPT"),
+
+    # -- Member Services ---------------------------------------------------
+    ("csip-member-planning-prompt",
+     _TEAMS / "member_services" / "supervisor" / "member_services_supervisor.py",
+     "_PLANNING_PROMPT_TEXT"),
+    ("csip-member-routing-prompt",
+     _TEAMS / "member_services" / "supervisor" / "member_services_supervisor.py",
+     "_ROUTING_PROMPT_TEXT"),
+    ("csip-member-lookup-worker-prompt",
+     _TEAMS / "member_services" / "supervisor" / "member_lookup_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-member-eligibility-worker-prompt",
+     _TEAMS / "member_services" / "supervisor" / "check_eligibility_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-member-coverage-worker-prompt",
+     _TEAMS / "member_services" / "supervisor" / "coverage_lookup_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-member-update-worker-prompt",
+     _TEAMS / "member_services" / "supervisor" / "update_member_info_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-member-policy-lookup-worker-prompt",
+     _TEAMS / "member_services" / "supervisor" / "member_policy_lookup_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-member-treatment-history-worker-prompt",
+     _TEAMS / "member_services" / "supervisor" / "treatment_history_worker.py",
+     "WORKER_PROMPT"),
+
+    # -- PA Services -------------------------------------------------------
+    ("csip-pa-planning-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "pa_services_supervisor.py",
+     "_PLANNING_PROMPT_TEXT"),
+    ("csip-pa-routing-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "pa_services_supervisor.py",
+     "_ROUTING_PROMPT_TEXT"),
+    ("csip-pa-lookup-worker-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "pa_lookup_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-pa-status-worker-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "pa_status_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-pa-requirements-worker-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "pa_requirements_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-pa-approve-worker-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "approve_prior_auth_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-pa-deny-worker-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "deny_prior_auth_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-member-prior-auth-worker-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "member_prior_auth_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-pa-recommendation-worker-prompt",
+     _TEAMS / "pa_services" / "supervisor" / "pa_recommendation_worker.py",
+     "WORKER_PROMPT"),
+
+    # -- Provider Services -------------------------------------------------
+    ("csip-provider-planning-prompt",
+     _TEAMS / "provider_services" / "supervisor" / "provider_services_supervisor.py",
+     "_PLANNING_PROMPT_TEXT"),
+    ("csip-provider-routing-prompt",
+     _TEAMS / "provider_services" / "supervisor" / "provider_services_supervisor.py",
+     "_ROUTING_PROMPT_TEXT"),
+    ("csip-provider-lookup-worker-prompt",
+     _TEAMS / "provider_services" / "supervisor" / "provider_lookup_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-provider-network-worker-prompt",
+     _TEAMS / "provider_services" / "supervisor" / "provider_network_check_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-provider-search-worker-prompt",
+     _TEAMS / "provider_services" / "supervisor" / "provider_search_by_specialty_worker.py",
+     "WORKER_PROMPT"),
+
+    # -- Search Services ---------------------------------------------------
+    ("csip-search-planning-prompt",
+     _TEAMS / "search_services" / "supervisor" / "search_services_supervisor.py",
+     "_PLANNING_PROMPT_TEXT"),
+    ("csip-search-routing-prompt",
+     _TEAMS / "search_services" / "supervisor" / "search_services_supervisor.py",
+     "_ROUTING_PROMPT_TEXT"),
+    ("csip-search-knowledge-worker-prompt",
+     _TEAMS / "search_services" / "supervisor" / "search_knowledge_base_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-search-medical-codes-worker-prompt",
+     _TEAMS / "search_services" / "supervisor" / "search_medical_codes_worker.py",
+     "WORKER_PROMPT"),
+    ("csip-search-policy-worker-prompt",
+     _TEAMS / "search_services" / "supervisor" / "search_policy_info_worker.py",
+     "WORKER_PROMPT"),
+]
+
+
+# ---------------------------------------------------------------------------
+# LangFuse client and seeding
+# ---------------------------------------------------------------------------
 
 def _get_langfuse_client():
     from langfuse import Langfuse
@@ -45,7 +226,7 @@ def _get_langfuse_client():
     return Langfuse(public_key=public_key, secret_key=secret_key, host=host)
 
 
-def _seed_prompt(lf, name: str, prompt: str, label: str = "production") -> None:
+def _seed_prompt(lf, name, prompt, label="production"):
     """Create or update a prompt in LangFuse."""
     try:
         lf.create_prompt(
@@ -54,188 +235,57 @@ def _seed_prompt(lf, name: str, prompt: str, label: str = "production") -> None:
             labels=[label],
             config={"type": "csip_system_prompt"},
         )
-        logger.info("Seeded: %s  [label=%s]", name, label)
+        logger.info("Seeded: %-45s  [label=%s]", name, label)
     except Exception as exc:
         logger.error("Failed to seed '%s': %s", name, exc)
 
 
-def main() -> None:
+def main():
     # Load environment variables
     try:
         from dotenv import load_dotenv, find_dotenv
         load_dotenv(find_dotenv())
     except ImportError:
         pass
-    
+
     lf = _get_langfuse_client()
     logger.info("Connected to LangFuse — seeding prompts...")
 
     seeded = 0
     skipped = 0
+    not_found = 0
 
-    def _try_seed(name, prompt):
-        nonlocal seeded
-        _seed_prompt(lf, name, prompt)
+    for prompt_name, rel_path, variable_name in PROMPT_REGISTRY:
+        filepath = _PROJECT_ROOT / rel_path
+        prompt_text = _extract_string_constant(filepath, variable_name)
+
+        if prompt_text is None:
+            if not filepath.exists():
+                logger.warning(
+                    "Skipped: %-45s  (file not found: %s)", prompt_name, rel_path
+                )
+                not_found += 1
+            else:
+                logger.warning(
+                    "Skipped: %-45s  (variable '%s' not found in %s)",
+                    prompt_name, variable_name, rel_path,
+                )
+                skipped += 1
+            continue
+
+        _seed_prompt(lf, prompt_name, prompt_text)
         seeded += 1
 
-    # ── Central Supervisor ──────────────────────────────────────────────
-    # These modules are always available in the agentic-access-api container.
-    try:
-        from agents.central_supervisor import PLANNING_SYSTEM_PROMPT, SUPERVISOR_SYSTEM_PROMPT
-        _try_seed("csip-central-planning-prompt",  PLANNING_SYSTEM_PROMPT)
-        _try_seed("csip-central-routing-prompt",   SUPERVISOR_SYSTEM_PROMPT)
-    except ImportError as exc:
-        logger.warning("Central supervisor prompts skipped: %s", exc)
-        skipped += 2
-
-    try:
-        from agents.central_supervisor import CONSOLIDATION_SYSTEM_PROMPT, CONSOLIDATION_USER_PROMPT
-        _try_seed("csip-consolidation-system-prompt", CONSOLIDATION_SYSTEM_PROMPT)
-        _try_seed("csip-consolidation-user-prompt",   CONSOLIDATION_USER_PROMPT)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Consolidation prompts skipped: %s", exc)
-        skipped += 2
-
-    # ── Claims Services ─────────────────────────────────────────────────
-    # Team supervisor modules are only available if the full source tree
-    # is present. In the agentic-access-api container (which only has
-    # agent card files), these imports will fail gracefully.
-    try:
-        from agents.teams.claims_services.supervisor.claims_services_supervisor import (
-            _PLANNING_PROMPT_TEXT as claims_planning,
-            _ROUTING_PROMPT_TEXT  as claims_routing,
-        )
-        _try_seed("csip-claims-planning-prompt", claims_planning)
-        _try_seed("csip-claims-routing-prompt",  claims_routing)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Claims supervisor prompts skipped: %s", exc)
-        skipped += 2
-
-    try:
-        from agents.teams.claims_services.supervisor.claim_lookup_worker      import WORKER_PROMPT as clm_lookup_p
-        from agents.teams.claims_services.supervisor.claim_status_worker      import WORKER_PROMPT as clm_status_p
-        from agents.teams.claims_services.supervisor.claim_payment_info_worker import WORKER_PROMPT as clm_payment_p
-        from agents.teams.claims_services.supervisor.update_claim_status_worker import WORKER_PROMPT as clm_update_p
-        from agents.teams.claims_services.supervisor.member_claims_worker       import WORKER_PROMPT as clm_mc_p
-        
-        _try_seed("csip-claims-lookup-worker-prompt",        clm_lookup_p)
-        _try_seed("csip-claims-status-worker-prompt",        clm_status_p)
-        _try_seed("csip-claims-payment-worker-prompt",       clm_payment_p)
-        _try_seed("csip-claims-update-status-worker-prompt", clm_update_p)
-        _try_seed("csip-member-claims-worker-prompt",        clm_mc_p)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Claims worker prompts skipped: %s", exc)
-        skipped += 4
-
-    # ── Member Services ─────────────────────────────────────────────────
-    try:
-        from agents.teams.member_services.supervisor.member_services_supervisor import (
-            _PLANNING_PROMPT_TEXT as ms_planning,
-            _ROUTING_PROMPT_TEXT  as ms_routing,
-        )
-        _try_seed("csip-member-planning-prompt", ms_planning)
-        _try_seed("csip-member-routing-prompt",  ms_routing)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Member supervisor prompts skipped: %s", exc)
-        skipped += 2
-
-    try:
-        from agents.teams.member_services.supervisor.member_lookup_worker     import WORKER_PROMPT as ml_p
-        from agents.teams.member_services.supervisor.check_eligibility_worker import WORKER_PROMPT as el_p
-        from agents.teams.member_services.supervisor.coverage_lookup_worker   import WORKER_PROMPT as cl_p
-        from agents.teams.member_services.supervisor.update_member_info_worker import WORKER_PROMPT as um_p
-        from agents.teams.member_services.supervisor.member_policy_lookup_worker import WORKER_PROMPT as mpl_p
-        _try_seed("csip-member-lookup-worker-prompt",      ml_p)
-        _try_seed("csip-member-eligibility-worker-prompt", el_p)
-        _try_seed("csip-member-coverage-worker-prompt",    cl_p)
-        _try_seed("csip-member-update-worker-prompt",      um_p)
-        _try_seed("csip-member-policy-lookup-worker-prompt", mpl_p)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Member worker prompts skipped: %s", exc)
-        skipped += 4
-
-    # ── PA Services ─────────────────────────────────────────────────────
-    try:
-        from agents.teams.pa_services.supervisor.pa_services_supervisor import (
-            _PLANNING_PROMPT_TEXT as pa_planning,
-            _ROUTING_PROMPT_TEXT  as pa_routing,
-        )
-        _try_seed("csip-pa-planning-prompt", pa_planning)
-        _try_seed("csip-pa-routing-prompt",  pa_routing)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("PA supervisor prompts skipped: %s", exc)
-        skipped += 2
-
-    try:
-        from agents.teams.pa_services.supervisor.pa_lookup_worker         import WORKER_PROMPT as pal_p
-        from agents.teams.pa_services.supervisor.pa_status_worker         import WORKER_PROMPT as pas_p
-        from agents.teams.pa_services.supervisor.pa_requirements_worker   import WORKER_PROMPT as par_p
-        from agents.teams.pa_services.supervisor.approve_prior_auth_worker import WORKER_PROMPT as paa_p
-        from agents.teams.pa_services.supervisor.deny_prior_auth_worker    import WORKER_PROMPT as pad_p
-        from agents.teams.pa_services.supervisor.member_prior_auth_worker   import WORKER_PROMPT as mpa_p
-        _try_seed("csip-pa-lookup-worker-prompt",       pal_p)
-        _try_seed("csip-pa-status-worker-prompt",       pas_p)
-        _try_seed("csip-pa-requirements-worker-prompt", par_p)
-        _try_seed("csip-pa-approve-worker-prompt",      paa_p)
-        _try_seed("csip-pa-deny-worker-prompt",         pad_p)
-        _try_seed("csip-member-prior-auth-worker-prompt",    mpa_p)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("PA worker prompts skipped: %s", exc)
-        skipped += 5
-
-    # ── Provider Services ───────────────────────────────────────────────
-    try:
-        from agents.teams.provider_services.supervisor.provider_services_supervisor import (
-            _PLANNING_PROMPT_TEXT as prov_planning,
-            _ROUTING_PROMPT_TEXT  as prov_routing,
-        )
-        _try_seed("csip-provider-planning-prompt", prov_planning)
-        _try_seed("csip-provider-routing-prompt",  prov_routing)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Provider supervisor prompts skipped: %s", exc)
-        skipped += 2
-
-    try:
-        from agents.teams.provider_services.supervisor.provider_lookup_worker              import WORKER_PROMPT as pvl_p
-        from agents.teams.provider_services.supervisor.provider_network_check_worker       import WORKER_PROMPT as pvn_p
-        from agents.teams.provider_services.supervisor.provider_search_by_specialty_worker import WORKER_PROMPT as pvs_p
-        _try_seed("csip-provider-lookup-worker-prompt",   pvl_p)
-        _try_seed("csip-provider-network-worker-prompt",  pvn_p)
-        _try_seed("csip-provider-search-worker-prompt",   pvs_p)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Provider worker prompts skipped: %s", exc)
-        skipped += 3
-
-    # ── Search Services ─────────────────────────────────────────────────
-    try:
-        from agents.teams.search_services.supervisor.search_services_supervisor import (
-            _PLANNING_PROMPT_TEXT as search_planning,
-            _ROUTING_PROMPT_TEXT  as search_routing,
-        )
-        _try_seed("csip-search-planning-prompt", search_planning)
-        _try_seed("csip-search-routing-prompt",  search_routing)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Search supervisor prompts skipped: %s", exc)
-        skipped += 2
-
-    try:
-        from agents.teams.search_services.supervisor.search_knowledge_base_worker import WORKER_PROMPT as skb_p
-        from agents.teams.search_services.supervisor.search_medical_codes_worker  import WORKER_PROMPT as smc_p
-        from agents.teams.search_services.supervisor.search_policy_info_worker    import WORKER_PROMPT as spi_p
-        _try_seed("csip-search-knowledge-worker-prompt",    skb_p)
-        _try_seed("csip-search-medical-codes-worker-prompt", smc_p)
-        _try_seed("csip-search-policy-worker-prompt",        spi_p)
-    except (ImportError, AttributeError) as exc:
-        logger.warning("Search worker prompts skipped: %s", exc)
-        skipped += 3
-
     lf.flush()
-    logger.info("Seeding complete: %d seeded, %d skipped.", seeded, skipped)
-    if skipped > 0:
+    logger.info(
+        "Seeding complete: %d seeded, %d variable-not-found, %d file-not-found.",
+        seeded, skipped, not_found,
+    )
+    if not_found > 0:
         logger.info(
-            "Skipped prompts are from team modules not present in this container. "
-            "To seed all prompts, run this script from the full source tree or "
-            "from a team's A2A server container."
+            "Files not found are expected if running from a partial source tree "
+            "(e.g., a single team's container). To seed all prompts, run from "
+            "the full project root."
         )
 
 

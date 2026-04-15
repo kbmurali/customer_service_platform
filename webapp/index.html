@@ -248,7 +248,7 @@ const DEMO_MODE = false; // Set false when connected to live backend
 const apiCall = async (method, path, body, token) => {
   if (DEMO_MODE) return demoResponse(path, body);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
   try {
     const res = await fetch(`${API_BASE}${path}`, {
       method, headers: { 'Content-Type':'application/json', ...(token ? {'Authorization':`Bearer ${token}`} : {}) },
@@ -1873,6 +1873,7 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed, role }) => {
   const chainScrollRef = useRef(null);
   const [removingExperience, setRemovingExperience] = useState(false);
   const [removeResult, setRemoveResult] = useState(null); // {success:bool, msg:string}
+  const [highlightDecisions, setHighlightDecisions] = useState(false);
 
   const handleRemoveExperience = async (sessionId) => {
     if (!confirm(`Remove experience for session ${sessionId} from the Experience Store? This cannot be undone.`)) return;
@@ -2175,18 +2176,23 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed, role }) => {
     );
   };
 
-  const TreeNode = ({ node, depth=0 }) => {
+  const TreeNode = ({ node, depth=0, highlightDecisions=false }) => {
     const [expanded, setExpanded] = useState(depth < 4);
     const [traceData, setTraceData] = useState(null);
     const [traceLoading, setTraceLoading] = useState(false);
     const [traceExpanded, setTraceExpanded] = useState(true);
     const typeColors = { Session:'#0EA5E9', Plan:'#8B5CF6', Goal:'#F59E0B', Step:'#10B981', AgentExecution:'#EC4899', ToolExecution:'#EF4444', ToolError:'#DC2626', AgentError:'#DC2626' };
     const hasChildren = node.children?.length > 0;
+    const hasContent = hasChildren || (node.props && Object.keys(node.props).length > 0);
+    const isDecision = node.props?.isDecisionNode && node.props.isDecisionNode !== 'false';
+    // Highlight styling: decision nodes glow, non-decision AE nodes dim
+    const highlightStyle = highlightDecisions && node.type === 'AgentExecution'
+      ? isDecision
+        ? { boxShadow: '0 0 0 2px #7C3AED, 0 0 12px rgba(124,58,237,0.25)', borderColor: '#7C3AED' }
+        : { opacity: 0.45 }
+      : {};
 
     // Lazy-load LangFuse trace when an AgentExecution node is expanded.
-    // Uses the langfuseTraceId property written back to the CG node after
-    // each LLM .invoke() — this is the auto-generated LangFuse trace ID,
-    // not the CG executionId.
     const langfuseTraceId = node.props?.langfuseTraceId;
     useEffect(() => {
       if (expanded && node.type === 'AgentExecution' && langfuseTraceId
@@ -2201,29 +2207,102 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed, role }) => {
 
     return (
       <div>
-        <div className={`cg-tree-node status-${node.status}`} onClick={()=>hasChildren&&setExpanded(!expanded)} style={{borderLeftColor:typeColors[node.type]||'var(--border)',cursor:hasChildren?'pointer':'default'}}>
+        <div className={`cg-tree-node status-${node.status}`} onClick={()=>hasContent&&setExpanded(!expanded)} style={{borderLeftColor:typeColors[node.type]||'var(--border)',cursor:hasContent?'pointer':'default',transition:'all 0.2s',...highlightStyle}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               {hasChildren && <span style={{fontSize:10,color:'var(--text-muted)',transition:'transform 0.2s',transform:expanded?'rotate(90deg)':'rotate(0deg)',display:'inline-block'}}>▶</span>}
               <span className="badge" style={{background:typeColors[node.type]+'20',color:typeColors[node.type],fontSize:10}}>{node.type}</span>
+              {isDecision && (
+                <span className="badge" style={{background:'#7C3AED20',color:'#7C3AED',fontSize:10,fontWeight:700,letterSpacing:0.5}}>DECISION</span>
+              )}
               <span className="mono" style={{fontSize:12}}>{node.id}</span>
             </div>
-            <span className={`badge ${node.status==='completed'?'badge-green':node.status==='failed'?'badge-red':node.status==='pending'?'badge-yellow':'badge-gray'}`}>{node.status}</span>
-          </div>
-          {expanded && node.props && (
-            <div style={{marginTop:6,display:'flex',gap:12,flexWrap:'wrap'}}>
-              {Object.entries(node.props).map(([k,v]) => (
-                <span key={k} style={{fontSize:11,color:'var(--text-muted)'}}><strong>{k}:</strong> <span className="mono">{String(v)}</span></span>
-              ))}
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              {isDecision && node.props.recommendation && (() => {
+                const rec = String(node.props.recommendation).toUpperCase();
+                const recColor = rec === 'APPROVE' ? 'badge-green' : rec === 'DENY' ? 'badge-red' : 'badge-yellow';
+                return <span className={`badge ${recColor}`} style={{fontSize:10,fontWeight:700}}>{rec}</span>;
+              })()}
+              <span className={`badge ${node.status==='completed'?'badge-green':node.status==='failed'?'badge-red':node.status==='pending'?'badge-yellow':'badge-gray'}`}>{node.status}</span>
             </div>
-          )}
+          </div>
+          {expanded && node.props && (() => {
+            const decisionKeys = new Set(['isDecisionNode', 'recommendation', 'justificationSummary', 'evidenceUsed']);
+            const genericProps = isDecision
+              ? Object.entries(node.props).filter(([k]) => !decisionKeys.has(k))
+              : Object.entries(node.props);
+            return (
+              <div>
+                {genericProps.length > 0 && (
+                  <div style={{marginTop:6,display:'flex',gap:12,flexWrap:'wrap'}}>
+                    {genericProps.map(([k,v]) => (
+                      <span key={k} style={{fontSize:11,color:'var(--text-muted)'}}><strong>{k}:</strong> <span className="mono">{String(v)}</span></span>
+                    ))}
+                  </div>
+                )}
+                {isDecision && (
+                  <div style={{marginTop:10,padding:12,borderRadius:6,background:'linear-gradient(135deg, #7C3AED08, #EC489808)',border:'1px solid #7C3AED30'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                      <span style={{fontSize:12,fontWeight:700,color:'#7C3AED'}}>Business Decision</span>
+                      {node.props.recommendation && (() => {
+                        const rec = String(node.props.recommendation).toUpperCase();
+                        const bg = rec === 'APPROVE' ? '#D1FAE5' : rec === 'DENY' ? '#FEE2E2' : '#FEF3C7';
+                        const fg = rec === 'APPROVE' ? '#065F46' : rec === 'DENY' ? '#991B1B' : '#92400E';
+                        return <span style={{fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:100,background:bg,color:fg}}>{rec}</span>;
+                      })()}
+                    </div>
+                    {node.props.justificationSummary && (
+                      <div style={{fontSize:12,color:'var(--text-secondary)',lineHeight:1.6,marginBottom:8,padding:'8px 10px',background:'white',borderRadius:4,border:'1px solid var(--border)'}}>
+                        <strong style={{color:'var(--text-primary)',fontSize:11}}>Justification:</strong><br/>
+                        {String(node.props.justificationSummary)}
+                      </div>
+                    )}
+                    {node.props.evidenceUsed && (() => {
+                      let evidence = node.props.evidenceUsed;
+                      try { if (typeof evidence === 'string') evidence = JSON.parse(evidence); } catch(e) {}
+                      if (!Array.isArray(evidence)) evidence = [String(evidence)];
+                      return evidence.length > 0 && (
+                        <div>
+                          <strong style={{fontSize:11,color:'var(--text-primary)'}}>Evidence:</strong>
+                          <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:4}}>
+                            {evidence.map((e, i) => {
+                              const parts = String(e).split(':');
+                              const key = parts[0] || '';
+                              const val = parts.slice(1).join(':') || '';
+                              return (
+                                <span key={i} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#F1F5F9',border:'1px solid var(--border)',fontFamily:'var(--font-mono)'}}>
+                                  <strong style={{color:'var(--text-primary)'}}>{key}</strong>{val && <span style={{color:'var(--text-muted)'}}>:{val}</span>}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           {node.type === 'AgentExecution' && expanded && (
             <LangFuseTraceCard data={traceData} loading={traceLoading} traceExpanded={traceExpanded} onToggle={() => setTraceExpanded(!traceExpanded)} />
           )}
         </div>
         {expanded && hasChildren && (
           <div className="cg-children">
-            {node.children.map(c => <TreeNode key={c.id} node={c} depth={depth+1}/>)}
+            {(() => {
+              // Sort children only for Goal (step ordering) and Plan (goal ordering).
+              // Other node types (e.g. planner → [Plan, Consolidator]) keep API order.
+              const sortable = node.type === 'Goal' || node.type === 'Plan';
+              const ordered = sortable
+                ? [...node.children].sort((a, b) => {
+                    const aNum = parseInt((a.id || '').replace(/\D/g, '')) || 0;
+                    const bNum = parseInt((b.id || '').replace(/\D/g, '')) || 0;
+                    return aNum - bNum;
+                  })
+                : node.children;
+              return ordered.map(c => <TreeNode key={c.id} node={c} depth={depth+1} highlightDecisions={highlightDecisions}/>);
+            })()}
           </div>
         )}
       </div>
@@ -2306,6 +2385,31 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed, role }) => {
               <div className="card-header">
                 <h3>Context Graph — {selectedSession}</h3>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  {(() => {
+                    const countDecisions = (n) => {
+                      let c = (n.props?.isDecisionNode && n.props.isDecisionNode !== 'false') ? 1 : 0;
+                      (n.children || []).forEach(ch => { c += countDecisions(ch); });
+                      return c;
+                    };
+                    const dCount = currentTree ? countDecisions(currentTree) : 0;
+                    return dCount > 0 && (
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginRight:8}}>
+                        <span className="badge" style={{background:'#7C3AED20',color:'#7C3AED',fontSize:10,fontWeight:700}}>
+                          {dCount} decision{dCount > 1 ? 's' : ''}
+                        </span>
+                        <div
+                          onClick={() => setHighlightDecisions(!highlightDecisions)}
+                          title={highlightDecisions ? 'Remove decision highlight' : 'Highlight decision nodes'}
+                          style={{
+                            display:'inline-flex',alignItems:'center',justifyContent:highlightDecisions?'flex-end':'flex-start',
+                            width:32,height:18,borderRadius:9,cursor:'pointer',
+                            background:highlightDecisions?'#7C3AED':'var(--border)',transition:'background 0.2s',padding:2,
+                          }}>
+                          <div style={{width:14,height:14,borderRadius:'50%',background:'white',boxShadow:'0 1px 2px rgba(0,0,0,0.2)',transition:'all 0.2s'}}/>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <button className="btn btn-secondary btn-sm" onClick={()=>currentIndex>0&&selectSession(followUpChain[currentIndex-1].id)} disabled={currentIndex<=0}>← Previous</button>
                   <span style={{fontSize:12,color:'var(--text-muted)'}}>{currentIndex+1} of {followUpChain.length}</span>
                   <button className="btn btn-secondary btn-sm" onClick={()=>currentIndex<followUpChain.length-1&&selectSession(followUpChain[currentIndex+1].id)} disabled={currentIndex>=followUpChain.length-1}>Next →</button>
@@ -2329,7 +2433,7 @@ const CGExplorer = ({ token, targetSession, onTargetConsumed, role }) => {
                     </div>
                   </div>
                 )}
-                <TreeNode node={currentTree}/>
+                <TreeNode node={currentTree} highlightDecisions={highlightDecisions}/>
               </div>
             </div>
           )}
@@ -2399,7 +2503,7 @@ const FeedbackDashboard = ({ token, role }) => {
   ];
 
   useEffect(() => {
-    (async () => {
+    const fetchData = async () => {
       try {
         // Patterns and improvements from API (works in both modes via apiCall)
         const [p, imp] = await Promise.all([
@@ -2429,7 +2533,7 @@ const FeedbackDashboard = ({ token, role }) => {
           const [fbRate, fbClassified, extractedTotal, patternReports] = await Promise.all([
             promQuery('csip_positive_feedback_rate'),
             promQuery('sum(csip_feedback_classifications_total)'),
-            promQuery('sum(csip_experiences_extracted_total)'),
+            promQuery('sum(csip_experiences_extracted_mysql_total)'),
             promQuery('sum(csip_pattern_reports_generated_total)'),
           ]);
           const posRate = promValue(fbRate);
@@ -2451,7 +2555,7 @@ const FeedbackDashboard = ({ token, role }) => {
           const [storeSize, hitRate, extractedW] = await Promise.all([
             promQuery('csip_experience_store_size'),
             promQuery('csip_experience_hit_rate'),
-            promQuery('csip_experiences_extracted_total'),
+            promQuery('csip_experiences_extracted_mysql_total'),
           ]);
           setStoreStats([
             { label:'Total Experiences', value:String(Math.round(promValue(storeSize))), sub:'Chroma collection: successful_experiences' },
@@ -2463,7 +2567,10 @@ const FeedbackDashboard = ({ token, role }) => {
       }
 
       setLoaded(true);
-    })();
+    };
+    fetchData();
+    const interval = setInterval(fetchData, 30000);
+    return () => clearInterval(interval);
   }, [token]);
 
   return (

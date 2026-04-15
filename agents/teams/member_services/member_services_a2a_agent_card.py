@@ -41,10 +41,11 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
         name="member_services_team",
         description=(
             "Health insurance member services agent. Handles member lookup, "
-            "eligibility verification, coverage/benefits inquiries, and "
-            "member policy lookup. "
+            "eligibility verification, coverage/benefits inquiries, "
+            "member policy lookup, and treatment history retrieval. "
             "Routes queries to specialized workers: member_lookup, "
-            "check_eligibility, coverage_lookup, update_member_info, member_policy_lookup."
+            "check_eligibility, coverage_lookup, update_member_info, "
+            "member_policy_lookup, treatment_history."
         ),
         url=f"{base_url}/a2a",
         capabilities=A2ACapabilities(
@@ -115,6 +116,23 @@ def build_member_services_agent_card(base_url: str) -> A2AAgentCard:
                     "What policy does member M123456 have?",
                     "Show me the insurance plan for member M789012",
                     "Look up the policy details for member M345678",
+                ],
+            ),
+            A2ASkill(
+                id="treatment_history",
+                name="Treatment History",
+                description=(
+                    "Retrieve treatment history for a member including physical therapy "
+                    "sessions, medication trials, injections, imaging, and other "
+                    "conservative treatments. Supports optional filtering by treatment "
+                    "type or procedure code. Used by the PA recommendation decision "
+                    "agent to verify conservative treatment requirements."
+                ),
+                tags=["member", "treatment", "history", "therapy", "conservative", "pa"],
+                examples=[
+                    "Get treatment history for member M123456",
+                    "Show physical therapy sessions for member M789012",
+                    "What conservative treatments has member M345678 had?",
                 ],
             ),
         ],

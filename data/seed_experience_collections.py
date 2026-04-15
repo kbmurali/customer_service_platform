@@ -1,21 +1,15 @@
 """
 Seed Experience Collections — bootstraps the ``successful_experiences``
 Chroma collection with manually curated examples for cold start.
-
 Run once during initial setup (after Chroma is healthy)::
-
     python3 data/seed_experience_collections.py
-
 The seed experiences provide few-shot planning examples from day one,
 before any real CSR feedback has been collected.  As genuine feedback
 accumulates, the seed experiences are gradually outnumbered by real
 production experiences.
-
 Idempotent — skips existing records by session_id.
 """
-
 from __future__ import annotations
-
 import json
 import logging
 import os
@@ -29,7 +23,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Seed data — 25 curated experiences covering all 5 teams
 # ---------------------------------------------------------------------------
-
 SEED_EXPERIENCES = [
     # ── Member Services (5) ───────────────────────────────────────────
     {
@@ -301,23 +294,130 @@ SEED_EXPERIENCES = [
         },
         "teams": "member_services_team,pa_services_team",
     },
+
+    # ── Decision Agent Experiences (6) — M17 ──────────────────────────
+    # Multi-step plans that gather evidence then route to decision workers.
+    # These teach the central planner how to orchestrate evidence-gathering
+    # steps before invoking claim_adjudication or pa_recommendation.
+    {
+        "session_id": "seed-decision-001",
+        "query": "Is claim CLM-555666 valid? Check eligibility, network status, and adjudicate.",
+        "plan": {
+            "goals": [
+                {"id": "goal_1", "description": "Gather claim adjudication evidence and produce recommendation", "priority": 1},
+            ],
+            "steps": [
+                {"step_id": "step_1", "goal_id": "goal_1", "agent": "claims_services_team", "order": 1},
+                {"step_id": "step_2", "goal_id": "goal_1", "agent": "member_services_team", "order": 1},
+                {"step_id": "step_3", "goal_id": "goal_1", "agent": "provider_services_team", "order": 1},
+                {"step_id": "step_4", "goal_id": "goal_1", "agent": "claims_services_team", "order": 2},
+            ],
+        },
+        "teams": "claims_services_team,member_services_team,provider_services_team",
+    },
+    {
+        "session_id": "seed-decision-002",
+        "query": "Should claim CLM-777888 be approved? The member is M-12345 and the provider is Dr. Chen.",
+        "plan": {
+            "goals": [
+                {"id": "goal_1", "description": "Look up claim details", "priority": 1},
+                {"id": "goal_2", "description": "Verify eligibility and network status", "priority": 2},
+                {"id": "goal_3", "description": "Adjudicate claim based on gathered evidence", "priority": 3},
+            ],
+            "steps": [
+                {"step_id": "step_1", "goal_id": "goal_1", "agent": "claims_services_team", "order": 1},
+                {"step_id": "step_2", "goal_id": "goal_2", "agent": "member_services_team", "order": 1},
+                {"step_id": "step_3", "goal_id": "goal_2", "agent": "provider_services_team", "order": 1},
+                {"step_id": "step_4", "goal_id": "goal_3", "agent": "claims_services_team", "order": 2},
+            ],
+        },
+        "teams": "claims_services_team,member_services_team,provider_services_team",
+    },
+    {
+        "session_id": "seed-decision-003",
+        "query": "Should the prior authorization for rotator cuff repair (CPT 23412) be approved for member M-44444?",
+        "plan": {
+            "goals": [
+                {"id": "goal_1", "description": "Gather PA evidence from all sources", "priority": 1},
+                {"id": "goal_2", "description": "Produce PA recommendation based on clinical criteria", "priority": 2},
+            ],
+            "steps": [
+                {"step_id": "step_1", "goal_id": "goal_1", "agent": "pa_services_team", "order": 1},
+                {"step_id": "step_2", "goal_id": "goal_1", "agent": "pa_services_team", "order": 1},
+                {"step_id": "step_3", "goal_id": "goal_1", "agent": "search_services_team", "order": 1},
+                {"step_id": "step_4", "goal_id": "goal_1", "agent": "member_services_team", "order": 1},
+                {"step_id": "step_5", "goal_id": "goal_2", "agent": "pa_services_team", "order": 2},
+            ],
+        },
+        "teams": "pa_services_team,search_services_team,member_services_team",
+    },
+    {
+        "session_id": "seed-decision-004",
+        "query": "Evaluate whether PA for total knee replacement (CPT 27447) should be approved — member M-55555 under HMO plan.",
+        "plan": {
+            "goals": [
+                {"id": "goal_1", "description": "Gather PA details and requirements", "priority": 1},
+                {"id": "goal_2", "description": "Retrieve clinical guidelines and treatment history", "priority": 2},
+                {"id": "goal_3", "description": "Produce PA recommendation", "priority": 3},
+            ],
+            "steps": [
+                {"step_id": "step_1", "goal_id": "goal_1", "agent": "pa_services_team", "order": 1},
+                {"step_id": "step_2", "goal_id": "goal_1", "agent": "pa_services_team", "order": 1},
+                {"step_id": "step_3", "goal_id": "goal_2", "agent": "search_services_team", "order": 1},
+                {"step_id": "step_4", "goal_id": "goal_2", "agent": "member_services_team", "order": 1},
+                {"step_id": "step_5", "goal_id": "goal_3", "agent": "pa_services_team", "order": 2},
+            ],
+        },
+        "teams": "pa_services_team,search_services_team,member_services_team",
+    },
+    {
+        "session_id": "seed-decision-005",
+        "query": "Check if member M-66666 is eligible and then adjudicate their claim CLM-999000.",
+        "plan": {
+            "goals": [
+                {"id": "goal_1", "description": "Verify member eligibility and gather claim evidence", "priority": 1},
+                {"id": "goal_2", "description": "Adjudicate claim", "priority": 2},
+            ],
+            "steps": [
+                {"step_id": "step_1", "goal_id": "goal_1", "agent": "member_services_team", "order": 1},
+                {"step_id": "step_2", "goal_id": "goal_1", "agent": "claims_services_team", "order": 1},
+                {"step_id": "step_3", "goal_id": "goal_1", "agent": "provider_services_team", "order": 1},
+                {"step_id": "step_4", "goal_id": "goal_2", "agent": "claims_services_team", "order": 2},
+            ],
+        },
+        "teams": "member_services_team,claims_services_team,provider_services_team",
+    },
+    {
+        "session_id": "seed-decision-006",
+        "query": "Should the PA for lumbar spinal fusion (CPT 22612) be approved for member M-77777? Check treatment history and clinical guidelines.",
+        "plan": {
+            "goals": [
+                {"id": "goal_1", "description": "Gather PA details, requirements, clinical guidelines, and treatment history", "priority": 1},
+                {"id": "goal_2", "description": "Produce PA recommendation based on all evidence", "priority": 2},
+            ],
+            "steps": [
+                {"step_id": "step_1", "goal_id": "goal_1", "agent": "pa_services_team", "order": 1},
+                {"step_id": "step_2", "goal_id": "goal_1", "agent": "pa_services_team", "order": 1},
+                {"step_id": "step_3", "goal_id": "goal_1", "agent": "search_services_team", "order": 1},
+                {"step_id": "step_4", "goal_id": "goal_1", "agent": "member_services_team", "order": 1},
+                {"step_id": "step_5", "goal_id": "goal_2", "agent": "pa_services_team", "order": 2},
+            ],
+        },
+        "teams": "pa_services_team,search_services_team,member_services_team",
+    },
 ]
 
 
 def seed_experiences() -> int:
     """
     Populate the experience store with curated seed data.
-
     Returns the number of new experiences stored (skips existing ones).
     """
     from databases.chroma_experience_store import get_experience_store
-
     store = get_experience_store()
     stored = 0
-
     for exp in SEED_EXPERIENCES:
         session_id = exp["session_id"]
-
         success = store.store_experience(
             session_id=session_id,
             query_text=exp["query"],
@@ -328,14 +428,12 @@ def seed_experiences() -> int:
         )
         if success:
             stored += 1
-
     logger.info("Seeded %d / %d experiences", stored, len(SEED_EXPERIENCES))
     return stored
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-
     # Load environment variables
     try:
         from dotenv import load_dotenv, find_dotenv

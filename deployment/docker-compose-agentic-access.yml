@@ -26,6 +26,7 @@ services:
         export LANGFUSE_SECRET_KEY="$$(cat /run/secrets/LANGFUSE_SECRET_KEY)"
         export LANGFUSE_PUBLIC_KEY="$$(cat /run/secrets/LANGFUSE_PUBLIC_KEY)"
         export OPENAI_API_KEY="$$(cat /run/secrets/OPENAI_API_KEY)"
+        export CHROMA_OPENAI_API_KEY="$$OPENAI_API_KEY"
         export ANTHROPIC_API_KEY="$$(cat /run/secrets/ANTHROPIC_API_KEY)"
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/AWS_ACCESS_KEY_ID)"
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/AWS_SECRET_ACCESS_KEY)"
@@ -54,6 +55,8 @@ services:
       # ── API Server ──
       API_HOST: "0.0.0.0"
       API_PORT: "8000"
+      # ── Experience Store ──
+      EXPERIENCE_STORE_ENABLED: "True"
       # ── mTLS (central supervisor → remote team A2A servers) ──
       MCP_CLIENT_CERT: "/run/secrets/MCP_CLIENT_CERT"
       MCP_CLIENT_KEY: "/run/secrets/MCP_CLIENT_KEY"
@@ -93,12 +96,12 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 30s
-      timeout: 10s
-      retries: 5
+      timeout: 20s
+      retries: 10
       # Generous start period — CentralSupervisor initialises A2AClientNodes,
       # attempts live agent card fetches, loads the LLM provider, and
       # connects to Neo4j/MySQL/Chroma all on first request.
-      start_period: 180s
+      start_period: 360s
     deploy:
       replicas: 1
       restart_policy:

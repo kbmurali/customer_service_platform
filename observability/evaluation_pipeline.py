@@ -527,6 +527,18 @@ except ImportError:
     _experience_hit_rate = None
     _experiences_extracted_total = None
 
+# Gauge backed by MySQL — survives container restarts, unlike the Counter
+# which resets to 0 on every restart.
+try:
+    from prometheus_client import Gauge as _Gauge
+    _experiences_extracted_mysql = _Gauge(
+        "csip_experiences_extracted_mysql_total",
+        "Total experiences extracted from correct-rated sessions (from MySQL log)",
+    )
+except (ImportError, ValueError):
+    # ValueError = already registered (module reimport)
+    _experiences_extracted_mysql = None
+
 
 def _run_experience_extraction(redis_client=None) -> None:
     """
@@ -569,10 +581,28 @@ def _run_experience_extraction(redis_client=None) -> None:
         store_size = get_experience_store().get_collection_size()
         if _experience_store_size is not None:
             _experience_store_size.set(store_size)
-        # Note: _experiences_extracted_total is a Counter (incremented by
-        # experience_extraction_pipeline on each extraction) — not set here.
     except Exception as _g_exc:
         logger.debug("EvaluationPipeline: experience store size gauge failed: %s", _g_exc)
+
+    # Set extracted count from MySQL (survives container restarts)
+    try:
+        from databases.feedback_data_access import get_feedback_data_access
+        from databases.connections import get_mysql
+        mysql = get_mysql()
+        rows = mysql.execute_query(
+            "SELECT COUNT(*) AS cnt FROM experience_extraction_log WHERE collection_name = %s",
+            ("successful_experiences",),
+        )
+        extracted_total = rows[0].get("cnt", 0) if rows else 0
+        if _experiences_extracted_mysql is not None:
+            _experiences_extracted_mysql.set(extracted_total)
+        if redis_client:
+            try:
+                redis_client.setex("metrics:experiences_extracted_total", 86400, str(extracted_total))
+            except Exception:
+                pass
+    except Exception as _ext_exc:
+        logger.debug("EvaluationPipeline: extracted count gauge failed: %s", _ext_exc)
 
     # Compute hit rate from Prometheus counters set by central_supervisor
     try:

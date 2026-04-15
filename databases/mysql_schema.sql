@@ -544,12 +544,35 @@ INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, r
     (UUID(), 'CSR_READONLY',   'member_policy_lookup', TRUE,  20),
     (UUID(), 'CSR_TIER1',      'member_policy_lookup', TRUE,  30),
     (UUID(), 'CSR_TIER2',      'member_policy_lookup', TRUE,  60),
-    (UUID(), 'CSR_SUPERVISOR', 'member_policy_lookup', TRUE, 120);
+    (UUID(), 'CSR_SUPERVISOR', 'member_policy_lookup', TRUE, 120),
     -- CSR_SUPERVISOR: Write tools (Human-in-the-Loop gated)
     (UUID(), 'CSR_SUPERVISOR', 'update_claim_status',      TRUE,  30),
     (UUID(), 'CSR_SUPERVISOR', 'approve_prior_auth',       TRUE,  30),
     (UUID(), 'CSR_SUPERVISOR', 'deny_prior_auth',          TRUE,  30),
     (UUID(), 'CSR_SUPERVISOR', 'update_member_info',       TRUE,  30);
+
+-- -------------------------------------------------------
+-- Decision Agent Enhancement Tools (M15)
+-- treatment_history: read tool (member services)
+-- claim_adjudication: decision agent (claims services)
+-- pa_recommendation: decision agent (pa services)
+-- -------------------------------------------------------
+INSERT INTO tool_permissions (tool_permission_id, role, tool_name, is_allowed, rate_limit_per_minute) VALUES
+    -- treatment_history
+    (UUID(), 'CSR_READONLY',   'treatment_history',    TRUE,  20),
+    (UUID(), 'CSR_TIER1',      'treatment_history',    TRUE,  30),
+    (UUID(), 'CSR_TIER2',      'treatment_history',    TRUE,  60),
+    (UUID(), 'CSR_SUPERVISOR', 'treatment_history',    TRUE, 120),
+    -- claim_adjudication
+    (UUID(), 'CSR_READONLY',   'claim_adjudication',   TRUE,  20),
+    (UUID(), 'CSR_TIER1',      'claim_adjudication',   TRUE,  30),
+    (UUID(), 'CSR_TIER2',      'claim_adjudication',   TRUE,  60),
+    (UUID(), 'CSR_SUPERVISOR', 'claim_adjudication',   TRUE, 120),
+    -- pa_recommendation
+    (UUID(), 'CSR_READONLY',   'pa_recommendation',    TRUE,  20),
+    (UUID(), 'CSR_TIER1',      'pa_recommendation',    TRUE,  30),
+    (UUID(), 'CSR_TIER2',      'pa_recommendation',    TRUE,  60),
+    (UUID(), 'CSR_SUPERVISOR', 'pa_recommendation',    TRUE, 120);
 
 -- ============================================
 -- LLM Configurations
@@ -639,8 +662,11 @@ CREATE TABLE IF NOT EXISTS mcp_agent_keys (
 
 -- Seed initial agent key metadata for the two remote MCP agent pairs
 INSERT INTO mcp_agent_keys (agent_pair, key_version, is_active) VALUES
-    ('central_supervisor:claim_services_team',  1, TRUE),
-    ('central_supervisor:member_services_team', 1, TRUE);
+    ('central_supervisor:claims_services_team',    1, TRUE),
+    ('central_supervisor:member_services_team',    1, TRUE),
+    ('central_supervisor:pa_services_team',        1, TRUE),
+    ('central_supervisor:provider_services_team',  1, TRUE),
+    ('central_supervisor:search_services_team',    1, TRUE);
 
 -- Performance indexes for Control 8
 CREATE INDEX idx_nonce_log_timestamp ON mcp_nonce_log(received_at);

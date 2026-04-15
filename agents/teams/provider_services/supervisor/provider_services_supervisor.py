@@ -1,17 +1,14 @@
 import logging
 import json
 import re
-
 from typing import Literal
 from datetime import datetime
 from functools import lru_cache
-
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, RemoveMessage
-
 from agents.teams.provider_services.supervisor.provider_lookup_worker import ProviderLookupWorker
 from agents.teams.provider_services.supervisor.provider_network_check_worker import ProviderNetworkCheckWorker
 from agents.teams.provider_services.supervisor.provider_search_by_specialty_worker import ProviderSearchBySpecialtyWorker
@@ -20,24 +17,20 @@ from agents.security import rbac_service, AuditLogger
 from agents.core.context_graph import get_context_graph_manager
 from agents.core.state import SupervisorState
 from agents.core.error_handling import get_error_metrics, create_error_record, format_error_for_user
-
 from databases.chroma_vector_data_access import get_chroma_data_access
 from observability.langfuse_integration import get_langfuse_tracer
 from llm_providers.llm_provider_factory import LLMProviderFactory, get_factory, ChatModel
 from security.approval_workflow import get_approval_workflow
 from security.presidio_memory_security import get_presidio_security
 from security.nh3_sanitization import sanitize_html
-
 from config.settings import get_settings, Settings
 
 logger = logging.getLogger(__name__)
 settings: Settings = get_settings()
 
-
 # -- Module-level prompt constants (importable by seed_langfuse_prompts.py) --
 
 _ROUTING_PROMPT_TEXT = """You are a routing supervisor for a provider services team.
-
 You will be given ONE specific step with a pre-assigned worker.
 Your ONLY job is to confirm that worker, or respond SKIP if required data is missing.
 
@@ -90,6 +83,17 @@ RULES:
      - "Look up provider P and check their network status under policy Q" → 1 goal, 2 steps (same subject)
 9. provider_network_check does not require provider_lookup first unless full provider
    details were explicitly requested — it only needs provider ID and policy ID.
+10. EXTRACT IDENTIFIERS FROM CONTEXT. The user query often contains results from
+    prior steps with actual provider IDs, policy IDs, NPI numbers, and other
+    identifiers embedded in it. You MUST extract these UUID values and include
+    them verbatim in the step action. For example, if the query contains
+    "providerId: 36c8fb6c-cea4-4ca7-b48a-ec567f48cf8b" and
+    "policyId: 390bb652-f46e-48d1-9330-7cbeae0007a6", write the step action as:
+      "Check if provider 36c8fb6c-cea4-4ca7-b48a-ec567f48cf8b is in-network
+       for policy 390bb652-f46e-48d1-9330-7cbeae0007a6"
+    NEVER write vague references like "Look up provider details by using
+    provider ID from claim" — the worker cannot resolve these. It needs
+    the actual UUID values spelled out in the action.
 
 Return JSON only (no markdown fences, no explanation):
 {{
@@ -124,7 +128,6 @@ class ProviderServicesSupervisor:
             "provider_network_check":       ProviderNetworkCheckWorker(),
             "provider_search_by_specialty": ProviderSearchBySpecialtyWorker(),
         }
-
         self.rbac = rbac_service
         self.audit = AuditLogger()
         self.presidio = get_presidio_security()
@@ -132,7 +135,6 @@ class ProviderServicesSupervisor:
 
         llm_factory: LLMProviderFactory = get_factory()
         self.llm: ChatModel = llm_factory.get_llm_provider()
-
 
         # Prompt versioning: fetch from LangFuse if enabled, else use module constants
         self.system_prompt = _ROUTING_PROMPT_TEXT
@@ -159,9 +161,7 @@ class ProviderServicesSupervisor:
             ("system", self.system_prompt),
             ("human", "{messages}")
         ])
-
         return prompt | self.llm | JsonOutputParser()
-
 
     def create_plan_node(self, state: SupervisorState) -> SupervisorState:
         """
@@ -178,9 +178,49 @@ class ProviderServicesSupervisor:
             # Get user query
             user_query = state["messages"][-1].content if state["messages"] else "No query"
 
+            # ── Programmatic ID extraction ────────────────────────────────
+            # LLMs are unreliable at extracting UUIDs from walls of text.
+            # Parse them deterministically and append as an unmissable block
+            # so the planner can reference them verbatim in step actions.
+            #
+            # Prior step results arrive in varying formats:
+            #   JSON:     "providerId": "36c8fb6c-..."
+            #   Markdown: **Provider ID:** 36c8fb6c-...
+            #   Plain:    Provider ID: 36c8fb6c-...
+            _UUID = r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'
+            _ID_PATTERNS = [
+                # (label,  list of regex patterns to try in order)
+                ("provider_id", [
+                    r'"providerId"\s*:\s*"' + _UUID + r'"',           # JSON
+                    r'\*\*Provider\s*ID[:\*]*\*\*\s*:?\s*' + _UUID,   # Markdown bold
+                    r'Provider\s*ID\s*:\s*' + _UUID,                  # Plain text
+                ]),
+                ("policy_id", [
+                    r'"policyId"\s*:\s*"' + _UUID + r'"',
+                    r'\*\*Policy\s*ID[:\*]*\*\*\s*:?\s*' + _UUID,
+                    r'Policy\s*ID\s*:\s*' + _UUID,
+                ]),
+                ("member_id", [
+                    r'"memberId"\s*:\s*"' + _UUID + r'"',
+                    r'\*\*Member\s*ID[:\*]*\*\*\s*:?\s*' + _UUID,
+                    r'Member\s*ID\s*:\s*' + _UUID,
+                ]),
+            ]
+            _extracted_ids = []
+            for label, patterns in _ID_PATTERNS:
+                for pat in patterns:
+                    match = re.search(pat, user_query, re.IGNORECASE)
+                    if match:
+                        _extracted_ids.append(f"- {label}: {match.group(1)}")
+                        break  # first match wins for this label
+            if _extracted_ids:
+                user_query += (
+                    "\n\n=== EXTRACTED IDENTIFIERS (use these exact values in step actions) ===\n"
+                    + "\n".join(_extracted_ids)
+                )
+
             # Enrich planning with semantic search from Chroma vector DB
             semantic_context_json = {}
-
             try:
                 chroma = get_chroma_data_access()
                 policy_context = chroma.search_policies(query=user_query, n_results=2)
@@ -197,6 +237,7 @@ class ProviderServicesSupervisor:
                     [{'content': r['document']} for r in faq_context],
                     query=user_query,
                 )
+
                 semantic_context_json = {
                     'relevant_policies': [d['content'] for d in _compressed_policies],
                     'relevant_faqs':     [d['content'] for d in _compressed_faqs]
@@ -236,7 +277,6 @@ class ProviderServicesSupervisor:
                 "user_query": user_query,
                 "semantic_context": semantic_context
             }
-
             if callback_handler:
                 result = (prompt | self.llm).invoke(inputs, config={"callbacks": [callback_handler]})
             else:
@@ -253,9 +293,7 @@ class ProviderServicesSupervisor:
 
             # Parse plan
             raw = result.content
-
             plan_text = re.sub(r"```json|```", "", str(raw)).strip()
-
             plan = json.loads(plan_text)
 
             # Store plan in CG as a team plan.
@@ -287,12 +325,10 @@ class ProviderServicesSupervisor:
             state["completed_goals"]    = []
 
             logger.info(f"{self.name}: Created plan with {len(plan.get('goals', []))} goals")
-
             return state
 
         except Exception as e:
             logger.error(f"{self.name}: Error creating plan: {e}")
-
             # Fallback plan
             state["plan"] = {
                 "goals": [{"id": "goal_1", "description": "Handle user query",
@@ -308,7 +344,6 @@ class ProviderServicesSupervisor:
     def supervisor_node(self, state: SupervisorState) -> SupervisorState:
         """
         Orchestrator node — iterates steps directly, one LLM call per step.
-
         Flow per invocation:
           1. Check circuit breaker.
           2. Read current_step_index from state.
@@ -317,7 +352,6 @@ class ProviderServicesSupervisor:
           5. Call LLM only to confirm worker / detect SKIP for missing data.
           6. Create AgentExecution, link Step->AgentExecution, store execution_id.
           7. Return next=<worker> or next=FINISH/CONTINUE.
-
         Step advancement happens in _advance_step (goal_advance node).
         Goal completion is detected there as a side effect of step advancement.
         """
@@ -447,6 +481,7 @@ class ProviderServicesSupervisor:
             session_id=session_id,
             user_id=user_id,
         ) if tracer.enabled else None
+
         chain = self.create_routing_chain()
         try:
             llm_result  = chain.invoke(
@@ -455,6 +490,7 @@ class ProviderServicesSupervisor:
             )
             next_worker = llm_result.get("next", "SKIP")
             reasoning   = llm_result.get("reasoning", "")
+
             if callback_handler and execution_id:
                 try:
                     lf_trace_id = callback_handler.get_trace_id()
@@ -462,6 +498,7 @@ class ProviderServicesSupervisor:
                         self.cg_manager.set_langfuse_trace_id(execution_id, lf_trace_id)
                 except Exception:
                     pass
+
         except Exception as e:
             logger.error(f"{self.name}: LLM routing failed: {e}")
             next_worker = step_worker if step_worker in VALID_WORKERS else "SKIP"
@@ -509,6 +546,7 @@ class ProviderServicesSupervisor:
                 s for s in all_steps[next_step_idx:]
                 if s.get("goal_id") == goal_id
             ]
+
             if not remaining_goal_steps:
                 # Last step of this goal — mark goal skipped
                 completed_goals.append(goal_id)
@@ -520,17 +558,18 @@ class ProviderServicesSupervisor:
                 except Exception:
                     pass
 
-            if next_step_idx >= len(all_steps):
-                try:
-                    self.cg_manager.complete_plan(session_id, plan_id)
-                except Exception:
-                    pass
-                return {
-                    "next": "FINISH",
-                    "current_step_index": next_step_idx,
-                    "completed_goals": completed_goals,
-                    "execution_path": execution_path + [f"{self.name} -> FINISH"],
-                }
+                if next_step_idx >= len(all_steps):
+                    try:
+                        self.cg_manager.complete_plan(session_id, plan_id)
+                    except Exception:
+                        pass
+                    return {
+                        "next": "FINISH",
+                        "current_step_index": next_step_idx,
+                        "completed_goals": completed_goals,
+                        "execution_path": execution_path + [f"{self.name} -> FINISH"],
+                    }
+
             return {
                 "next": "CONTINUE",
                 "current_step_index": next_step_idx,
@@ -607,6 +646,7 @@ class ProviderServicesSupervisor:
         if current_step_idx < len(all_steps):
             current_step  = all_steps[current_step_idx]
             goal_id       = current_step.get("goal_id", "")
+
             next_step_idx = current_step_idx + 1
 
             # Detect if this was the last step for its goal
@@ -641,7 +681,6 @@ class ProviderServicesSupervisor:
 
             # Sanitize input
             messages = state.get("messages")
-
             if messages:
                 user_message: BaseMessage = messages[0]
                 query = sanitize_html(str(user_message.content))
@@ -702,7 +741,6 @@ class ProviderServicesSupervisor:
                     error_type=error_type,
                     is_retryable=is_retryable
                 )
-
                 error_record["retry_count"] = retry_count
                 error_record["duration_ms"] = duration_ms
 
@@ -737,6 +775,7 @@ class ProviderServicesSupervisor:
                     current_idx   = state.get("current_step_index", 0)
                     plan_id_cg    = state.get("plan_id", "")
                     session_id_cg = state.get("session_id", "default")
+
                     if current_idx < len(all_steps):
                         goal_id = all_steps[current_idx].get("goal_id", "")
                         if goal_id:
@@ -746,12 +785,14 @@ class ProviderServicesSupervisor:
                                 goal_id=goal_id,
                                 goal_result="failed",
                             )
+
                     # Cancel every goal still pending — downstream goals that
                     # will never run because this step failed.
                     self.cg_manager.cancel_remaining_goals(
                         session_id=session_id_cg,
                         plan_id=plan_id_cg,
                     )
+
                     # Mark the plan itself as incomplete.
                     self.cg_manager.fail_plan(
                         session_id=session_id_cg,
@@ -761,7 +802,6 @@ class ProviderServicesSupervisor:
                     pass
 
                 logger.error(f"Worker {worker_name} failed: {error_msg}")
-
                 return {
                     "messages": [RemoveMessage(id=msg.id) for msg in state["messages"] if msg.id],
                     "error": error_msg,
@@ -834,7 +874,6 @@ class ProviderServicesSupervisor:
     def create_graph(self) -> CompiledStateGraph:
         """
         Create LangGraph state machine for the team.
-
         Flow:
             create_plan
                 → supervisor
@@ -850,7 +889,6 @@ class ProviderServicesSupervisor:
         workflow.add_node("supervisor",    self.supervisor_node)
         workflow.add_node("error_handler", self.error_handler_node)
         workflow.add_node("goal_advance",  self._advance_step)
-
         for worker_name in self.workers.keys():
             workflow.add_node(worker_name, self.worker_node(worker_name))
 
@@ -873,6 +911,7 @@ class ProviderServicesSupervisor:
                     "error_handler": "error_handler",
                 },
             )
+
         workflow.add_edge("goal_advance", "supervisor")
 
         # error_handler always terminates
@@ -892,11 +931,9 @@ class ProviderServicesSupervisor:
 
             if next_node == "FINISH":
                 return "__end__"
-
             if next_node == "CONTINUE":
                 # Supervisor decided to skip a goal and loop back
                 return "supervisor"
-
             if next_node in VALID_WORKERS:
                 return next_node  # type: ignore[return-value]
 
@@ -927,5 +964,4 @@ class ProviderServicesSupervisor:
 def get_provider_services_graph():
     """Get or create provider services LangGraph."""
     provider_services_supervisor = ProviderServicesSupervisor()
-
     return provider_services_supervisor.create_graph()

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import uuid
 
-import bcrypt
+
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -64,6 +64,14 @@ CPT_CODES = [
     ("29881", "Knee arthroscopy", "SURGICAL", 3500.00, True),
     ("93000", "Electrocardiogram", "DIAGNOSTIC", 75.00, False),
     ("99285", "Emergency department visit", "EMERGENCY", 500.00, False),
+    # --- PA-requiring procedures (decision agent enhancements) ---
+    ("27447", "Total knee replacement", "SURGICAL", 25000.00, True),
+    ("23412", "Rotator cuff repair", "SURGICAL", 8000.00, True),
+    ("22612", "Lumbar spinal fusion", "SURGICAL", 35000.00, True),
+    ("70553", "MRI brain with and without contrast", "DIAGNOSTIC", 2500.00, True),
+    ("27130", "Total hip replacement", "SURGICAL", 28000.00, True),
+    ("43239", "Upper GI endoscopy with biopsy", "SURGICAL", 3000.00, True),
+    ("64483", "Epidural steroid injection, lumbar", "PAIN_MANAGEMENT", 1800.00, True),
 ]
 
 
@@ -306,47 +314,81 @@ class DatabaseLoader:
                     CREATE (pa)-[:REQUESTED_BY]-> (pr)
                 """, providerId=pa['providerId'], paId=pa['paId'])
             
+            # Load Treatment Records (decision agent enhancements)
+            treatment_records = data.get("treatment_records", [])
+            if treatment_records:
+                print(f"Loading {len(treatment_records)} treatment records...")
+                for tx in treatment_records:
+                    session.run("""
+                        CREATE (t:TreatmentRecord {
+                            treatmentId: $treatmentId,
+                            treatmentType: $treatmentType,
+                            description: $description,
+                            procedureCode: $procedureCode,
+                            startDate: $startDate,
+                            endDate: $endDate,
+                            sessions: $sessions,
+                            outcome: $outcome,
+                            notes: $notes
+                        })
+                    """, **{k: v for k, v in tx.items()
+                            if k not in ('memberId', 'providerId')})
+
+                    # (Member)-[:HAS_TREATMENT]->(TreatmentRecord)
+                    session.run("""
+                        MATCH (m:Member {memberId: $memberId})
+                        MATCH (t:TreatmentRecord {treatmentId: $treatmentId})
+                        CREATE (m)-[:HAS_TREATMENT]->(t)
+                    """, memberId=tx['memberId'],
+                         treatmentId=tx['treatmentId'])
+
+                    # (TreatmentRecord)-[:PERFORMED_BY]->(Provider)
+                    session.run("""
+                        MATCH (t:TreatmentRecord {treatmentId: $treatmentId})
+                        MATCH (pr:Provider {providerId: $providerId})
+                        CREATE (t)-[:PERFORMED_BY]->(pr)
+                    """, treatmentId=tx['treatmentId'],
+                         providerId=tx['providerId'])
+
+                print(f"-> Loaded {len(treatment_records)} treatment records")
+            
             print("-> Neo4j Knowledge Graph loaded successfully")
     
     def load_mysql_data(self, data: Dict[str, Any]):
-        """Load data into MySQL"""
-        print("\n=== Loading MySQL Data ===")
-        
+        """Verify MySQL schema and seed data from mysql_schema.sql.
+
+        Users, RBAC permissions, tool permissions, token budget limits,
+        LLM configs, and MCP agent keys are all seeded by mysql_schema.sql
+        (which must be run before this script).  This method verifies that
+        the schema was applied correctly rather than duplicating the seed data.
+        """
+        print("\n=== Verifying MySQL Schema ===")
+
         cursor = self.mysql_conn.cursor()
-        
+
         try:
-            # Note: This assumes tables are already created via mysql_schema.sql
-            # In production, you would run the schema file first
-            # Password hashing
-            test_password = "testuser"
-            
-            pwd_hash = bcrypt.hashpw( test_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-            
-            # Load users (CSRs)
-            print("Loading sample CSR users...")
-            users = [
-                (str(uuid.uuid4()), 'csr1', pwd_hash, 'csr1@healthins.com', 'CSR_TIER1', True),
-                (str(uuid.uuid4()), 'csr2', pwd_hash, 'csr2@healthins.com', 'CSR_TIER2', True),
-                (str(uuid.uuid4()), 'supervisor1', pwd_hash, 'supervisor@healthins.com', 'CSR_SUPERVISOR', True),
-            ]
-            
-            for user in users:
-                try:
-                    cursor.execute("""
-                        INSERT INTO users (user_id, username, password_hash, email, role, is_active)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, user)
-                except mysql.connector.IntegrityError:
-                    pass  # User already exists
-            
-            self.mysql_conn.commit()
-            print(f"-> Loaded {len(users)} CSR users")
-            
-            print("-> MySQL data loaded successfully")
-            
+            # Verify users were seeded by mysql_schema.sql
+            cursor.execute("SELECT COUNT(*) FROM users")
+            user_count = cursor.fetchone()[0]
+            print(f"-> Users: {user_count} (seeded by mysql_schema.sql)")
+
+            cursor.execute("SELECT COUNT(*) FROM tool_permissions")
+            tp_count = cursor.fetchone()[0]
+            print(f"-> Tool permissions: {tp_count} (seeded by mysql_schema.sql)")
+
+            cursor.execute("SELECT COUNT(*) FROM token_budget_limits")
+            tb_count = cursor.fetchone()[0]
+            print(f"-> Token budget limits: {tb_count} (seeded by mysql_schema.sql)")
+
+            if user_count == 0:
+                print("WARNING: No users found — run mysql_schema.sql first!")
+            if tp_count == 0:
+                print("WARNING: No tool permissions found — run mysql_schema.sql first!")
+
+            print("-> MySQL schema verification complete")
+
         except Exception as e:
-            print(f"-> Error loading MySQL data: {e}")
-            self.mysql_conn.rollback()
+            print(f"-> Error verifying MySQL schema: {e}")
             raise
         finally:
             cursor.close()
@@ -473,6 +515,44 @@ class DatabaseLoader:
                 ("Knee Arthroscopy Guidelines", "Knee arthroscopy is indicated for diagnostic evaluation and treatment of intra-articular knee pathology. Prior authorization required. Must have failed conservative treatment for 6 weeks including physical therapy and anti-inflammatory medications."),
                 ("Emergency Department Visit Guidelines", "Emergency services are covered for conditions that could result in serious health consequences without immediate care. No prior authorization required. Examples include chest pain, severe bleeding, suspected stroke, or severe breathing difficulty."),
                 ("Preventive Care Guidelines", "Annual wellness visits and preventive screenings are covered at 100% with no cost-sharing when using in-network providers. Includes annual physical, immunizations, cancer screenings, and cardiovascular disease screening."),
+                # --- Procedure-specific PA criteria (decision agent enhancements) ---
+                ("Rotator Cuff Repair PA Criteria",
+                 "Prior authorization for rotator cuff repair (CPT 23412) requires: "
+                 "1. Documented MRI showing partial or complete tear. "
+                 "2. Minimum 6 months of conservative treatment including physical therapy "
+                 "(minimum 12 sessions documented) and anti-inflammatory medication trial. "
+                 "3. Persistent functional limitation despite conservative treatment. "
+                 "4. Requesting provider must be board-certified orthopedic surgeon. "
+                 "Urgent cases (acute traumatic tear) may bypass the 6-month conservative "
+                 "treatment requirement with documented mechanism of injury."),
+                ("Total Knee Replacement PA Criteria",
+                 "Prior authorization for total knee replacement (CPT 27447) requires: "
+                 "1. Radiographic evidence of moderate to severe osteoarthritis "
+                 "(Kellgren-Lawrence grade 3 or 4). "
+                 "2. Minimum 3 months of conservative treatment including physical therapy, "
+                 "weight management counseling, and trial of at least two anti-inflammatory medications. "
+                 "3. BMI below 40 or documented bariatric clearance if BMI is 40 or above. "
+                 "4. Age 50 or older; exceptions for post-traumatic arthritis require documentation "
+                 "of mechanism of injury and imaging evidence."),
+                ("Lumbar Spinal Fusion PA Criteria",
+                 "Prior authorization for lumbar spinal fusion (CPT 22612) requires: "
+                 "1. MRI or CT evidence of structural pathology such as stenosis, "
+                 "spondylolisthesis, or disc herniation. "
+                 "2. Minimum 6 months of conservative treatment including physical therapy "
+                 "and epidural steroid injections. "
+                 "3. Documented failure of at least one epidural steroid injection series "
+                 "(minimum 2 injections). "
+                 "4. Psychological clearance for patients with chronic pain exceeding 12 months. "
+                 "5. Second surgical opinion required for patients under age 50."),
+                ("MRI Brain with Contrast PA Criteria",
+                 "Prior authorization for MRI brain with and without contrast (CPT 70553) requires: "
+                 "1. Clinical indication documented: suspected tumor, multiple sclerosis evaluation, "
+                 "post-surgical surveillance, or unexplained neurological symptoms. "
+                 "2. Prior non-contrast MRI or CT performed within 90 days unless presenting "
+                 "with emergency neurological symptoms. "
+                 "3. Renal function labs (GFR) obtained within 30 days for gadolinium contrast "
+                 "administration. "
+                 "4. Not required for emergency presentations with acute neurological deficit."),
             ]
             
             guideline_docs = [g[1] for g in guidelines]
@@ -676,6 +756,68 @@ def generate_prior_authorizations(members: List[Dict], policies: List[Dict], pro
     return pas
 
 
+# ---------------------------------------------------------------------------
+# Treatment Records (decision agent enhancements)
+# ---------------------------------------------------------------------------
+
+# Treatment types with (type_key, description, related_cpt, typical_sessions)
+TREATMENT_TYPES = [
+    ("PHYSICAL_THERAPY",    "Physical therapy sessions",            "99213", 12),
+    ("MEDICATION_TRIAL",    "Anti-inflammatory medication trial",   None,     1),
+    ("INJECTION",           "Epidural steroid injection",           "64483",  3),
+    ("IMAGING",             "Diagnostic MRI",                       "70553",  1),
+    ("WEIGHT_COUNSELING",   "Weight management counseling",         "99214",  6),
+    ("OCCUPATIONAL_THERAPY","Occupational therapy sessions",        "99213",  8),
+    ("CHIROPRACTIC",        "Chiropractic manipulation",            "99213", 10),
+    ("BRACE_DME",           "Knee brace / durable medical equip",   None,     1),
+]
+
+TREATMENT_OUTCOMES = [
+    "COMPLETED", "ONGOING", "DISCONTINUED", "IMPROVED", "NO_IMPROVEMENT",
+]
+
+
+def generate_treatment_records(
+    members: List[Dict],
+    providers: List[Dict],
+    count: int = 80,
+) -> List[Dict[str, Any]]:
+    """Generate treatment history records linked to members and providers.
+
+    These records allow the PA recommendation decision agent to verify
+    whether conservative treatment requirements have been met before
+    recommending approval of a surgical prior authorization.
+    """
+    treatments: List[Dict[str, Any]] = []
+
+    for i in range(count):
+        member = random.choice(members)
+        provider = random.choice(providers)
+        tx_type = random.choice(TREATMENT_TYPES)
+        start = datetime.now() - timedelta(days=random.randint(30, 365))
+        duration_days = random.randint(7, 180)
+        sessions = tx_type[3] + random.randint(-2, 4)
+        if sessions < 1:
+            sessions = 1
+
+        treatment = {
+            "treatmentId": str(uuid.uuid4()),
+            "memberId": member["memberId"],
+            "providerId": provider["providerId"],
+            "treatmentType": tx_type[0],
+            "description": tx_type[1],
+            "procedureCode": tx_type[2] or "",
+            "startDate": start.strftime("%Y-%m-%d"),
+            "endDate": (start + timedelta(days=duration_days)).strftime("%Y-%m-%d"),
+            "sessions": sessions,
+            "outcome": random.choice(TREATMENT_OUTCOMES),
+            "notes": f"{tx_type[1]} for member {member['memberId'][:8]}",
+        }
+        treatments.append(treatment)
+
+    return treatments
+
+
 def main():
     """Main function to generate and load all sample data"""
     print("=" * 60)
@@ -699,6 +841,9 @@ def main():
     pas = generate_prior_authorizations(members, policies, providers, 50)
     print(f"-> Generated {len(pas)} prior authorizations")
     
+    treatments = generate_treatment_records(members, providers, 80)
+    print(f"-> Generated {len(treatments)} treatment records")
+    
     # Prepare complete dataset
     data = {
         "members": members,
@@ -706,6 +851,7 @@ def main():
         "providers": providers,
         "claims": claims,
         "prior_authorizations": pas,
+        "treatment_records": treatments,
         "diagnoses": [{"icdCode": d[0], "description": d[1], "severity": d[2], "category": "GENERAL"} for d in ICD_CODES],
         "procedures": [{"cptCode": p[0], "description": p[1], "category": p[2], "averageCost": p[3], "requiresPriorAuth": p[4]} for p in CPT_CODES]
     }
@@ -734,7 +880,8 @@ def main():
         print(f"  - Providers: {len(providers)}")
         print(f"  - Claims: {len(claims)}")
         print(f"  - Prior Authorizations: {len(pas)}")
-        print(f"  - Total: {len(members) + len(policies) + len(providers) + len(claims) + len(pas)}")
+        print(f"  - Treatment Records: {len(treatments)}")
+        print(f"  - Total: {len(members) + len(policies) + len(providers) + len(claims) + len(pas) + len(treatments)}")
         
     except Exception as e:
         print(f"\n-> Error loading data: {e}")
