@@ -1,6 +1,5 @@
 """
 Claims Services: Claim Adjudication Worker Agent
-(Decision agent enhancements — M9)
 Unlike standard read workers that call MCP tools, this decision worker
 receives evidence from prior plan steps (claim_lookup, check_eligibility,
 provider_network_check) already in its query context and applies coverage

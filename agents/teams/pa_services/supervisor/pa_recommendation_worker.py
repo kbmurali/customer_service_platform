@@ -1,6 +1,5 @@
 """
 PA Services: PA Recommendation Worker Agent
-(Decision agent enhancements — M12)
 Unlike standard read workers that call MCP tools, this decision worker
 receives evidence from prior plan steps (pa_lookup, pa_requirements,
 search_knowledge_base clinical guidelines, treatment_history from
