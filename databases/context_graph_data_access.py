@@ -797,6 +797,58 @@ class ContextGraphDataAccess:
             logger.warning(f"Failed to set langfuse trace id (non-fatal): {e}")
             return False
 
+    def track_decision_agent_execution(
+        self,
+        execution_id: str,
+        recommendation: str,
+        justification_summary: str,
+        evidence_used: list,
+    ) -> bool:
+        """
+        Persist decision agent properties on an existing AgentExecution node.
+
+        Decision workers (claim_adjudication, pa_recommendation) produce
+        structured recommendations rather than tool call results.  This
+        method promotes those outputs to first-class Neo4j properties on
+        the worker's AgentExecution node, making them directly queryable
+        without parsing LLM outputs or searching LangFuse traces.
+
+        Properties set:
+            isDecisionNode:       true — marks the node for CG Explorer rendering
+            recommendation:       APPROVE | DENY | REVIEW | REQUEST_INFO
+            justificationSummary: human-readable reasoning paragraph
+            evidenceUsed:         JSON array of key:value evidence pairs
+
+        Args:
+            execution_id:          AgentExecution.executionId of the decision worker
+            recommendation:        The structured recommendation string
+            justification_summary: Reasoning paragraph citing specific evidence
+            evidence_used:         List of evidence key:value strings
+
+        Returns:
+            True if the properties were set successfully.
+        """
+        try:
+            self.conn.execute_query("""
+                MATCH (w:AgentExecution {executionId: $execId})
+                SET w.isDecisionNode      = true,
+                    w.recommendation      = $recommendation,
+                    w.justificationSummary = $justification,
+                    w.evidenceUsed         = $evidence
+            """, {
+                "execId":         execution_id,
+                "recommendation": recommendation,
+                "justification":  justification_summary,
+                "evidence":       json.dumps(evidence_used),
+            })
+            return True
+        except Exception as e:
+            logger.warning(
+                "Failed to track decision agent execution on %s (non-fatal): %s",
+                execution_id, e,
+            )
+            return False
+
     def track_tool_execution(self,
                             session_id: str,
                             tool_name: str,

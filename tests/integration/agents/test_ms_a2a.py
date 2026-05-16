@@ -48,8 +48,8 @@ TEST_USER_ROLE  = os.getenv("TEST_USER_ROLE",  "CSR_TIER2")
 TEST_SESSION_ID = os.getenv("TEST_SESSION_ID", str( uuid.uuid1()))
 # TEST_MEMBER_ID must be a valid member UUID from the dev seed data.
 # The default below is a known seed member — override via TEST_MEMBER_ID env var.
-TEST_MEMBER_ID  = os.getenv("TEST_MEMBER_ID",  "68a42d4f-9656-4f4b-bbbc-dda380dc09e1")
-TEST_MEMBER_ID2 = os.getenv("TEST_MEMBER_ID2", "68a42d4f-9656-4f4b-bbbc-dda380dc09e1")
+TEST_MEMBER_ID  = os.getenv("TEST_MEMBER_ID",  "d4a4ca70-729b-4eb6-8ed8-19c39e362733")
+TEST_MEMBER_ID2 = os.getenv("TEST_MEMBER_ID2", "3da9278f-3ef4-4437-b10f-31fc871cdbf1")
 
 cg_dao = ContextGraphDataAccess()
 cg_dao.create_session( session_id=TEST_SESSION_ID, user_id=TEST_USER_ID )
@@ -202,6 +202,7 @@ class TestMemberLookup:
 
     def test_member_lookup_by_id(self, client_node):
         """Look up a known member by ID."""
+        print( f"------------->MID: {TEST_MEMBER_ID}\n" )
         state = _make_state(f"Look up member {TEST_MEMBER_ID}")
         result = client_node(state)
         _assert_successful_response(result, "test_member_lookup_by_id")

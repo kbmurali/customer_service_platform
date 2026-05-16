@@ -602,7 +602,7 @@ INSERT INTO users (user_id, username, email, password_hash, role, first_name, la
      '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_TIER1',      'David',   'Kim',       TRUE),
 
-    ('usr-tier2-001',    'rpatel',     'raj.patel@healthins.example.com',
+    ('rpatel',    'rpatel',     'raj.patel@healthins.example.com',
      '$2b$12$saZBZtr5NmE0hqa2tylZB.j44uzaoAIkeRkSc.K7Sc8qfhT/lN4MC',
      'CSR_TIER2',      'Raj',     'Patel',     TRUE),
 

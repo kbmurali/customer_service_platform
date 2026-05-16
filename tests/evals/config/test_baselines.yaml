@@ -1,0 +1,40 @@
+# CSIP Evaluation Baseline Thresholds
+#
+# Each metric has a minimum acceptable value. The regression gate test
+# fetches current metric values from /api/stats/agentic-health and
+# asserts each meets or exceeds its baseline.
+#
+# Update these values when a new deployment is intentionally accepted
+# and the metrics have been verified against production traffic.
+#
+# Last calibrated: Tier 1 eval run (24 queries across 8 test files)
+#
+# Metric sources:
+#   - planning_routing_accuracy:  evaluation_pipeline.py (30s cycle)
+#   - positive_feedback_rate:     evaluation_pipeline.py (30s cycle)
+#   - tool_success_rate:          evaluation_pipeline.py (30s cycle)
+#   - agent_error_rate:           evaluation_pipeline.py (30s cycle)
+#   - avg_e2e_latency_seconds:    evaluation_pipeline.py (30s cycle)
+#   - avg_agent_latency_seconds:  evaluation_pipeline.py (30s cycle)
+#   - estimated_tokens_per_query: evaluation_pipeline.py (30s cycle)
+#   - llm_calls_per_query:        evaluation_pipeline.py (30s cycle)
+#   - avg_plan_goals:             evaluation_pipeline.py (30s cycle)
+#   - avg_plan_steps:             evaluation_pipeline.py (30s cycle)
+
+# Tier 1: Quality metrics (higher is better)
+planning_routing_accuracy:    0.60
+positive_feedback_rate:       0.0
+tool_success_rate:            0.85
+
+# Tier 1: Cost metrics (lower is better — these are upper bounds)
+estimated_tokens_per_query:   8000
+llm_calls_per_query:          12.0
+
+# Tier 2: Agent health (thresholds are upper bounds for error/latency)
+agent_error_rate:             0.15
+avg_agent_latency_seconds:    10.0
+avg_e2e_latency_seconds:      30.0
+
+# Tier 2: Drift indicators (acceptable ranges)
+avg_plan_goals:               5.0
+avg_plan_steps:               8.0

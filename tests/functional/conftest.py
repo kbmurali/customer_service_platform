@@ -31,7 +31,7 @@ API_BASE = os.getenv("CSIP_API_BASE", "https://localhost/agentic/access")
 VERIFY_SSL = os.getenv("CSIP_VERIFY_SSL", "false").lower() == "true"
 
 # Test user credentials (must exist in MySQL users table)
-CSR_USER = os.getenv("CSIP_CSR_USER", "csr2")
+CSR_USER = os.getenv("CSIP_CSR_USER", "rpatel")
 CSR_PASS = os.getenv("CSIP_CSR_PASS", "testuser")
 CSR_ROLE = "CSR_TIER2"
 

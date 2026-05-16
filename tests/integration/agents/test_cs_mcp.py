@@ -51,7 +51,7 @@ load_dotenv(find_dotenv())
 TEST_USER_ID    = os.getenv("TEST_USER_ID",    "usr-tier2-001")
 TEST_USER_ROLE  = os.getenv("TEST_USER_ROLE",  "CSR_TIER2")
 TEST_SESSION_ID = os.getenv("TEST_SESSION_ID", str( uuid.uuid1()))
-TEST_CLAIM_ID  = os.getenv("TEST_CLAIM_ID",  "7799c06c-0883-4dca-b1f0-bded6d1027a5")
+TEST_CLAIM_ID  = os.getenv("TEST_CLAIM_ID",  "23bcada7-8403-4c85-aa4c-416846419d7d")
 TEST_CLAIM_NUMBER  = os.getenv("TEST_CLAIM_NUMBER",  "CLM-421386")
 
 

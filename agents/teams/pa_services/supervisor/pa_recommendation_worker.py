@@ -189,19 +189,12 @@ class PARecommendationWorker:
                 try:
                     if execution_id:
                         from databases.context_graph_data_access import get_cg_data_access
-                        import json as _json
-                        get_cg_data_access().conn.execute_query("""
-                            MATCH (w:AgentExecution {executionId: $execId})
-                            SET w.isDecisionNode = true,
-                                w.recommendation = $recommendation,
-                                w.justificationSummary = $justification,
-                                w.evidenceUsed = $evidence
-                        """, {
-                            "execId": execution_id,
-                            "recommendation": recommendation,
-                            "justification": justification_summary,
-                            "evidence": _json.dumps(evidence_used),
-                        })
+                        get_cg_data_access().track_decision_agent_execution(
+                            execution_id=execution_id,
+                            recommendation=recommendation,
+                            justification_summary=justification_summary,
+                            evidence_used=evidence_used,
+                        )
                 except Exception as cg_exc:
                     logger.warning(
                         "%s: CG decision tracking failed (non-fatal): %s",

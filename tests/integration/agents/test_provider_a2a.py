@@ -46,8 +46,8 @@ AGENT_NAME       = "provider_services_supervisor_agent"
 TEST_USER_ID     = os.getenv("TEST_USER_ID",     "usr-tier2-001")
 TEST_USER_ROLE   = os.getenv("TEST_USER_ROLE",   "CSR_TIER2")
 TEST_SESSION_ID  = os.getenv("TEST_SESSION_ID",  str(uuid.uuid1()))
-TEST_PROVIDER_ID = os.getenv("TEST_PROVIDER_ID", "1f4f7e66-2db0-4a2b-8e39-0c2e4e93b6eb")
-TEST_POLICY_ID   = os.getenv("TEST_POLICY_ID",   "698289fe-64b2-4382-894f-d8ad5ca4a4a4")
+TEST_PROVIDER_ID = os.getenv("TEST_PROVIDER_ID", "fad8b5cd-2cc3-480b-a0fe-a45cd6ea57ac")
+TEST_POLICY_ID   = os.getenv("TEST_POLICY_ID",   "8de5ee6e-b744-4435-a0d7-0892dac7fd3f")
 TEST_SPECIALTY   = os.getenv("TEST_SPECIALTY",   "Dermatology")
 TEST_ZIP_CODE    = os.getenv("TEST_ZIP_CODE",     "30368")
 
@@ -215,6 +215,8 @@ class TestProviderLookup:
 
     def test_provider_lookup_by_id(self, client_node):
         """Look up a known provider by ID."""
+        print( f"------------->PID: {TEST_PROVIDER_ID}\n" )
+        
         state  = _make_state(f"Look up provider {TEST_PROVIDER_ID}")
         result = client_node(state)
         _assert_successful_response(result, "test_provider_lookup_by_id")

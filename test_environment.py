@@ -1,63 +1,120 @@
 #!/usr/bin/env python3
 """
-Environment verification script for Customer Service Intelligence Platform.
+test_environment.py : Environment verification script for
+Customer Service Intelligence Platform.
+
+Verifies that all required Python packages from requirements.txt
+can be imported successfully.
+
+Usage:
+    python test_environment.py
 """
 import sys
 import importlib
-from typing import List, Tuple
+from typing import Tuple
 
-def test_import(module_name: str) -> Tuple[bool, str]:
+
+# (display_name, actual_import_name)
+MODULES_TO_TEST = [
+    # Core LangChain stack
+    ("langchain", "langchain"),
+    ("langchain-core", "langchain_core"),
+    ("langchain-community", "langchain_community"),
+    ("langsmith", "langsmith"),
+    ("langchain-openai", "langchain_openai"),
+    ("langchain-anthropic", "langchain_anthropic"),
+    ("langchain-aws", "langchain_aws"),
+    ("langchain-experimental", "langchain_experimental"),
+    ("langchain-mcp-adapters", "langchain_mcp_adapters"),
+    # LangGraph stack
+    ("langgraph", "langgraph"),
+    ("langgraph-checkpoint", "langgraph.checkpoint"),
+    ("langgraph-prebuilt", "langgraph.prebuilt"),
+    # MCP
+    ("mcp", "mcp"),
+    # LLM / NLP
+    ("transformers", "transformers"),
+    ("llmlingua", "llmlingua"),
+    # Vector databases
+    ("chromadb", "chromadb"),
+    # Graph databases
+    ("neo4j", "neo4j"),
+    # Relational databases
+    ("mysql-connector-python", "mysql.connector"),
+    ("pymysql", "pymysql"),
+    # Redis
+    ("redis", "redis"),
+    # Web framework
+    ("fastapi", "fastapi"),
+    ("httpx", "httpx"),
+    ("aiohttp", "aiohttp"),
+    # Data processing
+    ("pandas", "pandas"),
+    ("numpy", "numpy"),
+    ("numexpr", "numexpr"),
+    # Core
+    ("pydantic", "pydantic"),
+    ("python-dotenv", "dotenv"),
+    # Security - Auth
+    ("python-jose", "jose"),
+    ("passlib", "passlib"),
+    # Security - Input validation
+    ("nemoguardrails", "nemoguardrails"),
+    # Security - Sanitization
+    ("nh3", "nh3"),
+    # Security - PII/PHI
+    ("presidio-analyzer", "presidio_analyzer"),
+    ("presidio-anonymizer", "presidio_anonymizer"),
+    # Security - Output validation
+    ("guardrails-ai", "guardrails"),
+    # Observability
+    ("langfuse", "langfuse"),
+    ("prometheus-client", "prometheus_client"),
+    # Chroma embedding support
+    ("pysqlite3-binary", "pysqlite3"),
+]
+
+
+def test_import(display_name: str, import_name: str) -> Tuple[bool, str]:
     """Test if a module can be imported successfully."""
     try:
-        importlib.import_module(module_name)
-        return True, f"===> {module_name} imported successfully"
+        importlib.import_module(import_name)
+        return True, f"  [PASS] {display_name}"
     except ImportError as e:
-        return False, f"!!!=> {module_name} failed to import: {str(e)}"
+        return False, f"  [FAIL] {display_name} — {e}"
+    except Exception as e:
+        return False, f"  [FAIL] {display_name} — unexpected: {e}"
+
 
 def main():
-    """Run environment verification tests."""
-    print(" Customer Service Intelligence Platform - Environment Verification")
-    print("\n" + "=" * 70)
+    """Run environment verification."""
+    print("=" * 70)
+    print("  Customer Service Intelligence Platform")
+    print("  Environment Verification — Module Imports")
+    print("=" * 70)
 
-    # Core dependencies to test
-    modules_to_test = [
-		"langchain",
-		"langchain_community",
-		"langgraph",
-		"langchain_openai",
-		"langchain_anthropic",
-		"langsmith",
-		"langchain_mcp_adapters",
-		"mcp",
-		"pysqlite3-binary",
-		"chromadb",
-		"pydantic",
-		"dotenv",
-		"pandas",
-		"numpy",
-		"numexpr"
-	]
-    
-    results = []
-    
-    for module in modules_to_test:
-        success, message = test_import(module)
-        results.append((success, message))
+    passed = 0
+    failed = 0
+
+    for display_name, import_name in MODULES_TO_TEST:
+        success, message = test_import(display_name, import_name)
         print(message)
+        if success:
+            passed += 1
+        else:
+            failed += 1
 
-    # Summary
-    successful = sum(1 for success, _ in results if success)
-    total = len(results)
+    total = passed + failed
     print("\n" + "=" * 70)
-    
-    print(f" Summary: {successful}/{total} modules imported successfully")
-    
-    if successful == total:
-        print("===> Environment setup complete! Ready to proceed with development.")
-        return 0
+    print(f"  Summary: {passed}/{total} modules imported successfully")
+    if failed == 0:
+        print("  [OK] All imports verified — environment ready.")
     else:
-        print("!!!=> Some modules failed to import. Please check your  Some modules failed to import. Please check your installation.")
-        return 1
+        print(f"  [!!] {failed} module(s) failed — review output above.")
+    print("=" * 70)
+
+    return 0 if failed == 0 else 1
+
 
 if __name__ == "__main__":
-	sys.exit(main())
+    sys.exit(main())

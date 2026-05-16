@@ -81,9 +81,9 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health')"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 180s
+      timeout: 20s
+      retries: 10
+      start_period: 360s
     deploy:
       replicas: 1
       restart_policy:

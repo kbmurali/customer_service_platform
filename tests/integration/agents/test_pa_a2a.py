@@ -55,8 +55,8 @@ AGENT_NAME = "pa_services_supervisor_agent"
 TEST_USER_ID        = os.getenv("TEST_USER_ID",        "usr-tier2-001")
 TEST_USER_ROLE      = os.getenv("TEST_USER_ROLE",      "CSR_TIER2")
 TEST_SESSION_ID     = os.getenv("TEST_SESSION_ID",     str(uuid.uuid1()))
-TEST_PA_ID          = os.getenv("TEST_PA_ID",          "cc0af705-9a9b-46e7-b308-a69c4502b817")
-TEST_PA_NUMBER      = os.getenv("TEST_PA_NUMBER",      "PA-844196")
+TEST_PA_ID          = os.getenv("TEST_PA_ID",          "2e61949b-f966-4d8e-9121-6b52ae729a36")
+TEST_PA_NUMBER      = os.getenv("TEST_PA_NUMBER",      "PA-419629")
 TEST_PROCEDURE_CODE = os.getenv("TEST_PROCEDURE_CODE", "29881")
 TEST_POLICY_TYPE    = os.getenv("TEST_POLICY_TYPE",    "PPO")
 
