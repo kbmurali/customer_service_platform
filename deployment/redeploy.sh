@@ -1,4 +1,6 @@
-source .env
+# Do not need to souce .env any more since the Guardrails-AI token-based hub-access has been replaced by
+# local Python package-based access.
+#source .env 
 
 docker stack rm health_insurance
 
@@ -22,7 +24,7 @@ docker rmi csip/agentic-access-api:latest
 
 sleep 1
 
-docker build --build-arg GUARDRAILS_TOKEN -f Dockerfile.agentic_access -t csip/agentic-access-api:latest ..
+docker build -f Dockerfile.agentic_access -t csip/agentic-access-api:latest ..
 
 sleep 1
 

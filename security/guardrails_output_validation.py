@@ -55,7 +55,9 @@ except ImportError:
         metadata: dict = _field(default_factory=dict)
 
 try:
-    from guardrails.hub import DetectPII, ToxicLanguage, RestrictToTopic
+    from guardrails_ai.detect_pii import DetectPII
+    from guardrails_ai.toxic_language import ToxicLanguage
+    from guardrails_ai.restricttotopic import RestrictToTopic
     HUB_VALIDATORS_AVAILABLE = True
 except (ImportError, AttributeError):
     HUB_VALIDATORS_AVAILABLE = False
@@ -262,6 +264,7 @@ def _create_presidio_detect_pii(
         return None
     analyzer = get_healthcare_analyzer()
     return DetectPII(
+        use_local=True,
         pii_entities=pii_entities,
         on_fail=on_fail,
     )
@@ -329,8 +332,9 @@ class GuardrailsOutputValidator:
             ],
             on_fail="fix",
         )
-        _toxic    = ToxicLanguage(threshold=0.7, on_fail="exception") if HUB_VALIDATORS_AVAILABLE and ToxicLanguage else None
+        _toxic    = ToxicLanguage(threshold=0.7, use_local=True, on_fail="exception") if HUB_VALIDATORS_AVAILABLE and ToxicLanguage else None
         _restrict = RestrictToTopic(
+            use_local=True,
             valid_topics=[
                 "health insurance", "claims", "benefits", "coverage",
                 "prior authorization", "providers", "eligibility",
