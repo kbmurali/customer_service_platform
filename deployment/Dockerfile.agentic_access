@@ -37,20 +37,24 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     python -m spacy download en_core_web_lg
 
 # ── Guardrails Hub validators ──────────────────────────────────────────────
-ENV GUARDRAILS_NO_METRICS=true \
-    HOME=/root
-
-ARG GUARDRAILS_TOKEN
+ENV HOME=/root
 ENV HF_HOME=/app/.cache/huggingface
+ENV NLTK_DATA=/app/nltk_data
+ENV TORCH_HOME=/app/.cache/torch
+ENV XDG_CACHE_HOME=/app/.cache
 
-RUN guardrails configure --token "$GUARDRAILS_TOKEN" --disable-metrics --disable-remote-inferencing && \
-    guardrails hub install hub://guardrails/detect_pii --quiet && \
-    guardrails hub install hub://guardrails/toxic_language --quiet && \
-    guardrails hub install hub://tryolabs/restricttotopic --quiet && \
+RUN pip install --no-cache-dir \
+    guardrails-ai-detect-pii \
+    guardrails-ai-toxic-language \
+    guardrails-ai-restrict-to-topic && \
+    python -c "import nltk; nltk.download('punkt', download_dir='/app/nltk_data')" && \
+    python -m guardrails_ai.detect_pii.post_install && \
+    mkdir -p /app/.cache/torch && \
     python -c "from transformers import pipeline; pipeline('zero-shot-classification', model='facebook/bart-large-mnli')" && \
     chmod 755 /root && \
     chmod -R a+rX /root && \
-    chmod -R a+rX /app/.cache
+    chmod -R a+rX /app/.cache && \
+    chmod -R a+rX /app/nltk_data
 
 # -----------------------------------------------------------------------------
 # Application source — copied in dependency order so that layer caching is
